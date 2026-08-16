@@ -79,10 +79,17 @@ private struct ChatDetailFooter: View {
             case .checking:
                 DisabledComposerView(message: "Checking channel permissions…")
             case .readable(canSend: true):
-                TypingIndicatorView(typingState: model.typingState, channelID: channel.id)
+                let isDirectMessage = channel.kind == .directMessage
+                    || channel.kind == .groupDirectMessage
+                TypingIndicatorView(
+                    typingState: model.typingState,
+                    channelID: channel.id,
+                    isDirectMessage: isDirectMessage
+                )
                 ComposerView(
                     model: model,
                     channelName: channel.name,
+                    isDirectMessage: isDirectMessage,
                     onEditMessage: onEditMessage
                 )
             case .readable(canSend: false):
@@ -334,6 +341,7 @@ private struct HiddenChannelPrincipalFlowLayout: Layout {
 private struct TypingIndicatorView: View {
     let typingState: TypingStateModel
     let channelID: ChannelID
+    let isDirectMessage: Bool
 
     var body: some View {
         Text(typingState.presentation(in: channelID) ?? " ")
@@ -341,7 +349,11 @@ private struct TypingIndicatorView: View {
             .foregroundStyle(.secondary)
             .lineLimit(1)
             .frame(maxWidth: .infinity, minHeight: 18, maxHeight: 18, alignment: .leading)
-            .padding(.horizontal, 16)
+            .padding(.horizontal, isDirectMessage ? 24 : 16)
+            // The timeline reserves exactly the measured footer height, so
+            // without a top gap the newest bubble butts against this row.
+            .padding(.top, isDirectMessage ? 8 : 0)
+            .padding(.bottom, isDirectMessage ? 4 : 0)
             .accessibilityHidden(typingState.presentation(in: channelID) == nil)
     }
 }

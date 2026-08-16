@@ -3,6 +3,11 @@ import CoreText
 import MessageRendering
 import SakuraCordModels
 
+enum NativeTimelinePresentationStyle: Hashable {
+    case standard
+    case directMessage
+}
+
 nonisolated enum NativeTimelineMarkdownChromeMetrics {
     static let codeBlockInset: CGFloat = 8
     static let codeBlockParagraphBottomSpacing: CGFloat = 4
@@ -186,14 +191,20 @@ struct NativeTimelineBeginningLayout {
 
     static func make(
         beginning: NativeTimelineBeginning,
-        width: CGFloat
+        width: CGFloat,
+        presentationStyle: NativeTimelinePresentationStyle = .standard
     ) -> Self {
         let horizontalInset: CGFloat = 16
+        let presentationWidth = presentationStyle == .directMessage
+            ? min(width, ChatChromeMetrics.directMessageContentMaximumWidth)
+            : width
+        let presentationMinX = (width - presentationWidth) / 2
         let contentWidth = max(
             1,
-            width - horizontalInset * 2
+            presentationWidth - horizontalInset * 2
         )
-        let iconFrame = CGRect(x: horizontalInset, y: 28, width: 68, height: 68)
+        let contentMinX = presentationMinX + horizontalInset
+        let iconFrame = CGRect(x: contentMinX, y: 28, width: 68, height: 68)
         let titleFont = NSFont.systemFont(
             ofSize: NSFont.preferredFont(forTextStyle: .largeTitle).pointSize,
             weight: .bold
@@ -205,7 +216,7 @@ struct NativeTimelineBeginningLayout {
             width: contentWidth
         )
         let titleFrame = CGRect(
-            x: horizontalInset,
+            x: contentMinX,
             y: iconFrame.maxY + 9,
             width: contentWidth,
             height: titleHeight
@@ -216,14 +227,19 @@ struct NativeTimelineBeginningLayout {
             width: contentWidth
         )
         let descriptionFrame = CGRect(
-            x: horizontalInset,
+            x: contentMinX,
             y: titleFrame.maxY + 9,
             width: contentWidth,
             height: descriptionHeight
         )
         let contentHeight = descriptionFrame.maxY + 18
         let dateSeparatorFrame = beginning.startedAt.map { _ in
-            CGRect(x: 0, y: contentHeight, width: width, height: 37)
+            CGRect(
+                x: presentationMinX,
+                y: contentHeight,
+                width: presentationWidth,
+                height: 37
+            )
         }
         return Self(
             iconFrame: iconFrame,
@@ -434,6 +450,8 @@ struct NativeTimelineRowLayout {
     let loaderLayout: NativeTimelineLoaderLayout?
     let beginningLayout: NativeTimelineBeginningLayout?
     let highlightFrame: CGRect?
+    let messageBubbleFrame: CGRect?
+    let messageBubbleIsOutgoing: Bool
     let daySeparatorFrame: CGRect?
     let unreadSeparatorFrame: CGRect?
     let avatarFrame: CGRect?
@@ -468,7 +486,8 @@ struct NativeTimelineRowLayout {
     static func make(
         item: NativeMessageTimelineItem,
         width proposedWidth: CGFloat,
-        model: AppModel? = nil
+        model: AppModel? = nil,
+        presentationStyle: NativeTimelinePresentationStyle = .standard
     ) -> Self {
         let width = max(220, proposedWidth)
         switch item {
@@ -486,13 +505,24 @@ struct NativeTimelineRowLayout {
         case let .beginning(beginning):
             let beginningLayout = NativeTimelineBeginningLayout.make(
                 beginning: beginning,
-                width: width
+                width: width,
+                presentationStyle: presentationStyle
             )
             return empty(
                 height: beginningLayout.height,
                 beginningLayout: beginningLayout
             )
         case let .message(row, isUnreadBoundary, _):
+            if presentationStyle == .directMessage,
+               let layout = directMessageText(
+                   row,
+                   isUnreadBoundary: isUnreadBoundary,
+                   width: width,
+                   model: model
+               )
+            {
+                return layout
+            }
             return message(
                 row,
                 isUnreadBoundary: isUnreadBoundary,
@@ -513,6 +543,8 @@ struct NativeTimelineRowLayout {
             loaderLayout: loaderLayout,
             beginningLayout: beginningLayout,
             highlightFrame: nil,
+            messageBubbleFrame: nil,
+            messageBubbleIsOutgoing: false,
             daySeparatorFrame: nil,
             unreadSeparatorFrame: nil,
             avatarFrame: nil,
@@ -546,6 +578,221 @@ struct NativeTimelineRowLayout {
         )
     }
 
+}
+
+private extension NativeTimelineRowLayout {
+    // The bubble renderer keeps eligibility, measurement, separators, and all
+    // hit-test geometry together so its painter receives one coherent layout.
+    // swiftlint:disable:next function_body_length
+    static func directMessageText(
+        _ row: MessageRowPresentation,
+        isUnreadBoundary: Bool,
+        width: CGFloat,
+        model: AppModel?
+    ) -> Self? {
+        let message = row.message
+        guard message.type == .default,
+              row.replyPreview == nil,
+              !message.content.isEmpty,
+              !message.content.contains("```"),
+              message.attachments.isEmpty,
+              message.reactions.isEmpty,
+              message.embeds.isEmpty,
+              message.components.isEmpty,
+              message.stickers.isEmpty,
+              message.thread == nil,
+              message.forwardedSnapshot == nil,
+              !message.flags.contains(.ephemeral),
+              !message.flags.contains(.isComponentsV2)
+        else { return nil }
+
+        let textPlan = row.textPlan
+        let contentPresentation = NativeTimelineTextPresentation.make(
+            message: message,
+            plan: textPlan,
+            model: model
+        )
+        guard let attributedContent = contentPresentation.attributedContent,
+              attributedContent.length > 0,
+              contentPresentation.linkedImages.isEmpty
+        else { return nil }
+
+        let horizontalInset: CGFloat = 24
+        let horizontalContentInset: CGFloat = 14
+        let verticalContentInset: CGFloat = 9
+        let conversationWidth = min(
+            width,
+            ChatChromeMetrics.directMessageContentMaximumWidth
+        )
+        let conversationMinX = (width - conversationWidth) / 2
+        let maximumBubbleWidth = min(
+            ChatChromeMetrics.directMessageBubbleMaximumWidth,
+            max(96, conversationWidth - horizontalInset * 2)
+        )
+        let maximumContentWidth = max(
+            44,
+            maximumBubbleWidth - horizontalContentInset * 2
+        )
+        let naturalTextWidth = measuredMaximumLineWidth(
+            contentPresentation.framesetter,
+            length: attributedContent.length,
+            width: maximumContentWidth
+        )
+        let bubbleWidth = min(
+            maximumBubbleWidth,
+            max(56, ceil(naturalTextWidth) + horizontalContentInset * 2)
+        )
+        let contentWidth = max(
+            1,
+            bubbleWidth - horizontalContentInset * 2
+        )
+        let textHeight = measuredTextHeight(
+            contentPresentation.framesetter,
+            value: attributedContent,
+            length: attributedContent.length,
+            width: contentWidth
+        )
+
+        var prefixHeight: CGFloat = 0
+        var daySeparatorFrame: CGRect?
+        if row.startsDay {
+            daySeparatorFrame = CGRect(
+                x: conversationMinX + horizontalInset,
+                y: prefixHeight,
+                width: conversationWidth - horizontalInset * 2,
+                height: NativeTimelineDateSeparatorMetrics.rowHeight
+            )
+            prefixHeight += NativeTimelineDateSeparatorMetrics.rowHeight
+        }
+        var unreadSeparatorFrame: CGRect?
+        if isUnreadBoundary {
+            unreadSeparatorFrame = CGRect(
+                x: conversationMinX + horizontalInset,
+                y: prefixHeight,
+                width: conversationWidth - horizontalInset * 2,
+                height: NativeTimelineUnreadSeparatorMetrics.rowHeight
+            )
+            prefixHeight += NativeTimelineUnreadSeparatorMetrics.rowHeight
+        }
+
+        let topSeparation: CGFloat = 4
+        let bubbleY = prefixHeight + topSeparation
+        let bubbleHeight = max(
+            36,
+            ceil(textHeight) + verticalContentInset * 2
+        )
+        let isOutgoing = message.author.id == model?.snapshot?.currentUser.id
+        let bubbleX = isOutgoing
+            ? conversationMinX + conversationWidth - horizontalInset - bubbleWidth
+            : conversationMinX + horizontalInset
+        let bubbleFrame = CGRect(
+            x: bubbleX,
+            y: bubbleY,
+            width: bubbleWidth,
+            height: bubbleHeight
+        )
+        let contentFrame = CGRect(
+            x: bubbleFrame.minX + horizontalContentInset,
+            y: bubbleFrame.minY + verticalContentInset,
+            width: contentWidth,
+            height: textHeight
+        )
+        let compactTimestampFrame = CGRect(
+            x: isOutgoing
+                ? max(0, bubbleFrame.minX - 50)
+                : min(width - 46, bubbleFrame.maxX + 4),
+            y: bubbleFrame.maxY - MessageRowLayoutMetrics.compactContentHeight,
+            width: 46,
+            height: MessageRowLayoutMetrics.compactContentHeight
+        )
+        let failedFrame = message.outboxState == .failed
+            ? CGRect(
+                x: bubbleFrame.minX,
+                y: bubbleFrame.maxY + 3,
+                width: bubbleFrame.width,
+                height: 14
+            )
+            : nil
+        let rowHeight = ceil((failedFrame?.maxY ?? bubbleFrame.maxY) + 10)
+
+        return Self(
+            height: rowHeight,
+            loaderLayout: nil,
+            beginningLayout: nil,
+            highlightFrame: CGRect(
+                x: 0,
+                y: prefixHeight,
+                width: width,
+                height: rowHeight - prefixHeight
+            ),
+            messageBubbleFrame: bubbleFrame,
+            messageBubbleIsOutgoing: isOutgoing,
+            daySeparatorFrame: daySeparatorFrame,
+            unreadSeparatorFrame: unreadSeparatorFrame,
+            avatarFrame: nil,
+            compactTimestampFrame: compactTimestampFrame,
+            authorFrame: nil,
+            botBadgeFrame: nil,
+            timestampFrame: nil,
+            editedFrame: nil,
+            loadingIndicatorFrame: nil,
+            replyFrame: nil,
+            commandInvocationRegion: nil,
+            systemIconFrame: nil,
+            contentFrame: contentFrame,
+            attributedContent: attributedContent,
+            contentFramesetter: contentPresentation.framesetter,
+            forwardedHeaderFrame: nil,
+            forwardedBarFrame: nil,
+            forwardedSourceRegion: nil,
+            linkedImageRegions: [],
+            attachmentRegions: [],
+            embedFrames: [],
+            embedRegions: [],
+            componentFrames: [],
+            componentLayouts: [],
+            stickerFrames: [],
+            threadFrame: nil,
+            reactionRegions: [],
+            addReactionFrame: nil,
+            ephemeralRegion: nil,
+            failedFrame: failedFrame
+        )
+    }
+
+    static func measuredMaximumLineWidth(
+        _ framesetter: CTFramesetter,
+        length: Int,
+        width: CGFloat
+    ) -> CGFloat {
+        let path = CGPath(
+            rect: CGRect(
+                x: 0,
+                y: 0,
+                width: max(1, width),
+                height: 100_000
+            ),
+            transform: nil
+        )
+        let frame = CTFramesetterCreateFrame(
+            framesetter,
+            CFRange(location: 0, length: length),
+            path,
+            nil
+        )
+        let lines = CTFrameGetLines(frame) as NSArray
+        var maximumWidth: CGFloat = 0
+        for case let line as CTLine in lines {
+            maximumWidth = max(
+                maximumWidth,
+                CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+            )
+        }
+        return min(width, maximumWidth)
+    }
+}
+
+extension NativeTimelineRowLayout {
     private struct MessageBuilder {
         let row: MessageRowPresentation
         let isUnreadBoundary: Bool
@@ -1083,6 +1330,8 @@ struct NativeTimelineRowLayout {
             loaderLayout: nil,
             beginningLayout: nil,
             highlightFrame: highlightFrame,
+            messageBubbleFrame: nil,
+            messageBubbleIsOutgoing: false,
             daySeparatorFrame: daySeparatorFrame,
             unreadSeparatorFrame: unreadSeparatorFrame,
             avatarFrame: avatarFrame,

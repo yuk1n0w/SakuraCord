@@ -69,6 +69,9 @@ extension NativeTimelineRowPainter {
             newMessagesSeparator(frame: frame)
         }
 
+        // Direct-message bubbles are real glass hosted behind the canvas, so
+        // nothing is painted here; a fill would cover the glass beneath.
+
         let author = model?.authorPresentation(for: message)
         if let frame = layout.avatarFrame {
             let presentedAuthor =

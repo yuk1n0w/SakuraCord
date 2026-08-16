@@ -1000,6 +1000,7 @@ extension NativeTimelineCanvasView {
             positionLottieStickerOverlays()
             reconcileLoadingIndicators()
             positionSpoilerOverlays()
+            reconcileGlassBubbles()
             needsDisplay = true
         }
     }

@@ -187,6 +187,7 @@ private struct ChatRootView: View {
                 WindowChromeDimmingBridge(
                     isDimmed: isFileDropTargeted && canAcceptWindowDrops
                 )
+                WindowGlassBackdropBridge()
             }
             .frame(width: 0, height: 0)
         }

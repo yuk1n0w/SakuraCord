@@ -208,6 +208,133 @@ func `large direct message inbox filtering remains bounded`() {
 }
 
 @MainActor
+@Test func `direct message text bubbles align incoming and outgoing messages`() async throws {
+    let model = AppModel(
+        launchMode: .offlineTesting,
+        provider: MockChatProvider()
+    )
+    await model.start()
+    let currentUser = try #require(model.snapshot?.currentUser)
+    let recipient = User(
+        id: UserID(rawValue: currentUser.id.rawValue + 10_000),
+        username: "bubble-recipient",
+        displayName: "Bubble Recipient"
+    )
+    let channelID = ChannelID(rawValue: 9_001)
+    let width: CGFloat = 1_000
+
+    func layout(author: User, content: String) -> NativeTimelineRowLayout {
+        let row = MessageRowPresentation(
+            message: Message(
+                id: MessageID(rawValue: author.id.rawValue + 20_000),
+                channelID: channelID,
+                author: author,
+                content: content
+            ),
+            startsGroup: true,
+            startsDay: false,
+            replyPreview: nil,
+            isReplyAvailable: false
+        )
+        return NativeTimelineRowLayout.make(
+            item: .message(
+                row,
+                isUnreadBoundary: false,
+                isHighlighted: false
+            ),
+            width: width,
+            model: model,
+            presentationStyle: .directMessage
+        )
+    }
+
+    let incoming = layout(author: recipient, content: "Incoming bubble")
+    let outgoing = layout(author: currentUser, content: "Outgoing bubble")
+    let incomingBubble = try #require(incoming.messageBubbleFrame)
+    let outgoingBubble = try #require(outgoing.messageBubbleFrame)
+    let incomingContent = try #require(incoming.contentFrame)
+    let outgoingContent = try #require(outgoing.contentFrame)
+
+    let conversationMinX = (
+        width - ChatChromeMetrics.directMessageContentMaximumWidth
+    ) / 2
+    #expect(incomingBubble.minX == conversationMinX + 24)
+    #expect(
+        outgoingBubble.maxX
+            == conversationMinX
+                + ChatChromeMetrics.directMessageContentMaximumWidth
+                - 24
+    )
+    #expect(
+        incomingBubble.width
+            <= ChatChromeMetrics.directMessageBubbleMaximumWidth
+    )
+    #expect(incomingBubble.contains(incomingContent))
+    #expect(outgoingBubble.contains(outgoingContent))
+    #expect(incoming.messageBubbleIsOutgoing == false)
+    #expect(outgoing.messageBubbleIsOutgoing)
+    #expect(incoming.avatarFrame == nil)
+    #expect(outgoing.authorFrame == nil)
+}
+
+@MainActor
+@Test func `direct message bubble styling does not alter standard or rich rows`() {
+    let author = User(
+        id: UserID(rawValue: 7_001),
+        username: "fixture",
+        displayName: "Fixture"
+    )
+    let plainRow = MessageRowPresentation(
+        message: Message(
+            id: MessageID(rawValue: 7_002),
+            channelID: ChannelID(rawValue: 7_003),
+            author: author,
+            content: "Plain text"
+        ),
+        startsGroup: true,
+        startsDay: false,
+        replyPreview: nil,
+        isReplyAvailable: false
+    )
+    let richRow = MessageRowPresentation(
+        message: Message(
+            id: MessageID(rawValue: 7_004),
+            channelID: ChannelID(rawValue: 7_003),
+            author: author,
+            content: "```swift\nlet value = 1\n```"
+        ),
+        startsGroup: true,
+        startsDay: false,
+        replyPreview: nil,
+        isReplyAvailable: false
+    )
+
+    let standard = NativeTimelineRowLayout.make(
+        item: .message(
+            plainRow,
+            isUnreadBoundary: false,
+            isHighlighted: false
+        ),
+        width: 640,
+        presentationStyle: .standard
+    )
+    let richDirectMessage = NativeTimelineRowLayout.make(
+        item: .message(
+            richRow,
+            isUnreadBoundary: false,
+            isHighlighted: false
+        ),
+        width: 640,
+        presentationStyle: .directMessage
+    )
+
+    #expect(standard.messageBubbleFrame == nil)
+    #expect(standard.avatarFrame != nil)
+    #expect(richDirectMessage.messageBubbleFrame == nil)
+    #expect(richDirectMessage.avatarFrame != nil)
+}
+
+@MainActor
 @Test func `group direct message participants reconcile a partial owner payload`() {
     let currentUser = User(
         id: UserID(rawValue: 1),

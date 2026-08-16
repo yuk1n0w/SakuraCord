@@ -8,6 +8,8 @@ nonisolated enum ChatChromeMetrics {
     static let sidebarTitleTopOffset: CGFloat = 11
     static let sidebarContentCornerRadius: CGFloat = 16
     static let composerWindowInset: CGFloat = 12
+    static let directMessageContentMaximumWidth: CGFloat = 640
+    static let directMessageBubbleMaximumWidth: CGFloat = 390
     /// Only a fallback for layouts where the composer isn't adjacent to a
     /// rounded container corner. macOS resolves the actual aligned radius.
     static let composerMinimumCornerRadius: CGFloat = 12

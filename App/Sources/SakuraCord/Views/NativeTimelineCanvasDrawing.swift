@@ -108,6 +108,11 @@ extension NativeTimelineCanvasView {
         reconcileBeginningSelectionOverlay()
         reconcileLoadingIndicators()
         reconcileSpoilerOverlays()
+        // New layouts land here. A width change (toggling the profile pane)
+        // reflows the rows without moving the content origin or resizing the
+        // canvas, so the other reconcile sites never fire and the bubbles
+        // would keep their pre-resize frames.
+        reconcileGlassBubbles()
         if !suppressesHoverPresentation {
             updateTrackingAreas()
             window?.invalidateCursorRects(for: self)
@@ -202,6 +207,7 @@ extension NativeTimelineCanvasView {
         positionLottieStickerOverlays()
         reconcileLoadingIndicators()
         positionSpoilerOverlays()
+        reconcileGlassBubbles()
         needsDisplay = true
         if !suppressesHoverPresentation {
             synchronizeHoverWithCurrentPointer()
@@ -423,6 +429,11 @@ extension NativeTimelineCanvasView {
             // visibly jump into place.
             self.frame = frame
         }
+        // Sliding the viewport window changes only the origin, so setFrameSize
+        // does not fire and the glass host would keep its previous frame while
+        // the text redraws at the new one. That lag is what reads as juddery
+        // scrolling. An unchanged pass short-circuits inside the host.
+        reconcileGlassBubbles()
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -438,6 +449,7 @@ extension NativeTimelineCanvasView {
         positionLottieStickerOverlays()
         reconcileLoadingIndicators()
         positionSpoilerOverlays()
+        reconcileGlassBubbles()
     }
 
     func applyDocumentSize(_ size: NSSize) {

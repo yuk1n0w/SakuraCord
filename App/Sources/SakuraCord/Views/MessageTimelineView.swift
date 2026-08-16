@@ -26,6 +26,7 @@ struct MessageTimelineView: View {
         NativeMessageTimelineView(
             model: model,
             conversation: .channel(conversationID),
+            presentationStyle: presentationStyle,
             beginning: beginningChannel.map {
                 .channel(
                     $0,
@@ -195,6 +196,15 @@ struct MessageTimelineView: View {
               )
         else { return nil }
         return channel
+    }
+
+    private var presentationStyle: NativeTimelinePresentationStyle {
+        switch model.selectedChannel?.kind {
+        case .directMessage?, .groupDirectMessage?:
+            .directMessage
+        default:
+            .standard
+        }
     }
 
     private var beginningRulesChannelID: ChannelID? {

@@ -8,6 +8,10 @@ struct ComposerView: View {
 
     let model: AppModel
     let channelName: String
+    /// Passed in rather than read from the model. `selectedChannel` is a
+    /// stored `Channel?`, so each read copies the whole struct, and the DM
+    /// chrome is consulted several times per body evaluation.
+    var isDirectMessage = false
     var conversation: Conversation = .channel
     var onEditMessage: (MessageID) -> Void = { _ in }
     @State private var showFileImporter = false
@@ -92,7 +96,10 @@ struct ComposerView: View {
                                 cancel: cancelCommand,
                                 isFocused: $isFocused
                             )
-                            .frame(minHeight: 36, alignment: .center)
+                            .frame(
+                                minHeight: composerInputMinimumHeight,
+                                alignment: composerInputAlignment
+                            )
                             .layoutPriority(1)
                         } else {
                             ZStack(alignment: .leading) {
@@ -121,7 +128,10 @@ struct ComposerView: View {
                                         .accessibilityHidden(true)
                                 }
                             }
-                            .frame(minHeight: 36, alignment: .center)
+                            .frame(
+                                minHeight: composerInputMinimumHeight,
+                                alignment: composerInputAlignment
+                            )
                             .layoutPriority(1)
                         }
                         HStack(spacing: 1) {
@@ -177,18 +187,22 @@ struct ComposerView: View {
                         }
                     }
                     .padding(.horizontal, 11)
-                    .padding(.vertical, 6)
+                    .padding(.vertical, usesDirectMessageChrome ? 10 : 6)
                     .frame(minHeight: ChatChromeMetrics.controlHeight)
             }
                 .background {
                     ComposerFocusSurface { isFocused = true }
                 }
                 .glassEffect(
-                    .regular.interactive(),
+                    usesDirectMessageChrome
+                        ? .clear.tint(Color.black.opacity(0.20))
+                        : .regular.interactive(),
                     in: ConcentricRectangle(
                         corners: .concentric(
                             minimum: .fixed(
-                                ChatChromeMetrics.composerMinimumCornerRadius
+                                usesDirectMessageChrome
+                                    ? 28
+                                    : ChatChromeMetrics.composerMinimumCornerRadius
                             )
                         ),
                         isUniform: true
@@ -203,8 +217,20 @@ struct ComposerView: View {
                 }
         }
         .fixedSize(horizontal: false, vertical: true)
-        .padding(.horizontal, ChatChromeMetrics.composerWindowInset)
-        .padding(.bottom, ChatChromeMetrics.composerWindowInset)
+        .padding(
+            .horizontal,
+            usesDirectMessageChrome ? 18 : ChatChromeMetrics.composerWindowInset
+        )
+        .padding(
+            .bottom,
+            usesDirectMessageChrome ? 14 : ChatChromeMetrics.composerWindowInset
+        )
+        .frame(maxWidth: .infinity)
+        .frame(
+            maxWidth: usesDirectMessageChrome
+                ? ChatChromeMetrics.directMessageContentMaximumWidth
+                : .infinity
+        )
         .fileImporter(
             isPresented: $showFileImporter,
             allowedContentTypes: [.item],
@@ -896,6 +922,18 @@ struct ComposerView: View {
 
     private var hasActiveCommand: Bool {
         conversation == .channel && model.commandComposer.activeCommand != nil
+    }
+
+    private var usesDirectMessageChrome: Bool {
+        conversation == .channel && isDirectMessage
+    }
+
+    private var composerInputMinimumHeight: CGFloat {
+        usesDirectMessageChrome ? 84 : 36
+    }
+
+    private var composerInputAlignment: Alignment {
+        usesDirectMessageChrome ? .topLeading : .center
     }
 
     private var composerPlaceholder: String {

@@ -169,7 +169,8 @@ extension NativeMessageTimelineCoordinator {
             NativeTimelineRowLayout.make(
                 item: item,
                 width: width,
-                model: parent.model
+                model: parent.model,
+                presentationStyle: parent.presentationStyle
             )
         }
 

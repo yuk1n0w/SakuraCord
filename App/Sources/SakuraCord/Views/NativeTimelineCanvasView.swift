@@ -232,6 +232,13 @@ final class NativeTimelineCanvasView: NSView {
     lazy var mediaViewerHost = NSHostingView(
         rootView: AnyView(Color.clear.frame(width: 0, height: 0))
     )
+    /// Lives behind the canvas in the document view, so glass renders under
+    /// the text this canvas draws rather than over it.
+    weak var glassBubbleHost: NativeTimelineGlassBubbleHost?
+    /// Reconciling writes view frames, which invalidates layout, which can
+    /// re-enter this same reconcile. Without the guard that recursion pins a
+    /// core at full tilt.
+    var isReconcilingGlassBubbles = false
 
     override var isFlipped: Bool { true }
     override var isOpaque: Bool { false }

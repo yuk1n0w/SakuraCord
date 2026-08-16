@@ -18,6 +18,7 @@ private final class NativeTimelineInputShieldScrollView: NSScrollView {
 struct NativeMessageTimelineView: NSViewRepresentable {
     let model: AppModel
     let conversation: NativeTimelineConversation
+    let presentationStyle: NativeTimelinePresentationStyle
     let beginning: NativeTimelineBeginning?
     let firstMessageStartsDayOverride: Bool?
     let hasMoreMessages: Bool
@@ -41,6 +42,7 @@ struct NativeMessageTimelineView: NSViewRepresentable {
     init(
         model: AppModel,
         conversation: NativeTimelineConversation,
+        presentationStyle: NativeTimelinePresentationStyle = .standard,
         beginning: NativeTimelineBeginning?,
         firstMessageStartsDayOverride: Bool?,
         hasMoreMessages: Bool,
@@ -64,6 +66,7 @@ struct NativeMessageTimelineView: NSViewRepresentable {
     ) {
         self.model = model
         self.conversation = conversation
+        self.presentationStyle = presentationStyle
         self.beginning = beginning
         self.firstMessageStartsDayOverride =
             firstMessageStartsDayOverride
@@ -134,6 +137,7 @@ final class NativeMessageTimelineCoordinator: NSObject {
             let identifier: NativeMessageTimelineItem.Identifier
             let roundedWidth: Int
             let presentationRevision: UInt64
+            let presentationStyle: NativeTimelinePresentationStyle
         }
 
         struct VisibleAnchor {
@@ -273,7 +277,15 @@ extension NativeMessageTimelineCoordinator {
                 self?.updateDocumentSize(size)
             }
             let documentView = NativeTimelineDocumentView(frame: .zero)
-            documentView.addSubview(canvas)
+            // Ordered below the canvas so message text draws over the glass.
+            let glassBubbleHost = NativeTimelineGlassBubbleHost(frame: .zero)
+            documentView.addSubview(glassBubbleHost)
+            documentView.addSubview(
+                canvas,
+                positioned: .above,
+                relativeTo: glassBubbleHost
+            )
+            canvas.glassBubbleHost = glassBubbleHost
 
             let scrollView = NativeTimelineInputShieldScrollView()
             scrollView.model = parent.model
@@ -314,6 +326,8 @@ extension NativeMessageTimelineCoordinator {
                 parent.conversation != self.parent.conversation
             let presentationChanged =
                 parent.presentationRevision != presentationRevision
+                    || parent.presentationStyle
+                    != self.parent.presentationStyle
             // Capture reaction counts before mutating the shared timeline
             // storage. Capturing inside canvas.apply is too late because both
             // objects reference this same storage instance.
@@ -872,7 +886,8 @@ extension NativeMessageTimelineCoordinator {
             let key = CachedItemLayoutKey(
                 identifier: item.identifier,
                 roundedWidth: Int(layoutWidth.rounded()),
-                presentationRevision: presentationRevision
+                presentationRevision: presentationRevision,
+                presentationStyle: parent.presentationStyle
             )
             let inserted = cachedItemLayouts.updateValue(
                 CachedItemLayout(item: item, layout: layout),
@@ -910,7 +925,8 @@ extension NativeMessageTimelineCoordinator {
             let key = CachedItemLayoutKey(
                 identifier: item.identifier,
                 roundedWidth: Int(width.rounded()),
-                presentationRevision: presentationRevision
+                presentationRevision: presentationRevision,
+                presentationStyle: parent.presentationStyle
             )
             if let cached = cachedItemLayouts[key],
                cached.item == item
