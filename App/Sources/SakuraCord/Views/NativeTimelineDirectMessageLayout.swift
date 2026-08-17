@@ -1,0 +1,480 @@
+import AppKit
+import SakuraCordModels
+
+// Direct-message bubble layout. Kept apart from the standard row builder so
+// each file stays readable as the bubble presentation grows to cover more
+// kinds of message.
+extension NativeTimelineRowLayout {
+    // The bubble renderer keeps eligibility, measurement, separators, and all
+    // hit-test geometry together so its painter receives one coherent layout.
+    // swiftlint:disable:next function_body_length
+    static func directMessageText(
+        _ row: MessageRowPresentation,
+        isUnreadBoundary: Bool,
+        width: CGFloat,
+        model: AppModel?,
+        namesIncomingAuthors: Bool = false
+    ) -> Self? {
+        let message = row.message
+        // Discord gives replies their own type (19), so matching only
+        // `.default` silently excludes every real reply.
+        guard message.type == .default || message.type == .reply,
+              message.components.isEmpty,
+              message.stickers.isEmpty,
+              message.thread == nil,
+              message.forwardedSnapshot == nil,
+              !message.flags.contains(.ephemeral),
+              !message.flags.contains(.isComponentsV2)
+        else { return nil }
+
+        let textPlan = row.textPlan
+        let contentPresentation = NativeTimelineTextPresentation.make(
+            message: message,
+            plan: textPlan,
+            model: model
+        )
+        guard contentPresentation.linkedImages.isEmpty else { return nil }
+        // A bubble needs something to show. Text and images are both valid on
+        // their own, so an image sent without a caption still gets one.
+        let attributedContent = contentPresentation.attributedContent
+        let hasText = (attributedContent?.length ?? 0) > 0
+        guard hasText || !message.attachments.isEmpty else { return nil }
+
+        let horizontalInset: CGFloat = 24
+        let horizontalContentInset: CGFloat = 13
+        let verticalContentInset: CGFloat = 7
+        // The conversation spans the whole pane so bubbles anchor to its
+        // edges rather than sitting in a centred column with dead space on
+        // both sides. Bubble width still scales with the space available and
+        // stays capped, so a wide window does not produce unreadably long
+        // lines of text.
+        let conversationWidth = width
+        let conversationMinX: CGFloat = 0
+        let maximumBubbleWidth = min(
+            ChatChromeMetrics.directMessageBubbleMaximumWidth,
+            max(96, (conversationWidth - horizontalInset * 2) * 0.62)
+        )
+        let maximumContentWidth = max(
+            44,
+            maximumBubbleWidth - horizontalContentInset * 2
+        )
+        var bubbleWidth: CGFloat = 0
+        var contentWidth: CGFloat = 0
+        var textHeight: CGFloat = 0
+        if let attributedContent, hasText {
+            let naturalTextWidth = measuredMaximumLineWidth(
+                contentPresentation.framesetter,
+                length: attributedContent.length,
+                width: maximumContentWidth
+            )
+            // Code takes the full width it is allowed: it does not reflow
+            // like prose, so sizing it to its natural width wraps lines that
+            // were written to be read intact.
+            // Otherwise the floor is only a guard against a degenerate
+            // sliver. Set too high it pads short words like "gm" out to a
+            // width their text never asked for, which reads as stray space on
+            // the trailing edge while longer messages look correct.
+            bubbleWidth = message.content.contains("```")
+                ? maximumBubbleWidth
+                : min(
+                    maximumBubbleWidth,
+                    max(40, ceil(naturalTextWidth) + horizontalContentInset * 2)
+                )
+            contentWidth = max(1, bubbleWidth - horizontalContentInset * 2)
+            textHeight = measuredTextHeight(
+                contentPresentation.framesetter,
+                value: attributedContent,
+                length: attributedContent.length,
+                width: contentWidth
+            )
+        }
+
+        var prefixHeight: CGFloat = 0
+        var daySeparatorFrame: CGRect?
+        if row.startsDay {
+            daySeparatorFrame = CGRect(
+                x: conversationMinX + horizontalInset,
+                y: prefixHeight,
+                width: conversationWidth - horizontalInset * 2,
+                height: NativeTimelineDateSeparatorMetrics.rowHeight
+            )
+            prefixHeight += NativeTimelineDateSeparatorMetrics.rowHeight
+        }
+        var unreadSeparatorFrame: CGRect?
+        if isUnreadBoundary {
+            unreadSeparatorFrame = CGRect(
+                x: conversationMinX + horizontalInset,
+                y: prefixHeight,
+                width: conversationWidth - horizontalInset * 2,
+                height: NativeTimelineUnreadSeparatorMetrics.rowHeight
+            )
+            prefixHeight += NativeTimelineUnreadSeparatorMetrics.rowHeight
+        }
+
+        let isOutgoing = message.author.id == model?.snapshot?.currentUser.id
+        let bubbleX = isOutgoing
+            ? conversationMinX + conversationWidth - horizontalInset - bubbleWidth
+            : conversationMinX + horizontalInset
+
+        // In a group, an incoming bubble is captioned with its sender, once
+        // per run rather than on every message. A one-to-one thread needs no
+        // name, so this stays off there.
+        var authorFrame: CGRect?
+        if namesIncomingAuthors, !isOutgoing, row.startsGroup {
+            let authorHeight: CGFloat = 16
+            authorFrame = CGRect(
+                x: bubbleX + horizontalContentInset,
+                y: prefixHeight,
+                width: max(
+                    48,
+                    conversationMinX + conversationWidth
+                        - horizontalInset - bubbleX
+                ),
+                height: authorHeight
+            )
+            prefixHeight += authorHeight
+        }
+
+        // The quoted line sits directly above its bubble and shares the
+        // bubble's leading edge, so a reply reads as belonging to the bubble
+        // under it rather than as a separate row.
+        var replyFrame: CGRect?
+        if row.replyPreview != nil {
+            let replyHeight: CGFloat = 20
+            replyFrame = CGRect(
+                x: bubbleX,
+                y: prefixHeight,
+                width: max(
+                    96,
+                    conversationMinX + conversationWidth
+                        - horizontalInset - bubbleX
+                ),
+                height: replyHeight
+            )
+            prefixHeight += replyHeight
+        }
+
+        let topSeparation: CGFloat = 4
+        let contentTopY = prefixHeight + topSeparation
+
+        var bubbleFrame: CGRect?
+        var contentFrame: CGRect?
+        if hasText {
+            // The floor only matters for very short text; padding drives the
+            // rest, so it tracks the insets rather than sitting well above
+            // them and inflating one-word bubbles.
+            let bubbleHeight = max(
+                30,
+                ceil(textHeight) + verticalContentInset * 2
+            )
+            let frame = CGRect(
+                x: bubbleX,
+                y: contentTopY,
+                width: bubbleWidth,
+                height: bubbleHeight
+            )
+            bubbleFrame = frame
+            contentFrame = CGRect(
+                x: frame.minX + horizontalContentInset,
+                y: frame.minY + verticalContentInset,
+                width: contentWidth,
+                height: textHeight
+            )
+        }
+
+        // Images are their own rounded media rather than text inside a glass
+        // bubble, so they sit on the same edge as the bubble and carry no
+        // bubble of their own. A caption keeps its bubble directly above.
+        var attachmentRegions: [AttachmentRegion] = []
+        var anchorFrame = bubbleFrame ?? CGRect(
+            x: bubbleX,
+            y: contentTopY,
+            width: 0,
+            height: 0
+        )
+        if !message.attachments.isEmpty {
+            let galleryWidth = max(180, maximumBubbleWidth)
+            let galleryFrames = directMessageGalleryFrames(
+                message.attachments,
+                width: galleryWidth
+            )
+            let galleryHeight = galleryFrames.map(\.maxY).max() ?? 0
+            let galleryExtent = galleryFrames.map(\.maxX).max() ?? galleryWidth
+            let galleryY = hasText
+                ? (bubbleFrame?.maxY ?? contentTopY) + 4
+                : contentTopY
+            let galleryX = isOutgoing
+                ? conversationMinX + conversationWidth
+                    - horizontalInset - galleryExtent
+                : conversationMinX + horizontalInset
+            attachmentRegions = zip(
+                message.attachments,
+                galleryFrames
+            ).map { attachment, frame in
+                AttachmentRegion(
+                    frame: frame.offsetBy(dx: galleryX, dy: galleryY),
+                    attachment: attachment
+                )
+            }
+            anchorFrame = CGRect(
+                x: galleryX,
+                y: galleryY,
+                width: galleryExtent,
+                height: galleryHeight
+            )
+        }
+
+        // Link previews hang below the message like attachments do. An embed
+        // is laid out at its final origin because its nested title, text and
+        // image frames are absolute, so it cannot be repositioned afterwards;
+        // it is given a band on the message's own side to occupy.
+        var embedRegions: [EmbedRegion] = []
+        if !message.embeds.isEmpty {
+            let embedWidth = min(maximumBubbleWidth, 520)
+            let embedX = isOutgoing
+                ? conversationMinX + conversationWidth
+                    - horizontalInset - embedWidth
+                : conversationMinX + horizontalInset
+            var embedY = anchorFrame.maxY + (anchorFrame.height > 0 ? 4 : 0)
+            for embed in MessageEmbedPresentation.visibleEmbeds(for: message) {
+                guard let region = NativeTimelineEmbedLayout.make(
+                    embed: embed,
+                    message: message,
+                    model: model,
+                    attachments: message.attachments,
+                    origin: CGPoint(x: embedX, y: embedY),
+                    maximumWidth: embedWidth
+                ) else { continue }
+                embedRegions.append(region)
+                embedY = region.frame.maxY + 4
+            }
+            if let last = embedRegions.last {
+                anchorFrame = CGRect(
+                    x: embedX,
+                    y: anchorFrame.minY,
+                    width: embedWidth,
+                    height: last.frame.maxY - anchorFrame.minY
+                )
+            }
+        }
+
+        let compactTimestampFrame = CGRect(
+            x: isOutgoing
+                ? max(0, anchorFrame.minX - 50)
+                : min(width - 46, anchorFrame.maxX + 4),
+            y: anchorFrame.maxY - MessageRowLayoutMetrics.compactContentHeight,
+            width: 46,
+            height: MessageRowLayoutMetrics.compactContentHeight
+        )
+
+        // Without this an edited message is indistinguishable from what was
+        // originally sent. It tucks under the bubble on the anchored edge
+        // rather than inline, which would disturb the measured text.
+        var editedFrame: CGRect?
+        if message.editedTimestamp != nil {
+            let editedFont = NSFont.preferredFont(forTextStyle: .caption2)
+            let editedWidth = NativeTimelineRowLayout.measuredTextWidth(
+                "(edited)",
+                font: editedFont
+            )
+            editedFrame = CGRect(
+                x: isOutgoing
+                    ? max(
+                        conversationMinX + horizontalInset,
+                        anchorFrame.maxX - editedWidth
+                    )
+                    : anchorFrame.minX,
+                y: anchorFrame.maxY + 2,
+                width: editedWidth,
+                height: 11
+            )
+        }
+        // Reactions hang under the bubble, aligned to the same edge the
+        // bubble is anchored to. A reacted message is still ordinary text, so
+        // it stays a bubble rather than dropping to a full avatar row.
+        let reactions = directMessageReactions(
+            message,
+            anchorFrame: anchorFrame,
+            topY: (editedFrame?.maxY ?? anchorFrame.maxY) + 4,
+            maximumWidth: maximumBubbleWidth,
+            minimumX: conversationMinX + horizontalInset,
+            isOutgoing: isOutgoing
+        )
+        let reactionRegions = reactions.regions
+        let addReactionFrame = reactions.addFrame
+        let reactionsMaxY = reactions.maxY
+            ?? (editedFrame?.maxY ?? anchorFrame.maxY)
+
+        let failedFrame = message.outboxState == .failed
+            ? CGRect(
+                x: anchorFrame.minX,
+                y: reactionsMaxY + 3,
+                width: max(1, anchorFrame.width),
+                height: 14
+            )
+            : nil
+        let rowHeight = ceil((failedFrame?.maxY ?? reactionsMaxY) + 7)
+
+        return Self(
+            height: rowHeight,
+            loaderLayout: nil,
+            beginningLayout: nil,
+            highlightFrame: CGRect(
+                x: 0,
+                y: prefixHeight,
+                width: width,
+                height: rowHeight - prefixHeight
+            ),
+            messageBubbleFrame: bubbleFrame,
+            messageBubbleIsOutgoing: isOutgoing,
+            daySeparatorFrame: daySeparatorFrame,
+            unreadSeparatorFrame: unreadSeparatorFrame,
+            avatarFrame: nil,
+            compactTimestampFrame: compactTimestampFrame,
+            authorFrame: authorFrame,
+            botBadgeFrame: nil,
+            timestampFrame: nil,
+            editedFrame: editedFrame,
+            loadingIndicatorFrame: nil,
+            replyFrame: replyFrame,
+            commandInvocationRegion: nil,
+            systemIconFrame: nil,
+            contentFrame: contentFrame,
+            attributedContent: attributedContent,
+            contentFramesetter: contentPresentation.framesetter,
+            forwardedHeaderFrame: nil,
+            forwardedBarFrame: nil,
+            forwardedSourceRegion: nil,
+            linkedImageRegions: [],
+            attachmentRegions: attachmentRegions,
+            embedFrames: embedRegions.map(\.frame),
+            embedRegions: embedRegions,
+            componentFrames: [],
+            componentLayouts: [],
+            stickerFrames: [],
+            threadFrame: nil,
+            reactionRegions: reactionRegions,
+            addReactionFrame: addReactionFrame,
+            ephemeralRegion: nil,
+            failedFrame: failedFrame
+        )
+    }
+
+    struct DirectMessageReactionLayout {
+        let regions: [ReactionRegion]
+        let addFrame: CGRect?
+        /// Nil when the message carries no reactions, so the caller keeps
+        /// whatever bottom edge it already had.
+        let maxY: CGFloat?
+    }
+
+    /// Reaction chips for a bubble, hung under it on the edge the message is
+    /// anchored to.
+    static func directMessageReactions(
+        _ message: Message,
+        anchorFrame: CGRect,
+        topY: CGFloat,
+        maximumWidth: CGFloat,
+        minimumX: CGFloat,
+        isOutgoing: Bool
+    ) -> DirectMessageReactionLayout {
+        let presented = MessageReactionPresentation.items(
+            from: message.reactions
+        )
+        guard !presented.isEmpty else {
+            return DirectMessageReactionLayout(
+                regions: [],
+                addFrame: nil,
+                maxY: nil
+            )
+        }
+
+        let sizes = presented.map(reactionSize)
+            + [CGSize(
+                width: ReactionActionMenuPresentation.inline.width,
+                height: MessageReactionMetrics.pillHeight
+            )]
+        let wrapping = InlineWrappingLayoutPlan.frames(
+            sizes: sizes,
+            maximumWidth: maximumWidth,
+            horizontalSpacing: MessageReactionMetrics.horizontalSpacing,
+            verticalSpacing: MessageReactionMetrics.verticalSpacing
+        )
+        let originX = isOutgoing
+            ? max(minimumX, anchorFrame.maxX - wrapping.size.width)
+            : anchorFrame.minX
+        let regions = zip(
+            presented,
+            wrapping.frames.prefix(presented.count)
+        ).map { reaction, frame in
+            NativeTimelineRowLayout.reactionRegion(
+                reaction,
+                frame: frame.offsetBy(dx: originX, dy: topY)
+            )
+        }
+        return DirectMessageReactionLayout(
+            regions: regions,
+            addFrame: wrapping.frames.last?.offsetBy(dx: originX, dy: topY),
+            maxY: topY + wrapping.size.height
+        )
+    }
+
+    /// Gallery geometry for a bubble's attachments. Split out so the bubble
+    /// builder stays within its complexity budget as cases accumulate.
+    static func directMessageGalleryFrames(
+        _ attachments: [Attachment],
+        width: CGFloat
+    ) -> [CGRect] {
+        func intrinsicSize(_ attachment: Attachment) -> CGSize {
+            guard let width = attachment.width,
+                  let height = attachment.height,
+                  width > 0,
+                  height > 0
+            else { return .zero }
+            return CGSize(width: CGFloat(width), height: CGFloat(height))
+        }
+
+        return MediaGalleryPlan.frames(
+            count: attachments.count,
+            width: width,
+            aspectRatios: attachments.map {
+                let size = intrinsicSize($0)
+                guard size.height > 0 else { return 16 / 9 }
+                return size.width / size.height
+            },
+            intrinsicSizes: attachments.map(intrinsicSize),
+            spacing: 4
+        )
+    }
+
+    static func measuredMaximumLineWidth(
+        _ framesetter: CTFramesetter,
+        length: Int,
+        width: CGFloat
+    ) -> CGFloat {
+        let path = CGPath(
+            rect: CGRect(
+                x: 0,
+                y: 0,
+                width: max(1, width),
+                height: 100_000
+            ),
+            transform: nil
+        )
+        let frame = CTFramesetterCreateFrame(
+            framesetter,
+            CFRange(location: 0, length: length),
+            path,
+            nil
+        )
+        let lines = CTFrameGetLines(frame) as NSArray
+        var maximumWidth: CGFloat = 0
+        for case let line as CTLine in lines {
+            maximumWidth = max(
+                maximumWidth,
+                CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+            )
+        }
+        return min(width, maximumWidth)
+    }
+}

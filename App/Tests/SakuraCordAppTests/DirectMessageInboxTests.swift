@@ -561,6 +561,57 @@ func `large direct message inbox filtering remains bounded`() {
 }
 
 @MainActor
+@Test func `direct message link previews hang below the bubble`() async throws {
+    let model = AppModel(
+        launchMode: .offlineTesting,
+        provider: MockChatProvider()
+    )
+    await model.start()
+    let currentUser = try #require(model.snapshot?.currentUser)
+    let recipient = User(
+        id: UserID(rawValue: currentUser.id.rawValue + 16_000),
+        username: "embed-recipient",
+        displayName: "Embed Recipient"
+    )
+    let row = MessageRowPresentation(
+        message: Message(
+            id: MessageID(rawValue: 36_000),
+            channelID: ChannelID(rawValue: 9_601),
+            author: recipient,
+            content: "look at this",
+            embeds: [
+                MessageEmbed(
+                    title: "A page",
+                    description: "With a description",
+                    url: URL(string: "https://example.invalid/page")
+                ),
+            ]
+        ),
+        startsGroup: true,
+        startsDay: false,
+        replyPreview: nil,
+        isReplyAvailable: false
+    )
+    let layout = NativeTimelineRowLayout.make(
+        item: .message(row, isUnreadBoundary: false, isHighlighted: false),
+        width: 1_000,
+        model: model,
+        presentationStyle: .directMessage
+    )
+
+    // A link preview keeps the message in the bubble presentation instead of
+    // dropping it to a full avatar row.
+    let bubble = try #require(layout.messageBubbleFrame)
+    let embed = try #require(layout.embedFrames.first)
+    #expect(layout.avatarFrame == nil)
+    #expect(layout.authorFrame == nil)
+
+    // The preview sits under the message, and the row grows to contain it.
+    #expect(embed.minY >= bubble.maxY)
+    #expect(layout.height > embed.maxY)
+}
+
+@MainActor
 @Test func `direct message bubble styling does not alter standard or rich rows`() {
     let author = User(
         id: UserID(rawValue: 7_001),
