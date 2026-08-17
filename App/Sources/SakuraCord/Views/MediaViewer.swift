@@ -131,7 +131,7 @@ struct MediaViewer: View {
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
                 }
-                .animation(.easeOut(duration: 0.22), value: isVisible)
+                .animation(.easeOut(duration: ChatAnimationSpeed.scaled(0.22)), value: isVisible)
             }
         }
         .ignoresSafeArea()
@@ -240,13 +240,13 @@ struct MediaViewer: View {
 
     private func showFeedback(_ message: String) {
         feedbackTask?.cancel()
-        withAnimation(.snappy(duration: 0.22)) {
+        withAnimation(.snappy(duration: ChatAnimationSpeed.scaled(0.22))) {
             interaction.feedback = MediaViewerFeedback(message: message)
         }
         feedbackTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.18)) {
+            withAnimation(.easeOut(duration: ChatAnimationSpeed.scaled(0.18))) {
                 interaction.feedback = nil
             }
         }

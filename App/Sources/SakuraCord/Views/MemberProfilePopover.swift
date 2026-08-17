@@ -313,7 +313,7 @@ private struct ProfileStatusBubble: View {
             }
             .contentShape(ConcentricRectangle(cornerRadius: 14, style: .continuous))
             .onHover { isBubbleHovering = $0 }
-            .animation(.snappy(duration: 0.16), value: isExpanded)
+            .animation(.snappy(duration: ChatAnimationSpeed.scaled(0.16)), value: isExpanded)
             .help(displayText)
             .accessibilityLabel("Custom status: \(displayText)")
             .zIndex(2)
@@ -520,8 +520,8 @@ private struct CopyableProfileUsername: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
-        .animation(.easeOut(duration: 0.12), value: isHovering)
-        .animation(.easeOut(duration: 0.12), value: didCopy)
+        .animation(.easeOut(duration: ChatAnimationSpeed.scaled(0.12)), value: isHovering)
+        .animation(.easeOut(duration: ChatAnimationSpeed.scaled(0.12)), value: didCopy)
         .help(didCopy ? "Username copied" : "Copy username")
         .accessibilityLabel("Username \(username)")
         .accessibilityHint("Copies the username")
@@ -751,7 +751,7 @@ private struct ProfileRolesSection: View {
                 .help("Collapse roles")
             }
         }
-        .animation(.snappy(duration: 0.18), value: isExpanded)
+        .animation(.snappy(duration: ChatAnimationSpeed.scaled(0.18)), value: isExpanded)
         .padding(.horizontal, 16)
     }
 }

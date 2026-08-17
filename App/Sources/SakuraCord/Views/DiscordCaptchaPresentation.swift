@@ -139,7 +139,7 @@ struct DiscordCaptchaPresentation: View {
             .accessibilityHidden(!isVisible)
         }
         .allowsHitTesting(isVisible)
-        .animation(.easeOut(duration: 0.16), value: isVisible)
+        .animation(.easeOut(duration: ChatAnimationSpeed.scaled(0.16)), value: isVisible)
         .zIndex(10)
     }
 }

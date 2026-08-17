@@ -128,7 +128,7 @@ private struct DirectMessageCallResizeHandle: View {
                 isHovering = false
             }
         }
-        .animation(.snappy(duration: 0.14), value: isHovering)
+        .animation(.snappy(duration: ChatAnimationSpeed.scaled(0.14)), value: isHovering)
         .help("Drag to resize the call")
         .accessibilityElement()
         .accessibilityLabel("Resize call region")
@@ -311,7 +311,7 @@ struct IncomingPrivateCallOverlay: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .animation(.snappy(duration: 0.24), value: model.incomingPrivateCalls.first?.channelID)
+        .animation(.snappy(duration: ChatAnimationSpeed.scaled(0.24)), value: model.incomingPrivateCalls.first?.channelID)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Incoming call")
     }

@@ -21,6 +21,18 @@ nonisolated enum ChatChromeMetrics {
     static let emojiPickerWidth: CGFloat = 520
 }
 
+/// One place to tune how immediate the interface feels. Every view animation
+/// divides its duration by `factor`, so raising it speeds the whole app up
+/// uniformly and 1 restores the original timings.
+nonisolated enum ChatAnimationSpeed {
+    static let factor: Double = 1.6
+
+    static func scaled(_ duration: Double) -> Double {
+        guard factor > 0 else { return duration }
+        return duration / factor
+    }
+}
+
 nonisolated enum ChatDetailLayoutPolicy {
     static let timelineTopPadding: CGFloat = 12
     static let timelineBottomPadding: CGFloat = 12

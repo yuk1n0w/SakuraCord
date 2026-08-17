@@ -449,7 +449,7 @@ private struct VoiceParticipantTile: View {
             }
         }
         .onHover { hovering in
-            withAnimation(.snappy(duration: 0.14)) { isHovering = hovering }
+            withAnimation(.snappy(duration: ChatAnimationSpeed.scaled(0.14))) { isHovering = hovering }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(participant.isLocal ? "\(participant.name), you" : participant.name)
@@ -511,7 +511,7 @@ private struct RingingParticipantAvatar: View {
         } else {
             isPulsing = false
             withAnimation(
-                .easeInOut(duration: 0.82)
+                .easeInOut(duration: ChatAnimationSpeed.scaled(0.82))
                     .repeatForever(autoreverses: true)
             ) {
                 isPulsing = true

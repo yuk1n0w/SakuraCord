@@ -7,11 +7,42 @@ import SwiftUI
 private final class NativeTimelineInputShieldScrollView: NSScrollView {
     weak var model: AppModel?
 
+    /// How much further than the system default a scroll carries. Applied as
+    /// an extra offset *after* AppKit handles the event, so momentum and
+    /// rubber-banding stay native instead of being reimplemented.
+    static let scrollSpeedMultiplier: CGFloat = 1.8
+
     override func scrollWheel(with event: NSEvent) {
         guard model?.mediaViewerPresentation == nil,
               model?.forwardingMessage == nil
         else { return }
         super.scrollWheel(with: event)
+        applyAdditionalScroll(for: event)
+    }
+
+    private func applyAdditionalScroll(for event: NSEvent) {
+        // Momentum is left alone: amplifying the decay as well turns a flick
+        // into a runaway fling.
+        guard event.momentumPhase.isEmpty,
+              let documentView,
+              event.scrollingDeltaY != 0
+        else { return }
+
+        let delta = event.hasPreciseScrollingDeltas
+            ? event.scrollingDeltaY
+            : event.scrollingDeltaY * verticalLineScroll
+        let extra = delta * (Self.scrollSpeedMultiplier - 1)
+        guard extra != 0 else { return }
+
+        let maximumY = max(
+            0,
+            documentView.frame.height - contentView.bounds.height
+        )
+        var origin = contentView.bounds.origin
+        origin.y = min(max(0, origin.y - extra), maximumY)
+        guard abs(origin.y - contentView.bounds.origin.y) >= 0.5 else { return }
+        contentView.setBoundsOrigin(origin)
+        reflectScrolledClipView(contentView)
     }
 }
 

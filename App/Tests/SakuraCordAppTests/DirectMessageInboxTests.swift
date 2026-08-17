@@ -528,12 +528,27 @@ func `large direct message inbox filtering remains bounded`() {
         replyPreview: nil,
         isReplyAvailable: false
     )
-    let richRow = MessageRowPresentation(
+    let codeRow = MessageRowPresentation(
         message: Message(
             id: MessageID(rawValue: 7_004),
             channelID: ChannelID(rawValue: 7_003),
             author: author,
             content: "```swift\nlet value = 1\n```"
+        ),
+        startsGroup: true,
+        startsDay: false,
+        replyPreview: nil,
+        isReplyAvailable: false
+    )
+    // A generated system message is not conversation text, so it keeps the
+    // standard presentation even inside a direct message.
+    let systemRow = MessageRowPresentation(
+        message: Message(
+            id: MessageID(rawValue: 7_005),
+            channelID: ChannelID(rawValue: 7_003),
+            author: author,
+            content: "pinned a message",
+            type: .channelPinnedMessage
         ),
         startsGroup: true,
         startsDay: false,
@@ -550,9 +565,18 @@ func `large direct message inbox filtering remains bounded`() {
         width: 640,
         presentationStyle: .standard
     )
-    let richDirectMessage = NativeTimelineRowLayout.make(
+    let codeDirectMessage = NativeTimelineRowLayout.make(
         item: .message(
-            richRow,
+            codeRow,
+            isUnreadBoundary: false,
+            isHighlighted: false
+        ),
+        width: 640,
+        presentationStyle: .directMessage
+    )
+    let systemDirectMessage = NativeTimelineRowLayout.make(
+        item: .message(
+            systemRow,
             isUnreadBoundary: false,
             isHighlighted: false
         ),
@@ -560,10 +584,19 @@ func `large direct message inbox filtering remains bounded`() {
         presentationStyle: .directMessage
     )
 
+    // A standard channel is untouched by any of the bubble work.
     #expect(standard.messageBubbleFrame == nil)
     #expect(standard.avatarFrame != nil)
-    #expect(richDirectMessage.messageBubbleFrame == nil)
-    #expect(richDirectMessage.avatarFrame != nil)
+
+    // Code is conversation text, so it gets a bubble, and takes the full
+    // width allowed rather than being sized to its longest line.
+    #expect(codeDirectMessage.messageBubbleFrame != nil)
+    #expect(codeDirectMessage.avatarFrame == nil)
+
+    // Generated system messages still fall back to the standard row, which
+    // marks them with a system icon rather than an author avatar.
+    #expect(systemDirectMessage.messageBubbleFrame == nil)
+    #expect(systemDirectMessage.systemIconFrame != nil)
 }
 
 @MainActor

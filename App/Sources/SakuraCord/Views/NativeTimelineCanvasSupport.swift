@@ -865,7 +865,7 @@ struct NativeTimelineReactionCountAnimationView: View {
             .monospacedDigit()
             .foregroundStyle(color)
             .contentTransition(.numericText(countsDown: countsDown))
-            .animation(.smooth(duration: 0.24), value: state.count)
+            .animation(.smooth(duration: ChatAnimationSpeed.scaled(0.24)), value: state.count)
             .frame(
                 maxWidth: .infinity,
                 maxHeight: .infinity,

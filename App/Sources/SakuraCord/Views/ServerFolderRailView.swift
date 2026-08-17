@@ -111,7 +111,7 @@ struct ServerFolderRailView: View {
             isHovering ? ServerRailHoverItem(name: displayName, bounds: bounds) : nil
         }
         .onHover { isHovering = $0 }
-        .animation(.snappy(duration: 0.18), value: isHovering)
+        .animation(.snappy(duration: ChatAnimationSpeed.scaled(0.18)), value: isHovering)
     }
 
     private var collapsedPreview: some View {

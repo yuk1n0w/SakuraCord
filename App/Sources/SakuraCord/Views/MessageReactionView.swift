@@ -261,7 +261,7 @@ struct MessageReactionPill: View {
                         )
                         .contentTransition(.numericText(value: Double(reaction.count)))
                         .animation(
-                            reduceMotion ? nil : .smooth(duration: 0.24),
+                            reduceMotion ? nil : .smooth(duration: ChatAnimationSpeed.scaled(0.24)),
                             value: reaction.count
                         )
                 }

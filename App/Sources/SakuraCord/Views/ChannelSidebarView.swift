@@ -446,7 +446,7 @@ private struct ChannelGroupRows: View {
                     Button {
                         let previousValue = isExpanded
                         let nextValue = !isExpanded
-                        withAnimation(.snappy(duration: 0.18)) {
+                        withAnimation(.snappy(duration: ChatAnimationSpeed.scaled(0.18))) {
                             isExpanded = nextValue
                         }
                         model.setCategoryCollapsed(
@@ -455,7 +455,7 @@ private struct ChannelGroupRows: View {
                             categoryID: categoryID
                         ) { accepted in
                             guard !accepted else { return }
-                            withAnimation(.snappy(duration: 0.18)) {
+                            withAnimation(.snappy(duration: ChatAnimationSpeed.scaled(0.18))) {
                                 isExpanded = previousValue
                             }
                         }
@@ -534,7 +534,7 @@ private struct ChannelGroupRows: View {
         }
         .onChange(of: shouldCollapseFromServer) { _, shouldCollapse in
             guard shouldCollapse, isExpanded else { return }
-            withAnimation(.snappy(duration: 0.18)) {
+            withAnimation(.snappy(duration: ChatAnimationSpeed.scaled(0.18))) {
                 isExpanded = false
             }
         }

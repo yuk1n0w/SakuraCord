@@ -241,14 +241,14 @@ private final class MediaViewerWindowAnimationState {
 
     func present() {
         guard !isVisible, dismissalTask == nil else { return }
-        withAnimation(.easeOut(duration: 0.22)) {
+        withAnimation(.easeOut(duration: ChatAnimationSpeed.scaled(0.22))) {
             isVisible = true
         }
     }
 
     func dismiss(committingPresentation: Bool) {
         guard dismissalTask == nil else { return }
-        withAnimation(.easeIn(duration: 0.16)) {
+        withAnimation(.easeIn(duration: ChatAnimationSpeed.scaled(0.16))) {
             isVisible = false
         }
         dismissalTask = Task { @MainActor in

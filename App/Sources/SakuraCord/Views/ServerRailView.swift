@@ -103,7 +103,7 @@ private struct ServerRailItemView: View {
 }
 
 enum ServerRailAnimations {
-    static let folderExpansion = Animation.spring(duration: 0.38, bounce: 0.08)
+    static let folderExpansion = Animation.spring(duration: ChatAnimationSpeed.scaled(0.38), bounce: 0.08)
 }
 
 struct GuildRailButton: View {
@@ -173,7 +173,7 @@ struct GuildRailButton: View {
             isHovering ? ServerRailHoverItem(name: displayName, bounds: bounds) : nil
         }
         .onHover { isHovering = $0 }
-        .animation(.snappy(duration: 0.18), value: isHovering)
+        .animation(.snappy(duration: ChatAnimationSpeed.scaled(0.18)), value: isHovering)
     }
 }
 
@@ -264,7 +264,7 @@ struct ServerRailSelectionIndicator: View {
             .frame(width: 4, height: indicatorHeight)
             .opacity(indicatorHeight == 0 ? 0 : 1)
             .frame(width: 7, height: 40)
-            .animation(.snappy(duration: 0.2), value: indicatorHeight)
+            .animation(.snappy(duration: ChatAnimationSpeed.scaled(0.2)), value: indicatorHeight)
     }
 
     private var indicatorHeight: CGFloat {

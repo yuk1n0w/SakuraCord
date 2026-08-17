@@ -248,7 +248,7 @@ struct MediaViewerThumbnailStrip: View {
     ) {
         guard items.indices.contains(selection) else { return }
         if animated {
-            withAnimation(.snappy(duration: 0.2)) {
+            withAnimation(.snappy(duration: ChatAnimationSpeed.scaled(0.2))) {
                 proxy.scrollTo(items[selection].id, anchor: .center)
             }
         } else {

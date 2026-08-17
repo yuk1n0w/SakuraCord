@@ -713,7 +713,7 @@ private struct InlineEditTextButton: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
-        .animation(.easeOut(duration: 0.12), value: isHovering)
+        .animation(.easeOut(duration: ChatAnimationSpeed.scaled(0.12)), value: isHovering)
         .opacity(isEnabled ? 1 : 0.45)
     }
 }

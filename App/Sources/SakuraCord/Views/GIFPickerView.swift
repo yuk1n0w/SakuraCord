@@ -475,7 +475,7 @@ private struct GIFCategoryButton: View {
                 .stroke(.white.opacity(hovering ? 0.20 : 0.08), lineWidth: 1)
         }
         .scaleEffect(hovering ? 1.012 : 1)
-        .animation(.snappy(duration: 0.16), value: hovering)
+        .animation(.snappy(duration: ChatAnimationSpeed.scaled(0.16)), value: hovering)
         .onHover { hovering = $0 }
     }
 }

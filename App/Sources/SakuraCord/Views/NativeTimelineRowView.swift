@@ -607,7 +607,6 @@ private extension NativeTimelineRowLayout {
         // Discord gives replies their own type (19), so matching only
         // `.default` silently excludes every real reply.
         guard message.type == .default || message.type == .reply,
-              !message.content.contains("```"),
               message.embeds.isEmpty,
               message.components.isEmpty,
               message.stickers.isEmpty,
@@ -657,14 +656,19 @@ private extension NativeTimelineRowLayout {
                 length: attributedContent.length,
                 width: maximumContentWidth
             )
-            // The floor is only a guard against a degenerate sliver. Set too
-            // high it pads short words like "gm" out to a width their text
-            // never asked for, which reads as stray space on the trailing
-            // edge while longer messages look correct.
-            bubbleWidth = min(
-                maximumBubbleWidth,
-                max(40, ceil(naturalTextWidth) + horizontalContentInset * 2)
-            )
+            // Code takes the full width it is allowed: it does not reflow
+            // like prose, so sizing it to its natural width wraps lines that
+            // were written to be read intact.
+            // Otherwise the floor is only a guard against a degenerate
+            // sliver. Set too high it pads short words like "gm" out to a
+            // width their text never asked for, which reads as stray space on
+            // the trailing edge while longer messages look correct.
+            bubbleWidth = message.content.contains("```")
+                ? maximumBubbleWidth
+                : min(
+                    maximumBubbleWidth,
+                    max(40, ceil(naturalTextWidth) + horizontalContentInset * 2)
+                )
             contentWidth = max(1, bubbleWidth - horizontalContentInset * 2)
             textHeight = measuredTextHeight(
                 contentPresentation.framesetter,

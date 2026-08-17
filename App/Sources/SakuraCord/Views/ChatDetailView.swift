@@ -222,7 +222,7 @@ private struct HiddenChannelAllowedPrincipals: View {
     var body: some View {
         VStack(spacing: 12) {
             Button {
-                withAnimation(.easeInOut(duration: 0.18)) {
+                withAnimation(.easeInOut(duration: ChatAnimationSpeed.scaled(0.18))) {
                     isExpanded.toggle()
                 }
             } label: {
