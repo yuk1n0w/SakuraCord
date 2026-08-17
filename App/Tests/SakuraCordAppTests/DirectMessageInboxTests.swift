@@ -510,6 +510,57 @@ func `large direct message inbox filtering remains bounded`() {
 }
 
 @MainActor
+@Test func `edited direct messages are marked under the bubble`() async throws {
+    let model = AppModel(
+        launchMode: .offlineTesting,
+        provider: MockChatProvider()
+    )
+    await model.start()
+    let currentUser = try #require(model.snapshot?.currentUser)
+    let recipient = User(
+        id: UserID(rawValue: currentUser.id.rawValue + 15_000),
+        username: "edit-recipient",
+        displayName: "Edit Recipient"
+    )
+    let channelID = ChannelID(rawValue: 9_501)
+
+    func layout(edited: Bool) -> NativeTimelineRowLayout {
+        let row = MessageRowPresentation(
+            message: Message(
+                id: MessageID(rawValue: 35_000),
+                channelID: channelID,
+                author: recipient,
+                content: "typo fixed",
+                editedTimestamp: edited ? Date(timeIntervalSince1970: 1) : nil
+            ),
+            startsGroup: true,
+            startsDay: false,
+            replyPreview: nil,
+            isReplyAvailable: false
+        )
+        return NativeTimelineRowLayout.make(
+            item: .message(row, isUnreadBoundary: false, isHighlighted: false),
+            width: 1_000,
+            model: model,
+            presentationStyle: .directMessage
+        )
+    }
+
+    // An edited message is distinguishable from what was originally sent.
+    let edited = layout(edited: true)
+    let bubble = try #require(edited.messageBubbleFrame)
+    let marker = try #require(edited.editedFrame)
+    #expect(marker.minY >= bubble.maxY)
+    #expect(marker.minX == bubble.minX)
+    #expect(edited.height > marker.maxY)
+
+    // An unedited message carries no marker and stays shorter for it.
+    let untouched = layout(edited: false)
+    #expect(untouched.editedFrame == nil)
+    #expect(untouched.height < edited.height)
+}
+
+@MainActor
 @Test func `direct message bubble styling does not alter standard or rich rows`() {
     let author = User(
         id: UserID(rawValue: 7_001),

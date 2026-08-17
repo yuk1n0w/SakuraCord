@@ -841,12 +841,35 @@ private extension NativeTimelineRowLayout {
             width: 46,
             height: MessageRowLayoutMetrics.compactContentHeight
         )
+
+        // Without this an edited message is indistinguishable from what was
+        // originally sent. It tucks under the bubble on the anchored edge
+        // rather than inline, which would disturb the measured text.
+        var editedFrame: CGRect?
+        if message.editedTimestamp != nil {
+            let editedFont = NSFont.preferredFont(forTextStyle: .caption2)
+            let editedWidth = NativeTimelineRowLayout.measuredTextWidth(
+                "(edited)",
+                font: editedFont
+            )
+            editedFrame = CGRect(
+                x: isOutgoing
+                    ? max(
+                        conversationMinX + horizontalInset,
+                        anchorFrame.maxX - editedWidth
+                    )
+                    : anchorFrame.minX,
+                y: anchorFrame.maxY + 2,
+                width: editedWidth,
+                height: 11
+            )
+        }
         // Reactions hang under the bubble, aligned to the same edge the
         // bubble is anchored to. A reacted message is still ordinary text, so
         // it stays a bubble rather than dropping to a full avatar row.
         var reactionRegions: [ReactionRegion] = []
         var addReactionFrame: CGRect?
-        var reactionsMaxY = anchorFrame.maxY
+        var reactionsMaxY = editedFrame?.maxY ?? anchorFrame.maxY
         let presentedReactions = MessageReactionPresentation.items(
             from: message.reactions
         )
@@ -862,7 +885,7 @@ private extension NativeTimelineRowLayout {
                 horizontalSpacing: MessageReactionMetrics.horizontalSpacing,
                 verticalSpacing: MessageReactionMetrics.verticalSpacing
             )
-            let reactionsY = anchorFrame.maxY + 4
+            let reactionsY = reactionsMaxY + 4
             let reactionsX = isOutgoing
                 ? max(
                     conversationMinX + horizontalInset,
@@ -916,7 +939,7 @@ private extension NativeTimelineRowLayout {
             authorFrame: authorFrame,
             botBadgeFrame: nil,
             timestampFrame: nil,
-            editedFrame: nil,
+            editedFrame: editedFrame,
             loadingIndicatorFrame: nil,
             replyFrame: replyFrame,
             commandInvocationRegion: nil,

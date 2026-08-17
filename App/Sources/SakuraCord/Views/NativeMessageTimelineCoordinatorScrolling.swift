@@ -70,6 +70,10 @@ nonisolated enum NativeTimelineViewportWindowPolicy {
 nonisolated enum NativeTimelineWidthRelayoutPolicy {
     static let asynchronousRowThreshold = 1_000
     static let batchSize = 96
+    /// How long the width has to hold still before the timeline reflows to
+    /// it. Coalesces a burst without leaving a perceptible gap between a
+    /// pane settling and the conversation taking its new width.
+    static let settleMilliseconds = 40
 
     static func indexes(
         itemCount: Int,
@@ -545,7 +549,17 @@ extension NativeMessageTimelineCoordinator {
             widthRelayoutTask?.cancel()
             widthRelayoutTask = Task { @MainActor [weak self] in
                 do {
-                    try await Task.sleep(for: .milliseconds(120))
+                    // The timer restarts on every new width, so this only
+                    // ever runs once the stream has settled. It is pure tail
+                    // latency: long enough and the layout lands as a visible
+                    // snap well after a pane has finished moving. A couple of
+                    // frames still coalesces a burst.
+                    try await Task.sleep(
+                        for: .milliseconds(
+                            NativeTimelineWidthRelayoutPolicy
+                                .settleMilliseconds
+                        )
+                    )
                 } catch {
                     return
                 }
