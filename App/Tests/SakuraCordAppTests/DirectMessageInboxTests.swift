@@ -344,11 +344,15 @@ func `large direct message inbox filtering remains bounded`() {
         content: "u good with that?"
     )
     let row = MessageRowPresentation(
+        // Type `.reply`, as Discord actually sends it. A `.default` message
+        // carrying a replyPreview is a shape that never arrives, and testing
+        // that let a broken guard pass.
         message: Message(
             id: MessageID(rawValue: 32_001),
             channelID: channelID,
             author: recipient,
-            content: "test"
+            content: "test",
+            type: .reply
         ),
         startsGroup: true,
         startsDay: false,
@@ -371,6 +375,138 @@ func `large direct message inbox filtering remains bounded`() {
     // The quote sits above the bubble and shares its leading edge.
     #expect(reply.maxY <= bubble.minY)
     #expect(reply.minX == bubble.minX)
+}
+
+@MainActor
+@Test func `direct message images stay in the bubble presentation`() async throws {
+    let model = AppModel(
+        launchMode: .offlineTesting,
+        provider: MockChatProvider()
+    )
+    await model.start()
+    let currentUser = try #require(model.snapshot?.currentUser)
+    let recipient = User(
+        id: UserID(rawValue: currentUser.id.rawValue + 13_000),
+        username: "image-recipient",
+        displayName: "Image Recipient"
+    )
+    let channelID = ChannelID(rawValue: 9_301)
+    let width: CGFloat = 1_000
+    let attachment = Attachment(
+        id: "attachment-1",
+        filename: "photo.png",
+        url: try #require(URL(string: "https://example.invalid/photo.png")),
+        mediaType: "image/png",
+        width: 800,
+        height: 600
+    )
+
+    func layout(content: String) -> NativeTimelineRowLayout {
+        let row = MessageRowPresentation(
+            message: Message(
+                id: MessageID(rawValue: 33_000),
+                channelID: channelID,
+                author: recipient,
+                content: content,
+                attachments: [attachment]
+            ),
+            startsGroup: true,
+            startsDay: false,
+            replyPreview: nil,
+            isReplyAvailable: false
+        )
+        return NativeTimelineRowLayout.make(
+            item: .message(row, isUnreadBoundary: false, isHighlighted: false),
+            width: width,
+            model: model,
+            presentationStyle: .directMessage
+        )
+    }
+
+    // An image sent without a caption still avoids the avatar row, and gets
+    // no text bubble behind it since the media is its own surface.
+    let bare = layout(content: "")
+    let bareImage = try #require(bare.attachmentRegions.first)
+    #expect(bare.avatarFrame == nil)
+    #expect(bare.authorFrame == nil)
+    #expect(bare.messageBubbleFrame == nil)
+    #expect(bareImage.frame.minX == 24)
+    #expect(bare.height > bareImage.frame.maxY)
+
+    // With a caption the bubble stays and the image sits under it, both on
+    // the same edge.
+    let captioned = layout(content: "look at this")
+    let captionBubble = try #require(captioned.messageBubbleFrame)
+    let captionImage = try #require(captioned.attachmentRegions.first)
+    #expect(captionImage.frame.minY >= captionBubble.maxY)
+    #expect(captionImage.frame.minX == captionBubble.minX)
+}
+
+@MainActor
+@Test func `group direct message bubbles name incoming senders`() async throws {
+    let model = AppModel(
+        launchMode: .offlineTesting,
+        provider: MockChatProvider()
+    )
+    await model.start()
+    let currentUser = try #require(model.snapshot?.currentUser)
+    let sender = User(
+        id: UserID(rawValue: currentUser.id.rawValue + 14_000),
+        username: "group-sender",
+        displayName: "Group Sender"
+    )
+    let channelID = ChannelID(rawValue: 9_401)
+
+    func layout(
+        author: User,
+        startsGroup: Bool,
+        style: NativeTimelinePresentationStyle
+    ) -> NativeTimelineRowLayout {
+        let row = MessageRowPresentation(
+            message: Message(
+                id: MessageID(rawValue: author.id.rawValue + 34_000),
+                channelID: channelID,
+                author: author,
+                content: "who said this"
+            ),
+            startsGroup: startsGroup,
+            startsDay: false,
+            replyPreview: nil,
+            isReplyAvailable: false
+        )
+        return NativeTimelineRowLayout.make(
+            item: .message(row, isUnreadBoundary: false, isHighlighted: false),
+            width: 1_000,
+            model: model,
+            presentationStyle: style
+        )
+    }
+
+    // In a group the sender is named once per run of incoming messages.
+    let firstIncoming = layout(
+        author: sender,
+        startsGroup: true,
+        style: .groupDirectMessage
+    )
+    let namePlate = try #require(firstIncoming.authorFrame)
+    let bubble = try #require(firstIncoming.messageBubbleFrame)
+    #expect(namePlate.maxY <= bubble.minY)
+    #expect(firstIncoming.avatarFrame == nil)
+
+    // Not repeated mid-run, never shown for your own messages, and never in
+    // a one-to-one thread.
+    #expect(
+        layout(author: sender, startsGroup: false, style: .groupDirectMessage)
+            .authorFrame == nil
+    )
+    #expect(
+        layout(author: currentUser, startsGroup: true, style: .groupDirectMessage)
+            .authorFrame == nil
+    )
+    #expect(
+        layout(author: sender, startsGroup: true, style: .directMessage)
+            .authorFrame == nil
+    )
 }
 
 @MainActor

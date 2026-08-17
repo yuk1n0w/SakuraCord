@@ -6,6 +6,17 @@ import SakuraCordModels
 enum NativeTimelinePresentationStyle: Hashable {
     case standard
     case directMessage
+    /// Bubbles as well, but a group needs to say who is speaking, which a
+    /// one-to-one thread does not.
+    case groupDirectMessage
+
+    var usesBubbles: Bool {
+        self != .standard
+    }
+
+    var namesIncomingAuthors: Bool {
+        self == .groupDirectMessage
+    }
 }
 
 nonisolated enum NativeTimelineMarkdownChromeMetrics {
@@ -513,12 +524,13 @@ struct NativeTimelineRowLayout {
                 beginningLayout: beginningLayout
             )
         case let .message(row, isUnreadBoundary, _):
-            if presentationStyle == .directMessage,
+            if presentationStyle.usesBubbles,
                let layout = directMessageText(
                    row,
                    isUnreadBoundary: isUnreadBoundary,
                    width: width,
-                   model: model
+                   model: model,
+                   namesIncomingAuthors: presentationStyle.namesIncomingAuthors
                )
             {
                 return layout
@@ -588,13 +600,14 @@ private extension NativeTimelineRowLayout {
         _ row: MessageRowPresentation,
         isUnreadBoundary: Bool,
         width: CGFloat,
-        model: AppModel?
+        model: AppModel?,
+        namesIncomingAuthors: Bool = false
     ) -> Self? {
         let message = row.message
-        guard message.type == .default,
-              !message.content.isEmpty,
+        // Discord gives replies their own type (19), so matching only
+        // `.default` silently excludes every real reply.
+        guard message.type == .default || message.type == .reply,
               !message.content.contains("```"),
-              message.attachments.isEmpty,
               message.embeds.isEmpty,
               message.components.isEmpty,
               message.stickers.isEmpty,
@@ -610,14 +623,16 @@ private extension NativeTimelineRowLayout {
             plan: textPlan,
             model: model
         )
-        guard let attributedContent = contentPresentation.attributedContent,
-              attributedContent.length > 0,
-              contentPresentation.linkedImages.isEmpty
-        else { return nil }
+        guard contentPresentation.linkedImages.isEmpty else { return nil }
+        // A bubble needs something to show. Text and images are both valid on
+        // their own, so an image sent without a caption still gets one.
+        let attributedContent = contentPresentation.attributedContent
+        let hasText = (attributedContent?.length ?? 0) > 0
+        guard hasText || !message.attachments.isEmpty else { return nil }
 
         let horizontalInset: CGFloat = 24
-        let horizontalContentInset: CGFloat = 16
-        let verticalContentInset: CGFloat = 11
+        let horizontalContentInset: CGFloat = 13
+        let verticalContentInset: CGFloat = 7
         // The conversation spans the whole pane so bubbles anchor to its
         // edges rather than sitting in a centred column with dead space on
         // both sides. Bubble width still scales with the space available and
@@ -633,25 +648,31 @@ private extension NativeTimelineRowLayout {
             44,
             maximumBubbleWidth - horizontalContentInset * 2
         )
-        let naturalTextWidth = measuredMaximumLineWidth(
-            contentPresentation.framesetter,
-            length: attributedContent.length,
-            width: maximumContentWidth
-        )
-        let bubbleWidth = min(
-            maximumBubbleWidth,
-            max(56, ceil(naturalTextWidth) + horizontalContentInset * 2)
-        )
-        let contentWidth = max(
-            1,
-            bubbleWidth - horizontalContentInset * 2
-        )
-        let textHeight = measuredTextHeight(
-            contentPresentation.framesetter,
-            value: attributedContent,
-            length: attributedContent.length,
-            width: contentWidth
-        )
+        var bubbleWidth: CGFloat = 0
+        var contentWidth: CGFloat = 0
+        var textHeight: CGFloat = 0
+        if let attributedContent, hasText {
+            let naturalTextWidth = measuredMaximumLineWidth(
+                contentPresentation.framesetter,
+                length: attributedContent.length,
+                width: maximumContentWidth
+            )
+            // The floor is only a guard against a degenerate sliver. Set too
+            // high it pads short words like "gm" out to a width their text
+            // never asked for, which reads as stray space on the trailing
+            // edge while longer messages look correct.
+            bubbleWidth = min(
+                maximumBubbleWidth,
+                max(40, ceil(naturalTextWidth) + horizontalContentInset * 2)
+            )
+            contentWidth = max(1, bubbleWidth - horizontalContentInset * 2)
+            textHeight = measuredTextHeight(
+                contentPresentation.framesetter,
+                value: attributedContent,
+                length: attributedContent.length,
+                width: contentWidth
+            )
+        }
 
         var prefixHeight: CGFloat = 0
         var daySeparatorFrame: CGRect?
@@ -680,6 +701,25 @@ private extension NativeTimelineRowLayout {
             ? conversationMinX + conversationWidth - horizontalInset - bubbleWidth
             : conversationMinX + horizontalInset
 
+        // In a group, an incoming bubble is captioned with its sender, once
+        // per run rather than on every message. A one-to-one thread needs no
+        // name, so this stays off there.
+        var authorFrame: CGRect?
+        if namesIncomingAuthors, !isOutgoing, row.startsGroup {
+            let authorHeight: CGFloat = 16
+            authorFrame = CGRect(
+                x: bubbleX + horizontalContentInset,
+                y: prefixHeight,
+                width: max(
+                    48,
+                    conversationMinX + conversationWidth
+                        - horizontalInset - bubbleX
+                ),
+                height: authorHeight
+            )
+            prefixHeight += authorHeight
+        }
+
         // The quoted line sits directly above its bubble and shares the
         // bubble's leading edge, so a reply reads as belonging to the bubble
         // under it rather than as a separate row.
@@ -700,28 +740,100 @@ private extension NativeTimelineRowLayout {
         }
 
         let topSeparation: CGFloat = 4
-        let bubbleY = prefixHeight + topSeparation
-        let bubbleHeight = max(
-            36,
-            ceil(textHeight) + verticalContentInset * 2
-        )
-        let bubbleFrame = CGRect(
+        let contentTopY = prefixHeight + topSeparation
+
+        var bubbleFrame: CGRect?
+        var contentFrame: CGRect?
+        if hasText {
+            // The floor only matters for very short text; padding drives the
+            // rest, so it tracks the insets rather than sitting well above
+            // them and inflating one-word bubbles.
+            let bubbleHeight = max(
+                30,
+                ceil(textHeight) + verticalContentInset * 2
+            )
+            let frame = CGRect(
+                x: bubbleX,
+                y: contentTopY,
+                width: bubbleWidth,
+                height: bubbleHeight
+            )
+            bubbleFrame = frame
+            contentFrame = CGRect(
+                x: frame.minX + horizontalContentInset,
+                y: frame.minY + verticalContentInset,
+                width: contentWidth,
+                height: textHeight
+            )
+        }
+
+        // Images are their own rounded media rather than text inside a glass
+        // bubble, so they sit on the same edge as the bubble and carry no
+        // bubble of their own. A caption keeps its bubble directly above.
+        var attachmentRegions: [AttachmentRegion] = []
+        var anchorFrame = bubbleFrame ?? CGRect(
             x: bubbleX,
-            y: bubbleY,
-            width: bubbleWidth,
-            height: bubbleHeight
+            y: contentTopY,
+            width: 0,
+            height: 0
         )
-        let contentFrame = CGRect(
-            x: bubbleFrame.minX + horizontalContentInset,
-            y: bubbleFrame.minY + verticalContentInset,
-            width: contentWidth,
-            height: textHeight
-        )
+        if !message.attachments.isEmpty {
+            let galleryWidth = max(180, maximumBubbleWidth)
+            let galleryFrames = MediaGalleryPlan.frames(
+                count: message.attachments.count,
+                width: galleryWidth,
+                aspectRatios: message.attachments.map {
+                    guard let width = $0.width,
+                          let height = $0.height,
+                          width > 0,
+                          height > 0
+                    else { return 16 / 9 }
+                    return CGFloat(width) / CGFloat(height)
+                },
+                intrinsicSizes: message.attachments.map {
+                    guard let width = $0.width,
+                          let height = $0.height,
+                          width > 0,
+                          height > 0
+                    else { return .zero }
+                    return CGSize(
+                        width: CGFloat(width),
+                        height: CGFloat(height)
+                    )
+                },
+                spacing: 4
+            )
+            let galleryHeight = galleryFrames.map(\.maxY).max() ?? 0
+            let galleryExtent = galleryFrames.map(\.maxX).max() ?? galleryWidth
+            let galleryY = hasText
+                ? (bubbleFrame?.maxY ?? contentTopY) + 4
+                : contentTopY
+            let galleryX = isOutgoing
+                ? conversationMinX + conversationWidth
+                    - horizontalInset - galleryExtent
+                : conversationMinX + horizontalInset
+            attachmentRegions = zip(
+                message.attachments,
+                galleryFrames
+            ).map { attachment, frame in
+                AttachmentRegion(
+                    frame: frame.offsetBy(dx: galleryX, dy: galleryY),
+                    attachment: attachment
+                )
+            }
+            anchorFrame = CGRect(
+                x: galleryX,
+                y: galleryY,
+                width: galleryExtent,
+                height: galleryHeight
+            )
+        }
+
         let compactTimestampFrame = CGRect(
             x: isOutgoing
-                ? max(0, bubbleFrame.minX - 50)
-                : min(width - 46, bubbleFrame.maxX + 4),
-            y: bubbleFrame.maxY - MessageRowLayoutMetrics.compactContentHeight,
+                ? max(0, anchorFrame.minX - 50)
+                : min(width - 46, anchorFrame.maxX + 4),
+            y: anchorFrame.maxY - MessageRowLayoutMetrics.compactContentHeight,
             width: 46,
             height: MessageRowLayoutMetrics.compactContentHeight
         )
@@ -730,7 +842,7 @@ private extension NativeTimelineRowLayout {
         // it stays a bubble rather than dropping to a full avatar row.
         var reactionRegions: [ReactionRegion] = []
         var addReactionFrame: CGRect?
-        var reactionsMaxY = bubbleFrame.maxY
+        var reactionsMaxY = anchorFrame.maxY
         let presentedReactions = MessageReactionPresentation.items(
             from: message.reactions
         )
@@ -746,13 +858,13 @@ private extension NativeTimelineRowLayout {
                 horizontalSpacing: MessageReactionMetrics.horizontalSpacing,
                 verticalSpacing: MessageReactionMetrics.verticalSpacing
             )
-            let reactionsY = bubbleFrame.maxY + 4
+            let reactionsY = anchorFrame.maxY + 4
             let reactionsX = isOutgoing
                 ? max(
                     conversationMinX + horizontalInset,
-                    bubbleFrame.maxX - wrapping.size.width
+                    anchorFrame.maxX - wrapping.size.width
                 )
-                : bubbleFrame.minX
+                : anchorFrame.minX
             reactionRegions = zip(
                 presentedReactions,
                 wrapping.frames.prefix(presentedReactions.count)
@@ -773,13 +885,13 @@ private extension NativeTimelineRowLayout {
 
         let failedFrame = message.outboxState == .failed
             ? CGRect(
-                x: bubbleFrame.minX,
+                x: anchorFrame.minX,
                 y: reactionsMaxY + 3,
-                width: bubbleFrame.width,
+                width: max(1, anchorFrame.width),
                 height: 14
             )
             : nil
-        let rowHeight = ceil((failedFrame?.maxY ?? reactionsMaxY) + 10)
+        let rowHeight = ceil((failedFrame?.maxY ?? reactionsMaxY) + 7)
 
         return Self(
             height: rowHeight,
@@ -797,7 +909,7 @@ private extension NativeTimelineRowLayout {
             unreadSeparatorFrame: unreadSeparatorFrame,
             avatarFrame: nil,
             compactTimestampFrame: compactTimestampFrame,
-            authorFrame: nil,
+            authorFrame: authorFrame,
             botBadgeFrame: nil,
             timestampFrame: nil,
             editedFrame: nil,
@@ -812,7 +924,7 @@ private extension NativeTimelineRowLayout {
             forwardedBarFrame: nil,
             forwardedSourceRegion: nil,
             linkedImageRegions: [],
-            attachmentRegions: [],
+            attachmentRegions: attachmentRegions,
             embedFrames: [],
             embedRegions: [],
             componentFrames: [],

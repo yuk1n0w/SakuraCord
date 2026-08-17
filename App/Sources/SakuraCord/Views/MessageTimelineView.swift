@@ -200,8 +200,10 @@ struct MessageTimelineView: View {
 
     private var presentationStyle: NativeTimelinePresentationStyle {
         switch model.selectedChannel?.kind {
-        case .directMessage?, .groupDirectMessage?:
+        case .directMessage?:
             .directMessage
+        case .groupDirectMessage?:
+            .groupDirectMessage
         default:
             .standard
         }
