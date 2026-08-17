@@ -9,7 +9,10 @@ nonisolated enum ChatChromeMetrics {
     static let sidebarContentCornerRadius: CGFloat = 16
     static let composerWindowInset: CGFloat = 12
     static let directMessageContentMaximumWidth: CGFloat = 640
-    static let directMessageBubbleMaximumWidth: CGFloat = 390
+    /// Upper bound on a bubble once it scales with the pane. Past roughly
+    /// this width a line of chat text becomes tiring to read, so wide windows
+    /// buy more breathing room around the thread rather than longer lines.
+    static let directMessageBubbleMaximumWidth: CGFloat = 560
     /// Only a fallback for layouts where the composer isn't adjacent to a
     /// rounded container corner. macOS resolves the actual aligned radius.
     static let composerMinimumCornerRadius: CGFloat = 12

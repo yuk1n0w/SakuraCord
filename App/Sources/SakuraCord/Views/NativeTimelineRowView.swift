@@ -592,11 +592,9 @@ private extension NativeTimelineRowLayout {
     ) -> Self? {
         let message = row.message
         guard message.type == .default,
-              row.replyPreview == nil,
               !message.content.isEmpty,
               !message.content.contains("```"),
               message.attachments.isEmpty,
-              message.reactions.isEmpty,
               message.embeds.isEmpty,
               message.components.isEmpty,
               message.stickers.isEmpty,
@@ -618,16 +616,18 @@ private extension NativeTimelineRowLayout {
         else { return nil }
 
         let horizontalInset: CGFloat = 24
-        let horizontalContentInset: CGFloat = 14
-        let verticalContentInset: CGFloat = 9
-        let conversationWidth = min(
-            width,
-            ChatChromeMetrics.directMessageContentMaximumWidth
-        )
-        let conversationMinX = (width - conversationWidth) / 2
+        let horizontalContentInset: CGFloat = 16
+        let verticalContentInset: CGFloat = 11
+        // The conversation spans the whole pane so bubbles anchor to its
+        // edges rather than sitting in a centred column with dead space on
+        // both sides. Bubble width still scales with the space available and
+        // stays capped, so a wide window does not produce unreadably long
+        // lines of text.
+        let conversationWidth = width
+        let conversationMinX: CGFloat = 0
         let maximumBubbleWidth = min(
             ChatChromeMetrics.directMessageBubbleMaximumWidth,
-            max(96, conversationWidth - horizontalInset * 2)
+            max(96, (conversationWidth - horizontalInset * 2) * 0.62)
         )
         let maximumContentWidth = max(
             44,
@@ -675,16 +675,36 @@ private extension NativeTimelineRowLayout {
             prefixHeight += NativeTimelineUnreadSeparatorMetrics.rowHeight
         }
 
+        let isOutgoing = message.author.id == model?.snapshot?.currentUser.id
+        let bubbleX = isOutgoing
+            ? conversationMinX + conversationWidth - horizontalInset - bubbleWidth
+            : conversationMinX + horizontalInset
+
+        // The quoted line sits directly above its bubble and shares the
+        // bubble's leading edge, so a reply reads as belonging to the bubble
+        // under it rather than as a separate row.
+        var replyFrame: CGRect?
+        if row.replyPreview != nil {
+            let replyHeight: CGFloat = 20
+            replyFrame = CGRect(
+                x: bubbleX,
+                y: prefixHeight,
+                width: max(
+                    96,
+                    conversationMinX + conversationWidth
+                        - horizontalInset - bubbleX
+                ),
+                height: replyHeight
+            )
+            prefixHeight += replyHeight
+        }
+
         let topSeparation: CGFloat = 4
         let bubbleY = prefixHeight + topSeparation
         let bubbleHeight = max(
             36,
             ceil(textHeight) + verticalContentInset * 2
         )
-        let isOutgoing = message.author.id == model?.snapshot?.currentUser.id
-        let bubbleX = isOutgoing
-            ? conversationMinX + conversationWidth - horizontalInset - bubbleWidth
-            : conversationMinX + horizontalInset
         let bubbleFrame = CGRect(
             x: bubbleX,
             y: bubbleY,
@@ -705,15 +725,61 @@ private extension NativeTimelineRowLayout {
             width: 46,
             height: MessageRowLayoutMetrics.compactContentHeight
         )
+        // Reactions hang under the bubble, aligned to the same edge the
+        // bubble is anchored to. A reacted message is still ordinary text, so
+        // it stays a bubble rather than dropping to a full avatar row.
+        var reactionRegions: [ReactionRegion] = []
+        var addReactionFrame: CGRect?
+        var reactionsMaxY = bubbleFrame.maxY
+        let presentedReactions = MessageReactionPresentation.items(
+            from: message.reactions
+        )
+        if !presentedReactions.isEmpty {
+            let sizes = presentedReactions.map(reactionSize)
+                + [CGSize(
+                    width: ReactionActionMenuPresentation.inline.width,
+                    height: MessageReactionMetrics.pillHeight
+                )]
+            let wrapping = InlineWrappingLayoutPlan.frames(
+                sizes: sizes,
+                maximumWidth: maximumBubbleWidth,
+                horizontalSpacing: MessageReactionMetrics.horizontalSpacing,
+                verticalSpacing: MessageReactionMetrics.verticalSpacing
+            )
+            let reactionsY = bubbleFrame.maxY + 4
+            let reactionsX = isOutgoing
+                ? max(
+                    conversationMinX + horizontalInset,
+                    bubbleFrame.maxX - wrapping.size.width
+                )
+                : bubbleFrame.minX
+            reactionRegions = zip(
+                presentedReactions,
+                wrapping.frames.prefix(presentedReactions.count)
+            ).map { reaction, frame in
+                NativeTimelineRowLayout.reactionRegion(
+                    reaction,
+                    frame: frame.offsetBy(dx: reactionsX, dy: reactionsY)
+                )
+            }
+            if let frame = wrapping.frames.last {
+                addReactionFrame = frame.offsetBy(
+                    dx: reactionsX,
+                    dy: reactionsY
+                )
+            }
+            reactionsMaxY = reactionsY + wrapping.size.height
+        }
+
         let failedFrame = message.outboxState == .failed
             ? CGRect(
                 x: bubbleFrame.minX,
-                y: bubbleFrame.maxY + 3,
+                y: reactionsMaxY + 3,
                 width: bubbleFrame.width,
                 height: 14
             )
             : nil
-        let rowHeight = ceil((failedFrame?.maxY ?? bubbleFrame.maxY) + 10)
+        let rowHeight = ceil((failedFrame?.maxY ?? reactionsMaxY) + 10)
 
         return Self(
             height: rowHeight,
@@ -736,7 +802,7 @@ private extension NativeTimelineRowLayout {
             timestampFrame: nil,
             editedFrame: nil,
             loadingIndicatorFrame: nil,
-            replyFrame: nil,
+            replyFrame: replyFrame,
             commandInvocationRegion: nil,
             systemIconFrame: nil,
             contentFrame: contentFrame,
@@ -753,8 +819,8 @@ private extension NativeTimelineRowLayout {
             componentLayouts: [],
             stickerFrames: [],
             threadFrame: nil,
-            reactionRegions: [],
-            addReactionFrame: nil,
+            reactionRegions: reactionRegions,
+            addReactionFrame: addReactionFrame,
             ephemeralRegion: nil,
             failedFrame: failedFrame
         )

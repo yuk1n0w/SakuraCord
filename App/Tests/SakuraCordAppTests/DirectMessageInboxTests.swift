@@ -255,26 +255,122 @@ func `large direct message inbox filtering remains bounded`() {
     let incomingContent = try #require(incoming.contentFrame)
     let outgoingContent = try #require(outgoing.contentFrame)
 
-    let conversationMinX = (
-        width - ChatChromeMetrics.directMessageContentMaximumWidth
-    ) / 2
-    #expect(incomingBubble.minX == conversationMinX + 24)
-    #expect(
-        outgoingBubble.maxX
-            == conversationMinX
-                + ChatChromeMetrics.directMessageContentMaximumWidth
-                - 24
-    )
+    // The thread spans the pane: incoming anchors to the leading edge and
+    // outgoing to the trailing one, rather than to a centred column.
+    #expect(incomingBubble.minX == 24)
+    #expect(outgoingBubble.maxX == width - 24)
     #expect(
         incomingBubble.width
             <= ChatChromeMetrics.directMessageBubbleMaximumWidth
     )
+    // Bubbles take a share of the pane, never its full width, so the
+    // opposite side stays visibly open.
+    #expect(incomingBubble.width <= (width - 48) * 0.62)
     #expect(incomingBubble.contains(incomingContent))
     #expect(outgoingBubble.contains(outgoingContent))
     #expect(incoming.messageBubbleIsOutgoing == false)
     #expect(outgoing.messageBubbleIsOutgoing)
     #expect(incoming.avatarFrame == nil)
     #expect(outgoing.authorFrame == nil)
+}
+
+@MainActor
+@Test func `direct message reactions stay inside the bubble presentation`() async throws {
+    let model = AppModel(
+        launchMode: .offlineTesting,
+        provider: MockChatProvider()
+    )
+    await model.start()
+    let currentUser = try #require(model.snapshot?.currentUser)
+    let recipient = User(
+        id: UserID(rawValue: currentUser.id.rawValue + 11_000),
+        username: "reaction-recipient",
+        displayName: "Reaction Recipient"
+    )
+    let width: CGFloat = 1_000
+    let row = MessageRowPresentation(
+        message: Message(
+            id: MessageID(rawValue: 31_000),
+            channelID: ChannelID(rawValue: 9_101),
+            author: recipient,
+            content: "sounds good",
+            reactions: [Reaction(emoji: "❤️", count: 1)]
+        ),
+        startsGroup: true,
+        startsDay: false,
+        replyPreview: nil,
+        isReplyAvailable: false
+    )
+    let layout = NativeTimelineRowLayout.make(
+        item: .message(row, isUnreadBoundary: false, isHighlighted: false),
+        width: width,
+        model: model,
+        presentationStyle: .directMessage
+    )
+
+    // A reacted message keeps the bubble instead of dropping to an avatar row.
+    let bubble = try #require(layout.messageBubbleFrame)
+    #expect(layout.avatarFrame == nil)
+    #expect(layout.authorFrame == nil)
+    #expect(layout.reactionRegions.count == 1)
+
+    // The chips hang below the bubble, on the same edge it is anchored to,
+    // and the row grows to contain them.
+    let reaction = try #require(layout.reactionRegions.first)
+    #expect(reaction.frame.minY >= bubble.maxY)
+    #expect(reaction.frame.minX == bubble.minX)
+    #expect(layout.height > reaction.frame.maxY)
+}
+
+@MainActor
+@Test func `direct message replies keep the bubble and quote above it`() async throws {
+    let model = AppModel(
+        launchMode: .offlineTesting,
+        provider: MockChatProvider()
+    )
+    await model.start()
+    let currentUser = try #require(model.snapshot?.currentUser)
+    let recipient = User(
+        id: UserID(rawValue: currentUser.id.rawValue + 12_000),
+        username: "reply-recipient",
+        displayName: "Reply Recipient"
+    )
+    let channelID = ChannelID(rawValue: 9_201)
+    let width: CGFloat = 1_000
+    let parent = Message(
+        id: MessageID(rawValue: 32_000),
+        channelID: channelID,
+        author: recipient,
+        content: "u good with that?"
+    )
+    let row = MessageRowPresentation(
+        message: Message(
+            id: MessageID(rawValue: 32_001),
+            channelID: channelID,
+            author: recipient,
+            content: "test"
+        ),
+        startsGroup: true,
+        startsDay: false,
+        replyPreview: MessageReplyPreview(message: parent),
+        isReplyAvailable: true
+    )
+    let layout = NativeTimelineRowLayout.make(
+        item: .message(row, isUnreadBoundary: false, isHighlighted: false),
+        width: width,
+        model: model,
+        presentationStyle: .directMessage
+    )
+
+    // A reply stays a bubble rather than dropping to a full avatar row.
+    let bubble = try #require(layout.messageBubbleFrame)
+    let reply = try #require(layout.replyFrame)
+    #expect(layout.avatarFrame == nil)
+    #expect(layout.authorFrame == nil)
+
+    // The quote sits above the bubble and shares its leading edge.
+    #expect(reply.maxY <= bubble.minY)
+    #expect(reply.minX == bubble.minX)
 }
 
 @MainActor

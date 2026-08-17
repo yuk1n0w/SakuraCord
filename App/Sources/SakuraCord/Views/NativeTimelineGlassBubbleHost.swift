@@ -123,7 +123,11 @@ final class NativeTimelineGlassBubbleHost: NSView {
                 view = recycled
             } else {
                 let created = NSGlassEffectView()
-                created.style = .regular
+                // Clear rather than regular, matching the DM composer's
+                // `.clear.tint(black)`. Regular glass reads as a pale plate;
+                // clear keeps the body dark and translucent so the lit rim
+                // is what defines the shape.
+                created.style = .clear
                 // The effect embeds a content view rather than applying
                 // itself behind one, so a nil contentView renders nothing.
                 // The canvas draws the text, so this only reserves the shape.
@@ -137,11 +141,12 @@ final class NativeTimelineGlassBubbleHost: NSView {
             let presentation = bubble.presentation
             if presentations[bubble.key] != presentation {
                 view.cornerRadius = bubble.cornerRadius
-                // Outgoing leans a touch brighter so the sender still reads
-                // at a glance without tinting away from the neutral chrome.
-                view.tintColor = bubble.isOutgoing
-                    ? NSColor.labelColor.withAlphaComponent(0.10)
-                    : nil
+                // A dark tint, as the composer uses. Both sides stay neutral
+                // so the thread reads as one surface; outgoing sits a few
+                // percent lighter purely so the sender is legible at a glance.
+                view.tintColor = NSColor.black.withAlphaComponent(
+                    bubble.isOutgoing ? 0.16 : 0.22
+                )
                 presentations[bubble.key] = presentation
             }
             if view.frame != bubble.frame {
