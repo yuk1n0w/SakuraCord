@@ -427,7 +427,11 @@ enum NativeTimelineRowPainter {
 
         drawHighlight(
             for: item,
-            in: layout.highlightFrame,
+            // A bubble row is highlighted around its bubble rather than
+            // across the pane. The full-width band reads as a striped
+            // Discord row and looks wrong behind a bubble thread, while the
+            // frame itself stays full width for hover and hit testing.
+            in: layout.highlightBackgroundFrame,
             model: model,
             isHovered: isHovered
         )

@@ -501,6 +501,22 @@ struct NativeTimelineRowLayout {
     let searchSectionRegion: SearchSectionRegion?
     let searchCardFrame: CGRect?
     let highlightFrame: CGRect?
+
+    /// Where a mention or selection highlight is painted.
+    ///
+    /// It follows `highlightFrame` for a standard row, whose content spans
+    /// the pane. A bubble owns a narrower shape, so the highlight is drawn
+    /// around the bubble and its media instead of banding the whole row,
+    /// while `highlightFrame` stays wide for hover and hit testing.
+    var highlightBackgroundFrame: CGRect? {
+        guard let messageBubbleFrame else { return highlightFrame }
+        let padding: CGFloat = 6
+        let media = attachmentRegions.map(\.frame)
+            + stickerFrames
+            + embedFrames
+        let union = media.reduce(messageBubbleFrame) { $0.union($1) }
+        return union.insetBy(dx: -padding, dy: -padding)
+    }
     let messageBubbleFrame: CGRect?
     let messageBubbleIsOutgoing: Bool
     let daySeparatorFrame: CGRect?
