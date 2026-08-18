@@ -46,7 +46,7 @@ extension NativeTimelineRowLayout {
         let hasText = (attributedContent?.length ?? 0) > 0
         guard hasText
             || !effectiveMessage.attachments.isEmpty
-            || !effectiveMessage.stickers.isEmpty
+            || !message.stickers.isEmpty
         else { return nil }
 
         let horizontalInset: CGFloat = 24
@@ -240,7 +240,10 @@ extension NativeTimelineRowLayout {
         // A sticker is media rather than text, so like an image it sits on
         // the message's edge with no bubble behind it.
         let stickers = directMessageStickers(
-            count: effectiveMessage.stickers.count,
+            // Counted from the message rather than the forwarded snapshot:
+            // the painter resolves stickers from message.stickers, and a
+            // mismatch would reserve space it never draws into.
+            count: message.stickers.count,
             anchorFrame: anchorFrame,
             maximumWidth: maximumBubbleWidth,
             leadingX: conversationMinX + horizontalInset,
