@@ -596,6 +596,48 @@ import Testing
 }
 
 @MainActor
+@Test func `direct message stickers stay in the bubble presentation`() async throws {
+    let model = AppModel(
+        launchMode: .offlineTesting,
+        provider: MockChatProvider()
+    )
+    await model.start()
+    let currentUser = try #require(model.snapshot?.currentUser)
+    let sender = User(
+        id: UserID(rawValue: currentUser.id.rawValue + 18_000),
+        username: "sticker-sender",
+        displayName: "Sticker Sender"
+    )
+    let row = MessageRowPresentation(
+        message: Message(
+            id: MessageID(rawValue: 38_000),
+            channelID: ChannelID(rawValue: 9_801),
+            author: sender,
+            content: "",
+            stickers: [MessageSticker(id: "1", name: "wave")]
+        ),
+        startsGroup: true,
+        startsDay: false,
+        replyPreview: nil,
+        isReplyAvailable: false
+    )
+    let layout = NativeTimelineRowLayout.make(
+        item: .message(row, isUnreadBoundary: false, isHighlighted: false),
+        width: 1_000,
+        model: model,
+        presentationStyle: .directMessage
+    )
+
+    // A sticker keeps the thread in bubbles rather than dropping an avatar
+    // row, and like an image it carries no bubble of its own.
+    let sticker = try #require(layout.stickerFrames.first)
+    #expect(layout.avatarFrame == nil)
+    #expect(layout.messageBubbleFrame == nil)
+    #expect(sticker.minX == 24)
+    #expect(layout.height > sticker.maxY)
+}
+
+@MainActor
 @Test func `direct message bubble styling does not alter standard or rich rows`() {
     let author = User(
         id: UserID(rawValue: 7_001),

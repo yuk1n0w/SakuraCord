@@ -20,7 +20,6 @@ extension NativeTimelineRowLayout {
         // `.default` silently excludes every real reply.
         guard message.type == .default || message.type == .reply,
               message.components.isEmpty,
-              message.stickers.isEmpty,
               message.thread == nil,
               !message.flags.contains(.ephemeral),
               !message.flags.contains(.isComponentsV2)
@@ -45,7 +44,10 @@ extension NativeTimelineRowLayout {
         // their own, so an image sent without a caption still gets one.
         let attributedContent = contentPresentation.attributedContent
         let hasText = (attributedContent?.length ?? 0) > 0
-        guard hasText || !effectiveMessage.attachments.isEmpty else { return nil }
+        guard hasText
+            || !effectiveMessage.attachments.isEmpty
+            || !effectiveMessage.stickers.isEmpty
+        else { return nil }
 
         let horizontalInset: CGFloat = 24
         let horizontalContentInset: CGFloat = 13
@@ -235,6 +237,21 @@ extension NativeTimelineRowLayout {
             )
         }
 
+        // A sticker is media rather than text, so like an image it sits on
+        // the message's edge with no bubble behind it.
+        let stickers = directMessageStickers(
+            count: effectiveMessage.stickers.count,
+            anchorFrame: anchorFrame,
+            maximumWidth: maximumBubbleWidth,
+            leadingX: conversationMinX + horizontalInset,
+            trailingX: conversationMinX + conversationWidth - horizontalInset,
+            isOutgoing: isOutgoing
+        )
+        let stickerFrames = stickers.frames
+        if let stickerAnchor = stickers.anchorFrame {
+            anchorFrame = stickerAnchor
+        }
+
         // Link previews hang below the message like attachments do. An embed
         // is laid out at its final origin because its nested title, text and
         // image frames are absolute, so it cannot be repositioned afterwards;
@@ -365,7 +382,7 @@ extension NativeTimelineRowLayout {
             embedRegions: embedRegions,
             componentFrames: [],
             componentLayouts: [],
-            stickerFrames: [],
+            stickerFrames: stickerFrames,
             threadFrame: nil,
             reactionRegions: reactionRegions,
             addReactionFrame: addReactionFrame,
@@ -424,6 +441,70 @@ extension NativeTimelineRowLayout {
             unreadFrame: unreadFrame,
             height: height
         )
+    }
+
+    struct DirectMessageStickerLayout {
+        let frames: [CGRect]
+        /// Nil when there are no stickers, so the caller keeps its anchor.
+        let anchorFrame: CGRect?
+    }
+
+    /// Sticker squares placed on the message's own edge, plus the anchor the
+    /// rest of the row should hang from.
+    static func directMessageStickers(
+        count: Int,
+        anchorFrame: CGRect,
+        maximumWidth: CGFloat,
+        leadingX: CGFloat,
+        trailingX: CGFloat,
+        isOutgoing: Bool
+    ) -> DirectMessageStickerLayout {
+        guard count > 0 else {
+            return DirectMessageStickerLayout(frames: [], anchorFrame: nil)
+        }
+        let placed = directMessageStickerFrames(
+            count: count,
+            maximumWidth: maximumWidth,
+            topY: anchorFrame.maxY + (anchorFrame.height > 0 ? 4 : 0)
+        )
+        let extent = placed.frames.map(\.maxX).max() ?? 0
+        let originX = isOutgoing ? trailingX - extent : leadingX
+        let frames = placed.frames.map { $0.offsetBy(dx: originX, dy: 0) }
+        let bottom = frames.map(\.maxY).max() ?? anchorFrame.maxY
+        return DirectMessageStickerLayout(
+            frames: frames,
+            anchorFrame: CGRect(
+                x: originX,
+                y: anchorFrame.minY,
+                width: max(extent, 1),
+                height: bottom - anchorFrame.minY
+            )
+        )
+    }
+
+    /// Sticker squares, wrapped to the bubble's maximum width. Frames are
+    /// produced at x = 0 so the caller can anchor the run to either edge.
+    static func directMessageStickerFrames(
+        count: Int,
+        maximumWidth: CGFloat,
+        topY: CGFloat
+    ) -> DirectMessageStickerLayout {
+        let size = min(maximumWidth, 112)
+        let spacing: CGFloat = 8
+        var frames: [CGRect] = []
+        var originX: CGFloat = 0
+        var originY = topY
+        for _ in 0 ..< count {
+            if originX > 0, originX + size > maximumWidth {
+                originX = 0
+                originY += size + spacing
+            }
+            frames.append(
+                CGRect(x: originX, y: originY, width: size, height: size)
+            )
+            originX += size + spacing
+        }
+        return DirectMessageStickerLayout(frames: frames, anchorFrame: nil)
     }
 
     static func directMessageReactions(
