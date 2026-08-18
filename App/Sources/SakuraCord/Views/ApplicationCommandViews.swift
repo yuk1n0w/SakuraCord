@@ -343,8 +343,8 @@ struct ApplicationCommandEditorView: View {
                 )
             }
             .padding(10)
-            .background(
-                .regularMaterial,
+            .glassEffect(
+                .regular,
                 in: ConcentricRectangle(
                     cornerRadius: ChatChromeMetrics.controlCornerRadius, style: .continuous
                 )

@@ -19,7 +19,7 @@ struct MessageSearchPanelView: View {
             )
             MessageSearchPagination(model: model, search: search)
         }
-        .background(.ultraThinMaterial)
+        .glassEffect(.regular, in: Rectangle())
         .onAppear {
             AppPerformanceSignposts.reportMessageSearchPanelReady()
         }
@@ -254,7 +254,7 @@ private struct MessageSearchPagination: View {
             .padding(.horizontal, 12)
             .frame(height: 46)
             .frame(maxWidth: .infinity)
-            .background(.bar)
+            .glassEffect(.regular, in: Rectangle())
         }
     }
 }

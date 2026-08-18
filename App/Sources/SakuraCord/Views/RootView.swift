@@ -424,7 +424,7 @@ private struct ChatRootView: View {
                     }
                     .padding(24)
                     .frame(minWidth: 280)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16))
                     .shadow(radius: 18)
                 }
             }

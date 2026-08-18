@@ -134,12 +134,16 @@ struct ForumComposerAttachmentControl: View {
         .frame(width: currentWidth, height: currentHeight, alignment: .trailing)
         .background {
             if isExpanded {
-                ConcentricRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(.regularMaterial)
-                    .overlay {
-                        ConcentricRectangle(cornerRadius: 18, style: .continuous)
-                            .stroke(.separator, lineWidth: 1)
-                    }
+                // Glass supplies its own edge, so the separator stroke that
+                // defined the old material tray is no longer needed.
+                Color.clear
+                    .glassEffect(
+                        .regular,
+                        in: ConcentricRectangle(
+                            cornerRadius: 18,
+                            style: .continuous
+                        )
+                    )
             }
         }
         .coordinateSpace(name: ForumAttachmentTrayCoordinateSpace.name)
