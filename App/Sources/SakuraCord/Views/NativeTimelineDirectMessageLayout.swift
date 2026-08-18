@@ -352,12 +352,15 @@ extension NativeTimelineRowLayout {
             }
         }
 
+        // Sized for the bracketed stamp, which is seven monospaced
+        // characters rather than the four or five a bare time takes.
+        let timestampWidth: CGFloat = 52
         let compactTimestampFrame = CGRect(
             x: isOutgoing
-                ? max(0, anchorFrame.minX - 50)
-                : min(width - 46, anchorFrame.maxX + 4),
+                ? max(0, anchorFrame.minX - timestampWidth - 6)
+                : min(width - timestampWidth, anchorFrame.maxX + 4),
             y: anchorFrame.maxY - MessageRowLayoutMetrics.compactContentHeight,
-            width: 46,
+            width: timestampWidth,
             height: MessageRowLayoutMetrics.compactContentHeight
         )
 

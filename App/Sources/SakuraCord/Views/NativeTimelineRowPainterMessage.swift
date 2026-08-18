@@ -94,7 +94,10 @@ extension NativeTimelineRowPainter {
             )
         }
         if let frame = layout.unreadSeparatorFrame {
-            newMessagesSeparator(frame: frame)
+            newMessagesSeparator(
+                frame: frame,
+                usesConversationLayout: layout.usesConversationLayout
+            )
         }
 
         // Direct-message bubbles are real glass hosted behind the canvas, so
@@ -168,10 +171,16 @@ extension NativeTimelineRowPainter {
         if showsCompactTimestamp,
            let frame = layout.compactTimestampFrame
         {
+            let isConversation = layout.usesConversationLayout
             text(
-                NativeTimelineTimestamp.text(for: message.timestamp),
+                isConversation
+                    ? NativeTimelineTimestamp
+                        .conversationText(for: message.timestamp)
+                    : NativeTimelineTimestamp.text(for: message.timestamp),
                 in: frame,
-                font: NativeTimelineCompactTimestampMetrics.font,
+                font: isConversation
+                    ? .monospacedSystemFont(ofSize: 10, weight: .regular)
+                    : NativeTimelineCompactTimestampMetrics.font,
                 color: .tertiaryLabelColor,
                 alignment: .center,
                 lineBreakMode: .byClipping
@@ -1061,7 +1070,30 @@ extension NativeTimelineRowPainter {
         )
     }
 
-    static func newMessagesSeparator(frame: CGRect) {
+    static func newMessagesSeparator(
+        frame: CGRect,
+        usesConversationLayout: Bool = false
+    ) {
+        // Matches the day marker: the conversation says what happened on
+        // one monospaced line instead of pinning a capsule to the edge.
+        guard !usesConversationLayout else {
+            text(
+                "--- New messages ---",
+                in: CGRect(
+                    x: frame.minX,
+                    y: frame.minY + NativeTimelineUnreadSeparatorMetrics
+                        .verticalPadding,
+                    width: frame.width,
+                    height: NativeTimelineUnreadSeparatorMetrics
+                        .capsuleHeight
+                ),
+                font: .monospacedSystemFont(ofSize: 11, weight: .medium),
+                color: .systemRed,
+                alignment: .center,
+                lineBreakMode: .byClipping
+            )
+            return
+        }
         let font = NSFont.systemFont(ofSize: 10, weight: .bold)
         let labelWidth = ceil(
             measuredTextWidth("NEW", font: font) + 14

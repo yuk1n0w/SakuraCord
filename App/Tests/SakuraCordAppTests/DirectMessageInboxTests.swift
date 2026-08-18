@@ -1053,3 +1053,30 @@ private func waitForDirectMessageCondition(
         ) == .controlAccentColor
     )
 }
+
+@MainActor
+@Test func `conversation timestamps read as bracketed twenty-four hour`() throws {
+    var components = DateComponents()
+    components.year = 1999
+    components.month = 12
+    components.day = 31
+    components.hour = 14
+    components.minute = 7
+    let afternoon = try #require(Calendar.current.date(from: components))
+
+    // The bracketed, zero-padded, twenty-four hour form every IRC client
+    // printed. A locale-formatted stamp would drift to "2:07 PM", which
+    // neither brackets nor sits in a monospaced column.
+    #expect(
+        NativeTimelineTimestamp.conversationText(for: afternoon)
+            == "[14:07]"
+    )
+
+    components.hour = 0
+    components.minute = 5
+    let midnight = try #require(Calendar.current.date(from: components))
+    #expect(
+        NativeTimelineTimestamp.conversationText(for: midnight)
+            == "[00:05]"
+    )
+}

@@ -65,6 +65,22 @@ enum NativeTimelineTimestamp {
     static func text(for date: Date) -> String {
         date.formatted(.dateTime.hour().minute())
     }
+
+    /// The bracketed twenty-four hour stamp every IRC client printed at the
+    /// head of a line. Fixed rather than locale-formatted on purpose: the
+    /// brackets and the leading zero are the look, and a twelve hour clock
+    /// with an am/pm suffix does not sit in a monospaced column.
+    static func conversationText(for date: Date) -> String {
+        let parts = Calendar.current.dateComponents(
+            [.hour, .minute],
+            from: date
+        )
+        return String(
+            format: "[%02d:%02d]",
+            parts.hour ?? 0,
+            parts.minute ?? 0
+        )
+    }
 }
 
 extension NSAttributedString.Key {
