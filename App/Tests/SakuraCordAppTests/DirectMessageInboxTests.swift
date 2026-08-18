@@ -821,3 +821,62 @@ private func waitForDirectMessageCondition(
     }
     return condition()
 }
+
+@MainActor
+@Test func `direct message linked images sit on the sender's edge`() async throws {
+    let model = AppModel(
+        launchMode: .offlineTesting,
+        provider: MockChatProvider()
+    )
+    await model.start()
+    let currentUser = try #require(model.snapshot?.currentUser)
+    let other = User(
+        id: UserID(rawValue: currentUser.id.rawValue + 21_000),
+        username: "gif-sender",
+        displayName: "Gif Sender"
+    )
+    let width: CGFloat = 1_000
+
+    // A GIF shared as a link rather than an upload: the media arrives as a
+    // linked image, not an attachment.
+    func layout(author: User) -> NativeTimelineRowLayout {
+        let row = MessageRowPresentation(
+            message: Message(
+                id: MessageID(rawValue: author.id.rawValue + 41_000),
+                channelID: ChannelID(rawValue: 9_501),
+                author: author,
+                content: "[reaction.gif](https://cdn.discordapp.com/a/reaction.gif)"
+            ),
+            startsGroup: true,
+            startsDay: false,
+            replyPreview: nil,
+            isReplyAvailable: false
+        )
+        return NativeTimelineRowLayout.make(
+            item: .message(row, isUnreadBoundary: false, isHighlighted: false),
+            width: width,
+            model: model,
+            presentationStyle: .directMessage
+        )
+    }
+
+    let outgoing = layout(author: currentUser)
+    let incoming = layout(author: other)
+
+    // A linked image is media like any other, so it belongs to a bubble row
+    // instead of falling back to the standard layout.
+    let outgoingImage = try #require(outgoing.linkedImageRegions.first)
+    let incomingImage = try #require(incoming.linkedImageRegions.first)
+
+    // The sender's own GIF hangs off the trailing edge; everyone else's off
+    // the leading edge. Before this, both landed on the left because a
+    // linked image dropped the row out of the conversation layout.
+    #expect(outgoingImage.frame.maxX > width / 2)
+    #expect(incomingImage.frame.minX < width / 2)
+    #expect(outgoingImage.frame.minX > incomingImage.frame.minX)
+
+    // Media on its own still gets a highlight shaped to the media rather
+    // than the full-width band a standard row would draw.
+    let highlight = try #require(outgoing.highlightBackgroundFrame)
+    #expect(highlight.width < width)
+}

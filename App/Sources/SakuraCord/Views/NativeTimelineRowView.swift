@@ -517,16 +517,24 @@ struct NativeTimelineRowLayout {
     }
 
     var highlightBackgroundFrame: CGRect? {
-        guard let messageBubbleFrame else { return highlightFrame }
-        let padding: CGFloat = 6
         let media = attachmentRegions.map(\.frame)
             + stickerFrames
             + embedFrames
-        let union = media.reduce(messageBubbleFrame) { $0.union($1) }
+            + linkedImageRegions.map(\.frame)
+        // A conversation row without a bubble is media on its own - a GIF or
+        // a sticker sent with no caption. Its highlight follows that media,
+        // because the full-width band a standard row uses would reach across
+        // the pane to the empty side.
+        guard let base = messageBubbleFrame ?? (
+            usesConversationLayout ? media.first : nil
+        ) else { return highlightFrame }
+        let padding: CGFloat = 6
+        let union = media.reduce(base) { $0.union($1) }
         return union.insetBy(dx: -padding, dy: -padding)
     }
     let messageBubbleFrame: CGRect?
     let messageBubbleIsOutgoing: Bool
+    var usesConversationLayout = false
     let daySeparatorFrame: CGRect?
     let unreadSeparatorFrame: CGRect?
     let avatarFrame: CGRect?

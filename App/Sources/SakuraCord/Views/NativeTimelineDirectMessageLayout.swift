@@ -39,7 +39,6 @@ extension NativeTimelineRowLayout {
             plan: textPlan,
             model: model
         )
-        guard contentPresentation.linkedImages.isEmpty else { return nil }
         // A bubble needs something to show. Text and images are both valid on
         // their own, so an image sent without a caption still gets one.
         let attributedContent = contentPresentation.attributedContent
@@ -47,6 +46,7 @@ extension NativeTimelineRowLayout {
         guard hasText
             || !effectiveMessage.attachments.isEmpty
             || !message.stickers.isEmpty
+            || !contentPresentation.linkedImages.isEmpty
         else { return nil }
 
         let horizontalInset: CGFloat = 24
@@ -237,6 +237,44 @@ extension NativeTimelineRowLayout {
             )
         }
 
+        // A linked image - a GIF pasted as a Tenor or Giphy URL - is the
+        // same media as an upload, just carried by the link rather than an
+        // attachment. It follows the gallery's rules so a GIF sits on its
+        // sender's edge instead of falling back to the standard row, which
+        // is left-aligned no matter who sent it.
+        var linkedImageRegions: [LinkedImageRegion] = []
+        if !contentPresentation.linkedImages.isEmpty {
+            let plan = InlineWrappingLayoutPlan.frames(
+                sizes: contentPresentation.linkedImages.map(\.displaySize),
+                maximumWidth: max(180, maximumBubbleWidth),
+                horizontalSpacing: 4,
+                verticalSpacing: 4
+            )
+            let linkedExtent = plan.frames.map(\.maxX).max() ?? plan.size.width
+            let linkedY = anchorFrame.height > 0
+                ? anchorFrame.maxY + 4
+                : contentTopY
+            let linkedX = isOutgoing
+                ? conversationMinX + conversationWidth
+                    - horizontalInset - linkedExtent
+                : conversationMinX + horizontalInset
+            linkedImageRegions = zip(
+                contentPresentation.linkedImages,
+                plan.frames
+            ).map { reference, frame in
+                LinkedImageRegion(
+                    frame: frame.offsetBy(dx: linkedX, dy: linkedY),
+                    reference: reference
+                )
+            }
+            anchorFrame = CGRect(
+                x: linkedX,
+                y: linkedY,
+                width: linkedExtent,
+                height: plan.size.height
+            )
+        }
+
         // A sticker is media rather than text, so like an image it sits on
         // the message's edge with no bubble behind it.
         let stickers = directMessageStickers(
@@ -360,6 +398,7 @@ extension NativeTimelineRowLayout {
             ),
             messageBubbleFrame: bubbleFrame,
             messageBubbleIsOutgoing: isOutgoing,
+            usesConversationLayout: true,
             daySeparatorFrame: daySeparatorFrame,
             unreadSeparatorFrame: unreadSeparatorFrame,
             avatarFrame: nil,
@@ -379,7 +418,7 @@ extension NativeTimelineRowLayout {
             forwardedHeaderFrame: forwardedHeaderFrame,
             forwardedBarFrame: nil,
             forwardedSourceRegion: nil,
-            linkedImageRegions: [],
+            linkedImageRegions: linkedImageRegions,
             attachmentRegions: attachmentRegions,
             embedFrames: embedRegions.map(\.frame),
             embedRegions: embedRegions,
