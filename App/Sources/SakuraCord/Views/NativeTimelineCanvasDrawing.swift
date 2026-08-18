@@ -669,7 +669,7 @@ extension NativeTimelineCanvasView {
     ) -> MessageJumpHighlightPresentation? {
         guard items.indices.contains(index),
               layouts.indices.contains(index),
-              let highlightFrame = layouts[index].highlightFrame,
+              let highlightFrame = layouts[index].highlightBackgroundFrame,
               let messageID = items[index].messageID,
               let highlight = messageJumpHighlight,
               highlight.messageID == messageID
@@ -696,7 +696,20 @@ extension NativeTimelineCanvasView {
         NSColor.controlAccentColor.withAlphaComponent(
             0.12 * presentation.opacity
         ).setFill()
-        presentation.frame.fill()
+        // Follows the bubble's shape for the same reason the hover and
+        // mention highlights do: a square fill behind a rounded bubble reads
+        // as a box around it.
+        let radius = layouts.indices.contains(index)
+            ? layouts[index].highlightBackgroundCornerRadius
+            : 0
+        guard radius > 0 else {
+            presentation.frame.fill()
+            return
+        }
+        NSBezierPath(
+            concentricRoundedRect: presentation.frame,
+            cornerRadius: radius
+        ).fill()
     }
 
     func firstVisibleMessage(
