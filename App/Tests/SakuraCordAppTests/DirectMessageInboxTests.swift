@@ -721,10 +721,13 @@ import Testing
     #expect(codeDirectMessage.messageBubbleFrame != nil)
     #expect(codeDirectMessage.avatarFrame == nil)
 
-    // Generated system messages still fall back to the standard row, which
-    // marks them with a system icon rather than an author avatar.
+    // A generated notice - a call, a name change - is not conversation, so
+    // it carries no bubble. It is a quiet centred line rather than the
+    // standard row's icon and gutter, which is Discord chrome around what
+    // is really one sentence.
     #expect(systemDirectMessage.messageBubbleFrame == nil)
-    #expect(systemDirectMessage.systemIconFrame != nil)
+    #expect(systemDirectMessage.systemIconFrame == nil)
+    #expect(systemDirectMessage.avatarFrame == nil)
 }
 
 @MainActor
@@ -948,4 +951,54 @@ private func waitForDirectMessageCondition(
     // spanning the pane.
     let highlight = try #require(outgoing.highlightBackgroundFrame)
     #expect(highlight.width < width)
+}
+
+@MainActor
+@Test func `direct message system notices render as centred lines`() async throws {
+    let model = AppModel(
+        launchMode: .offlineTesting,
+        provider: MockChatProvider()
+    )
+    await model.start()
+    let currentUser = try #require(model.snapshot?.currentUser)
+    let width: CGFloat = 1_000
+
+    var message = Message(
+        id: MessageID(rawValue: 51_000),
+        channelID: ChannelID(rawValue: 9_701),
+        author: currentUser,
+        content: ""
+    )
+    message.type = .call
+    let layout = NativeTimelineRowLayout.make(
+        item: .message(
+            MessageRowPresentation(
+                message: message,
+                startsGroup: true,
+                startsDay: false,
+                replyPreview: nil,
+                isReplyAvailable: false
+            ),
+            isUnreadBoundary: false,
+            isHighlighted: false
+        ),
+        width: width,
+        model: model,
+        presentationStyle: .directMessage
+    )
+
+    // A call is not conversation, so it carries no bubble and is not
+    // attributed to a sender the way a message is.
+    #expect(layout.messageBubbleFrame == nil)
+    #expect(layout.authorFrame == nil)
+    #expect(layout.avatarFrame == nil)
+
+    // It sits centred in the pane rather than on either edge.
+    let content = try #require(layout.contentFrame)
+    let centreOffset = abs(content.midX - width / 2)
+    #expect(centreOffset < 1)
+
+    // The row is measured from the line itself; without that it claims no
+    // height and the next message draws over it.
+    #expect(layout.height > content.height)
 }

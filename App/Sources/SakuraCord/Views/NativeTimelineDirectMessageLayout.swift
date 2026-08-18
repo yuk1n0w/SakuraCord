@@ -18,12 +18,11 @@ extension NativeTimelineRowLayout {
         let message = row.message
         // Discord gives replies their own type (19), so matching only
         // `.default` silently excludes every real reply.
-        guard message.type == .default || message.type == .reply,
-              message.components.isEmpty,
-              message.thread == nil,
-              !message.flags.contains(.ephemeral),
-              !message.flags.contains(.isComponentsV2)
-        else { return nil }
+        // A call, a name change or someone joining a group is not part of
+        // the conversation, so it gets a quiet centred line rather than a
+        // full row with an avatar and a gutter.
+        let isSystemLine = message.type.hasGeneratedContent
+        guard directMessageAllowsConversationRow(message) else { return nil }
 
         // A forward carries its text, images and links inside the snapshot
         // rather than on the message, so the bubble is built from that and
@@ -50,12 +49,15 @@ extension NativeTimelineRowLayout {
         // row, which is left-aligned whoever sent it.
         let visibleEmbeds = MessageEmbedPresentation
             .visibleEmbeds(for: effectiveMessage)
-        guard hasText
-            || !effectiveMessage.attachments.isEmpty
-            || !message.stickers.isEmpty
-            || !contentPresentation.linkedImages.isEmpty
-            || !visibleEmbeds.isEmpty
-        else { return nil }
+        guard directMessageHasContent(
+            hasText: hasText,
+            attachments: effectiveMessage.attachments,
+            // Counted from the message rather than the snapshot to match
+            // the painter, which resolves stickers from message.stickers.
+            stickers: message.stickers,
+            linkedImages: contentPresentation.linkedImages,
+            embeds: visibleEmbeds
+        ) else { return nil }
 
         let horizontalInset: CGFloat = 24
         let horizontalContentInset: CGFloat = 13
@@ -78,7 +80,7 @@ extension NativeTimelineRowLayout {
         var bubbleWidth: CGFloat = 0
         var contentWidth: CGFloat = 0
         var textHeight: CGFloat = 0
-        if let attributedContent, hasText {
+        if let attributedContent, hasText, !isSystemLine {
             let naturalTextWidth = measuredMaximumLineWidth(
                 contentPresentation.framesetter,
                 length: attributedContent.length,
@@ -125,7 +127,13 @@ extension NativeTimelineRowLayout {
         // per run rather than on every message. A one-to-one thread needs no
         // name, so this stays off there.
         var authorFrame: CGRect?
-        if namesIncomingAuthors, !isOutgoing, row.startsGroup {
+        let namesAuthor = directMessageNamesAuthor(
+            namesIncomingAuthors: namesIncomingAuthors,
+            isOutgoing: isOutgoing,
+            startsGroup: row.startsGroup,
+            isSystemLine: isSystemLine
+        )
+        if namesAuthor {
             let authorHeight: CGFloat = 16
             authorFrame = CGRect(
                 x: bubbleX + horizontalContentInset,
@@ -180,7 +188,15 @@ extension NativeTimelineRowLayout {
 
         var bubbleFrame: CGRect?
         var contentFrame: CGRect?
-        if hasText {
+        if hasText, isSystemLine, let attributedContent {
+            contentFrame = directMessageSystemLineFrame(
+                framesetter: contentPresentation.framesetter,
+                content: attributedContent,
+                available: max(44, conversationWidth - horizontalInset * 2),
+                centredOn: conversationMinX + conversationWidth / 2,
+                topY: contentTopY
+            )
+        } else if hasText {
             // The floor only matters for very short text; padding drives the
             // rest, so it tracks the insets rather than sitting well above
             // them and inflating one-word bubbles.
@@ -207,7 +223,10 @@ extension NativeTimelineRowLayout {
         // bubble, so they sit on the same edge as the bubble and carry no
         // bubble of their own. A caption keeps its bubble directly above.
         var attachmentRegions: [AttachmentRegion] = []
-        var anchorFrame = bubbleFrame ?? CGRect(
+        // The row's height is measured from this frame, so a centred line
+        // anchors to its own text: with no bubble to fall back on it would
+        // otherwise claim no height and overlap the message below it.
+        var anchorFrame = bubbleFrame ?? contentFrame ?? CGRect(
             x: bubbleX,
             y: contentTopY,
             width: 0,
@@ -297,9 +316,7 @@ extension NativeTimelineRowLayout {
             isOutgoing: isOutgoing
         )
         let stickerFrames = stickers.frames
-        if let stickerAnchor = stickers.anchorFrame {
-            anchorFrame = stickerAnchor
-        }
+        anchorFrame = stickers.anchorFrame ?? anchorFrame
 
         // Link previews hang below the message like attachments do. An embed
         // is laid out at its final origin because its nested title, text and
@@ -631,6 +648,85 @@ extension NativeTimelineRowLayout {
             },
             intrinsicSizes: attachments.map(intrinsicSize),
             spacing: 4
+        )
+    }
+
+    /// In a group, an incoming bubble is captioned with its sender, once
+    /// per run rather than on every message. A one-to-one thread needs no
+    /// name, your own messages are already on your side, and a generated
+    /// notice has no sender to attribute.
+    static func directMessageNamesAuthor(
+        namesIncomingAuthors: Bool,
+        isOutgoing: Bool,
+        startsGroup: Bool,
+        isSystemLine: Bool
+    ) -> Bool {
+        namesIncomingAuthors && !isOutgoing && startsGroup && !isSystemLine
+    }
+
+    /// Whether a message belongs in the conversation layout at all.
+    ///
+    /// Discord gives replies their own type (19), so matching only
+    /// `.default` silently excludes every real reply. Generated notices are
+    /// admitted too, as a centred line rather than a bubble. Anything that
+    /// carries its own interactive chrome - buttons, a thread, a components
+    /// v2 payload - keeps the standard row, which is built to lay that out.
+    static func directMessageAllowsConversationRow(_ message: Message) -> Bool {
+        let isConversational = message.type == .default
+            || message.type == .reply
+            || message.type.hasGeneratedContent
+        return isConversational
+            && message.components.isEmpty
+            && message.thread == nil
+            && !message.flags.contains(.ephemeral)
+            && !message.flags.contains(.isComponentsV2)
+    }
+
+    /// A bubble needs something to show. Text, images, stickers, a linked
+    /// image and an embed are each enough on their own: a GIF sent with no
+    /// caption is still a message, and anything answering `false` here
+    /// falls back to the standard row, which is left-aligned whoever sent
+    /// it.
+    static func directMessageHasContent(
+        hasText: Bool,
+        attachments: [Attachment],
+        stickers: [MessageSticker],
+        linkedImages: [LinkedImageReference],
+        embeds: [MessageEmbed]
+    ) -> Bool {
+        hasText
+            || !attachments.isEmpty
+            || !stickers.isEmpty
+            || !linkedImages.isEmpty
+            || !embeds.isEmpty
+    }
+
+    /// Centres a generated notice on its own natural width, so the line is
+    /// centred as text rather than as a full-width box that happens to hold
+    /// left-aligned words.
+    static func directMessageSystemLineFrame(
+        framesetter: CTFramesetter,
+        content: NSAttributedString,
+        available: CGFloat,
+        centredOn centreX: CGFloat,
+        topY: CGFloat
+    ) -> CGRect {
+        let naturalWidth = measuredMaximumLineWidth(
+            framesetter,
+            length: content.length,
+            width: available
+        )
+        let lineWidth = max(1, min(available, ceil(naturalWidth)))
+        return CGRect(
+            x: centreX - lineWidth / 2,
+            y: topY,
+            width: lineWidth,
+            height: measuredTextHeight(
+                framesetter,
+                value: content,
+                length: content.length,
+                width: lineWidth
+            )
         )
     }
 
