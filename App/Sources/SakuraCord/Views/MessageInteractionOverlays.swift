@@ -339,7 +339,16 @@ struct MessageActionCapsule: View {
                 HoverActionButton(systemImage: "pencil", help: "Edit message", action: edit)
             }
             HoverActionButton(systemImage: "doc.on.doc", help: "Copy text", action: copy)
-            HoverActionButton(systemImage: "link", help: "Copy message link", action: copyLink)
+            // A message link points at a Discord channel route, which is
+            // worth sharing inside a server and is only plumbing in a private
+            // conversation, so the button stays out of direct messages.
+            if message.guildID != nil {
+                HoverActionButton(
+                    systemImage: "link",
+                    help: "Copy message link",
+                    action: copyLink
+                )
+            }
             if let openThread {
                 HoverActionButton(
                     systemImage: "bubble.left.and.bubble.right", help: "Open thread", action: openThread
