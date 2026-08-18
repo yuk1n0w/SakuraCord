@@ -717,8 +717,9 @@ extension NativeTimelineCanvasView {
         componentButtonPressAnimationTask = nil
 
         let layout = layouts[index]
-        let contentOrigin = editingContentOrigin(in: layout)
-        let width = max(80, bounds.width - contentOrigin.x - 14)
+        let placement = editingPlacement(in: layout)
+        let contentOrigin = placement.origin
+        let width = placement.width
         let root = NativeTimelineEditingMessageContent(
             model: model,
             message: row.message,
@@ -1052,6 +1053,26 @@ extension NativeTimelineCanvasView {
             reconcileGlassBubbles()
             needsDisplay = true
         }
+    }
+
+    /// Where the inline editor sits and how wide it runs.
+    ///
+    /// A standard row edits in place from its content origin out to the pane
+    /// edge. A bubble's content origin is inside the bubble, past its
+    /// padding, so the same rule would start the editor mid-bubble and run it
+    /// well past the shape; it anchors to the bubble's own edge and takes a
+    /// comfortable width instead of the whole pane.
+    func editingPlacement(
+        in layout: NativeTimelineRowLayout
+    ) -> (origin: CGPoint, width: CGFloat) {
+        guard let bubble = layout.messageBubbleFrame else {
+            let origin = editingContentOrigin(in: layout)
+            return (origin, max(80, bounds.width - origin.x - 14))
+        }
+        return (
+            CGPoint(x: bubble.minX, y: bubble.minY),
+            max(200, min(bounds.width - bubble.minX - 14, 520))
+        )
     }
 
     func editingContentOrigin(

@@ -508,6 +508,14 @@ struct NativeTimelineRowLayout {
     /// the pane. A bubble owns a narrower shape, so the highlight is drawn
     /// around the bubble and its media instead of banding the whole row,
     /// while `highlightFrame` stays wide for hover and hit testing.
+    /// Corner radius for that highlight. Zero for a standard row, which is
+    /// a plain band; a bubble's highlight is inset outward from the bubble,
+    /// so its radius grows by the same padding to stay concentric.
+    var highlightBackgroundCornerRadius: CGFloat {
+        guard let messageBubbleFrame else { return 0 }
+        return min(18, messageBubbleFrame.height / 2) + 6
+    }
+
     var highlightBackgroundFrame: CGRect? {
         guard let messageBubbleFrame else { return highlightFrame }
         let padding: CGFloat = 6

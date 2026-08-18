@@ -432,6 +432,7 @@ enum NativeTimelineRowPainter {
             // Discord row and looks wrong behind a bubble thread, while the
             // frame itself stays full width for hover and hit testing.
             in: layout.highlightBackgroundFrame,
+            cornerRadius: layout.highlightBackgroundCornerRadius,
             model: model,
             isHovered: isHovered
         )
@@ -495,12 +496,29 @@ enum NativeTimelineRowPainter {
     private static func drawHighlight(
         for item: NativeMessageTimelineItem,
         in frame: CGRect?,
+        cornerRadius: CGFloat,
         model: AppModel?,
         isHovered: Bool
     ) {
         guard case let .message(row, _, isHighlighted) = item,
               let frame
         else { return }
+        // A bubble row's highlight has to match the shape it sits behind.
+        // Filling the frame directly puts a hard-edged box around a rounded
+        // bubble, so the whole pass is clipped to the rounded shape instead.
+        let clipsToRoundedShape = cornerRadius > 0
+        if clipsToRoundedShape {
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(
+                concentricRoundedRect: frame,
+                cornerRadius: cornerRadius
+            ).addClip()
+        }
+        defer {
+            if clipsToRoundedShape {
+                NSGraphicsContext.restoreGraphicsState()
+            }
+        }
         if isHighlighted {
             drawStripedHighlight(
                 in: frame,
