@@ -43,10 +43,18 @@ extension NativeTimelineRowLayout {
         // their own, so an image sent without a caption still gets one.
         let attributedContent = contentPresentation.attributedContent
         let hasText = (attributedContent?.length ?? 0) > 0
+        // An embed counts as content on its own. A GIF sent from the picker
+        // is exactly that: its text is the source URL, which is blanked
+        // because the embed replaces it, leaving a message whose only
+        // content is the embed. Without this it fell back to the standard
+        // row, which is left-aligned whoever sent it.
+        let visibleEmbeds = MessageEmbedPresentation
+            .visibleEmbeds(for: effectiveMessage)
         guard hasText
             || !effectiveMessage.attachments.isEmpty
             || !message.stickers.isEmpty
             || !contentPresentation.linkedImages.isEmpty
+            || !visibleEmbeds.isEmpty
         else { return nil }
 
         let horizontalInset: CGFloat = 24
@@ -298,14 +306,14 @@ extension NativeTimelineRowLayout {
         // image frames are absolute, so it cannot be repositioned afterwards;
         // it is given a band on the message's own side to occupy.
         var embedRegions: [EmbedRegion] = []
-        if !effectiveMessage.embeds.isEmpty {
+        if !visibleEmbeds.isEmpty {
             let embedWidth = min(maximumBubbleWidth, 520)
             let embedX = isOutgoing
                 ? conversationMinX + conversationWidth
                     - horizontalInset - embedWidth
                 : conversationMinX + horizontalInset
             var embedY = anchorFrame.maxY + (anchorFrame.height > 0 ? 4 : 0)
-            for embed in MessageEmbedPresentation.visibleEmbeds(for: effectiveMessage) {
+            for embed in visibleEmbeds {
                 guard let region = NativeTimelineEmbedLayout.make(
                     embed: embed,
                     message: message,

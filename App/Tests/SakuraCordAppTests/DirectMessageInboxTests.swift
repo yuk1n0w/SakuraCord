@@ -880,3 +880,72 @@ private func waitForDirectMessageCondition(
     let highlight = try #require(outgoing.highlightBackgroundFrame)
     #expect(highlight.width < width)
 }
+
+@MainActor
+@Test func `direct message embed media sits on the sender's edge`() async throws {
+    let model = AppModel(
+        launchMode: .offlineTesting,
+        provider: MockChatProvider()
+    )
+    await model.start()
+    let currentUser = try #require(model.snapshot?.currentUser)
+    let other = User(
+        id: UserID(rawValue: currentUser.id.rawValue + 26_000),
+        username: "embed-sender",
+        displayName: "Embed Sender"
+    )
+    let width: CGFloat = 1_000
+    let source = try #require(URL(string: "https://example.com/view/loop.gif"))
+
+    // A GIF sent from the picker: the text is the source URL, and the
+    // bare-media embed replaces it, so the message has no visible content
+    // of its own.
+    func layout(author: User) -> NativeTimelineRowLayout {
+        let row = MessageRowPresentation(
+            message: Message(
+                id: MessageID(rawValue: author.id.rawValue + 46_000),
+                channelID: ChannelID(rawValue: 9_601),
+                author: author,
+                content: source.absoluteString,
+                embeds: [
+                    MessageEmbed(
+                        type: "gifv",
+                        url: source,
+                        video: MessageEmbedMedia(
+                            url: source,
+                            width: 320,
+                            height: 240
+                        )
+                    )
+                ]
+            ),
+            startsGroup: true,
+            startsDay: false,
+            replyPreview: nil,
+            isReplyAvailable: false
+        )
+        return NativeTimelineRowLayout.make(
+            item: .message(row, isUnreadBoundary: false, isHighlighted: false),
+            width: width,
+            model: model,
+            presentationStyle: .directMessage
+        )
+    }
+
+    let outgoing = layout(author: currentUser)
+    let incoming = layout(author: other)
+
+    // The embed is the whole message, so it still belongs to a conversation
+    // row rather than falling back to the standard left-aligned one.
+    let outgoingEmbed = try #require(outgoing.embedFrames.first)
+    let incomingEmbed = try #require(incoming.embedFrames.first)
+
+    #expect(outgoingEmbed.maxX > width / 2)
+    #expect(incomingEmbed.minX < width / 2)
+    #expect(outgoingEmbed.minX > incomingEmbed.minX)
+
+    // With no bubble behind it, the highlight follows the media instead of
+    // spanning the pane.
+    let highlight = try #require(outgoing.highlightBackgroundFrame)
+    #expect(highlight.width < width)
+}
