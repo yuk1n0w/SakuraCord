@@ -87,7 +87,11 @@ extension NativeTimelineRowPainter {
             }
         }
         if let frame = layout.daySeparatorFrame {
-            dateSeparator(date: message.timestamp, frame: frame)
+            dateSeparator(
+                date: message.timestamp,
+                frame: frame,
+                usesConversationLayout: layout.usesConversationLayout
+            )
         }
         if let frame = layout.unreadSeparatorFrame {
             newMessagesSeparator(frame: frame)
@@ -129,9 +133,11 @@ extension NativeTimelineRowPainter {
                     ofSize: NSFont.preferredFont(forTextStyle: .headline).pointSize,
                     weight: .semibold
                 ),
-                color: presentedAuthor.isBot
-                    ? .controlAccentColor
-                    : roleColor(author?.roleColorHex) ?? .labelColor
+                color: authorNameColor(
+                    presentedAuthor,
+                    roleColorHex: author?.roleColorHex,
+                    usesConversationLayout: layout.usesConversationLayout
+                )
             )
         }
         if let frame = layout.botBadgeFrame {
@@ -982,7 +988,18 @@ extension NativeTimelineRowPainter {
         )
     }
 
-    static func dateSeparator(date: Date, frame: CGRect) {
+    static func dateSeparator(
+        date: Date,
+        frame: CGRect,
+        usesConversationLayout: Bool = false
+    ) {
+        // A conversation marks the day the way an IRC client did: one
+        // monospaced line that says what happened, with the rule drawn as
+        // dashes in the text rather than as chrome flanking a chip.
+        guard !usesConversationLayout else {
+            conversationDateSeparator(date: date, frame: frame)
+            return
+        }
         let label = date.formatted(
             .dateTime.day().month(.wide).year()
         )
@@ -1019,6 +1036,26 @@ extension NativeTimelineRowPainter {
             in: labelFrame,
             font: NativeTimelineDateSeparatorMetrics.font,
             color: .secondaryLabelColor,
+            alignment: .center,
+            lineBreakMode: .byClipping
+        )
+    }
+
+    static func conversationDateSeparator(date: Date, frame: CGRect) {
+        let label = "--- Day changed to " + date.formatted(
+            .dateTime.weekday(.wide).day().month(.wide).year()
+        ) + " ---"
+        text(
+            label,
+            in: CGRect(
+                x: frame.minX,
+                y: frame.minY + NativeTimelineDateSeparatorMetrics
+                    .verticalPadding,
+                width: frame.width,
+                height: NativeTimelineDateSeparatorMetrics.labelHeight
+            ),
+            font: .monospacedSystemFont(ofSize: 11, weight: .regular),
+            color: NSColor.secondaryLabelColor.withAlphaComponent(0.75),
             alignment: .center,
             lineBreakMode: .byClipping
         )

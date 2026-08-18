@@ -879,6 +879,21 @@ extension NativeTimelineRowPainter {
         return nil
     }
 
+    /// A server names people by role colour. A group conversation has no
+    /// roles, so it borrows IRC's trick and colours the nick itself, which
+    /// is the only thing distinguishing one speaker from the next there.
+    static func authorNameColor(
+        _ author: User,
+        roleColorHex: UInt32?,
+        usesConversationLayout: Bool
+    ) -> NSColor {
+        if author.isBot { return .controlAccentColor }
+        guard usesConversationLayout else {
+            return roleColor(roleColorHex) ?? .labelColor
+        }
+        return RetroNickPalette.color(for: author.id)
+    }
+
     static func roleColor(_ value: UInt32?) -> NSColor? {
         guard let value, value != 0 else { return nil }
         return NSColor(

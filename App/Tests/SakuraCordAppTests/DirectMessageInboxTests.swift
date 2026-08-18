@@ -1002,3 +1002,54 @@ private func waitForDirectMessageCondition(
     // height and the next message draws over it.
     #expect(layout.height > content.height)
 }
+
+@MainActor
+@Test func `conversation nicknames take a stable colour from the account`() {
+    func user(_ id: UInt64, name: String, isBot: Bool = false) -> User {
+        User(
+            id: UserID(rawValue: id),
+            username: name,
+            displayName: name,
+            isBot: isBot
+        )
+    }
+
+    // A group conversation has no roles, so the name is coloured from the
+    // account itself the way an IRC client coloured a nick.
+    let speaker = user(4_820_017, name: "marcos")
+    let conversation = NativeTimelineRowPainter.authorNameColor(
+        speaker,
+        roleColorHex: nil,
+        usesConversationLayout: true
+    )
+    #expect(conversation != .labelColor)
+    #expect(RetroNickPalette.colors.contains(conversation))
+
+    // The same account keeps its colour: it is derived from the identifier,
+    // not from position in the member list or the order messages arrive.
+    #expect(
+        conversation == NativeTimelineRowPainter.authorNameColor(
+            user(4_820_017, name: "renamed-since"),
+            roleColorHex: nil,
+            usesConversationLayout: true
+        )
+    )
+
+    // A server still names people by role: the retro palette would override
+    // a colour that carries real meaning there.
+    let role = NativeTimelineRowPainter.authorNameColor(
+        speaker,
+        roleColorHex: 0x00FF_7F00,
+        usesConversationLayout: false
+    )
+    #expect(!RetroNickPalette.colors.contains(role))
+
+    // A bot stays marked as one wherever it speaks.
+    #expect(
+        NativeTimelineRowPainter.authorNameColor(
+            user(9_001, name: "helper", isBot: true),
+            roleColorHex: nil,
+            usesConversationLayout: true
+        ) == .controlAccentColor
+    )
+}
