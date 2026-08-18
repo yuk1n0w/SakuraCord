@@ -768,8 +768,13 @@ private struct QuickSwitcherResultList: NSViewRepresentable {
         let canvas = QuickSwitcherResultCanvas()
         canvas.autoresizingMask = [.width]
         canvas.setAccessibilityIdentifier("quick-switch-results")
+        // The canvas paints its rows, and subviews always render above their
+        // host's own drawing, so the selection glass cannot live inside it.
+        // It goes in a container underneath instead, the same arrangement the
+        // message bubbles use.
+        let container = QuickSwitcherResultContainerView(canvas: canvas)
         let scrollView = NSScrollView()
-        scrollView.documentView = canvas
+        scrollView.documentView = container
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = false
         scrollView.hasHorizontalScroller = false
@@ -781,7 +786,10 @@ private struct QuickSwitcherResultList: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard let canvas = scrollView.documentView as? QuickSwitcherResultCanvas else { return }
+        guard let container = scrollView.documentView
+            as? QuickSwitcherResultContainerView
+        else { return }
+        let canvas = container.canvas
         AppPerformanceSignposts.measureSync("QuickSwitcherViewportUpdate") {
             canvas.update(QuickSwitcherCanvasConfiguration(
                 rows: rows,
@@ -793,6 +801,60 @@ private struct QuickSwitcherResultList: NSViewRepresentable {
                 focus: focus,
                 activate: activate
             ))
+            container.synchronizeSelectionGlass()
+        }
+    }
+}
+
+/// Hosts the result canvas with the selection glass behind it.
+@MainActor
+private final class QuickSwitcherResultContainerView: NSView {
+    let canvas: QuickSwitcherResultCanvas
+    private let selection = NSGlassEffectView()
+
+    override var isFlipped: Bool { true }
+
+    init(canvas: QuickSwitcherResultCanvas) {
+        self.canvas = canvas
+        super.init(frame: .zero)
+        autoresizingMask = [.width]
+        selection.cornerRadius = 8
+        // Clear rather than regular: this sits inside the switcher's own
+        // glass panel, and the clear style is what keeps a lit edge without
+        // stacking two opaque materials. The tint matches the composer's
+        // direct message chrome.
+        selection.style = .clear
+        selection.tintColor = NSColor.black.withAlphaComponent(0.20)
+        selection.contentView = NSView()
+        selection.isHidden = true
+        addSubview(selection)
+        addSubview(canvas, positioned: .above, relativeTo: selection)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        canvas.setFrameSize(newSize)
+        synchronizeSelectionGlass()
+    }
+
+    /// Moves the glass to the highlighted row, or hides it when nothing is
+    /// selected. Frames are canvas-local and this view shares that space.
+    func synchronizeSelectionGlass() {
+        if canvas.frame.size != frame.size {
+            canvas.setFrameSize(frame.size)
+        }
+        guard let rect = canvas.selectedRowRect else {
+            selection.isHidden = true
+            return
+        }
+        selection.isHidden = false
+        if selection.frame != rect {
+            selection.frame = rect
         }
     }
 }
@@ -940,6 +1002,16 @@ private final class QuickSwitcherResultCanvas: NSView {
         }
     }
 
+    /// Frame of the highlighted row, in canvas coordinates, so the glass
+    /// selection behind this canvas can follow it.
+    var selectedRowRect: CGRect? {
+        guard let selectedResultID,
+              let index = rows.firstIndex(where: { $0.id == selectedResultID }),
+              rows[index].heading == nil
+        else { return nil }
+        return rowRect(at: index)
+    }
+
     private func rowRect(at index: Int) -> CGRect {
         CGRect(
             x: Self.horizontalInset,
@@ -984,10 +1056,8 @@ private final class QuickSwitcherResultCanvas: NSView {
             return
         }
 
-        if selectedResultID == row.id {
-            NSColor.labelColor.withAlphaComponent(0.09).setFill()
-            NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6).fill()
-        }
+        // The selection is drawn as glass behind this canvas, so nothing is
+        // painted here. See QuickSwitcherSelectionGlassView.
 
         let iconRect = CGRect(x: rect.minX + Self.contentInset, y: rect.minY + 6, width: 22, height: 22)
         drawIcon(for: row, in: iconRect, context: context)
