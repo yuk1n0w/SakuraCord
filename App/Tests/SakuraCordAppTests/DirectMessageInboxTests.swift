@@ -547,6 +547,55 @@ import Testing
 }
 
 @MainActor
+@Test func `forwarded direct messages show their content in a bubble`() async throws {
+    let model = AppModel(
+        launchMode: .offlineTesting,
+        provider: MockChatProvider()
+    )
+    await model.start()
+    let currentUser = try #require(model.snapshot?.currentUser)
+    let sender = User(
+        id: UserID(rawValue: currentUser.id.rawValue + 17_000),
+        username: "forward-sender",
+        displayName: "Forward Sender"
+    )
+    let row = MessageRowPresentation(
+        // A forward is a shell: its own content is empty and what the reader
+        // sees lives in the snapshot.
+        message: Message(
+            id: MessageID(rawValue: 37_000),
+            channelID: ChannelID(rawValue: 9_701),
+            author: sender,
+            content: "",
+            forwardedSnapshot: ForwardedMessageSnapshot(
+                content: "the original text",
+                timestamp: Date(timeIntervalSince1970: 1)
+            )
+        ),
+        startsGroup: true,
+        startsDay: false,
+        replyPreview: nil,
+        isReplyAvailable: false
+    )
+    let layout = NativeTimelineRowLayout.make(
+        item: .message(row, isUnreadBoundary: false, isHighlighted: false),
+        width: 1_000,
+        model: model,
+        presentationStyle: .directMessage
+    )
+
+    // The forwarded text is rendered rather than an empty bubble, and the
+    // message keeps the bubble presentation instead of an avatar row.
+    let bubble = try #require(layout.messageBubbleFrame)
+    let header = try #require(layout.forwardedHeaderFrame)
+    #expect(layout.avatarFrame == nil)
+    #expect(layout.attributedContent?.string.contains("the original text") == true)
+
+    // The header labels it, sitting above the bubble.
+    #expect(header.maxY <= bubble.minY)
+}
+
+@MainActor
 @Test func `direct message bubble styling does not alter standard or rich rows`() {
     let author = User(
         id: UserID(rawValue: 7_001),

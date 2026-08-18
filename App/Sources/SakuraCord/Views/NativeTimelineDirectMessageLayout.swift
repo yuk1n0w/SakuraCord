@@ -22,14 +22,21 @@ extension NativeTimelineRowLayout {
               message.components.isEmpty,
               message.stickers.isEmpty,
               message.thread == nil,
-              message.forwardedSnapshot == nil,
               !message.flags.contains(.ephemeral),
               !message.flags.contains(.isComponentsV2)
         else { return nil }
 
-        let textPlan = row.textPlan
+        // A forward carries its text, images and links inside the snapshot
+        // rather than on the message, so the bubble is built from that and
+        // marked with a small header. The source channel, guild icon and
+        // date link the standard row draws are left out: they are Discord
+        // routing detail, not part of the conversation.
+        let effectiveMessage = message.directMessageBubbleContentSource
+        let textPlan = message.forwardedSnapshot == nil
+            ? row.textPlan
+            : NativeTimelineTextPlan.make(for: effectiveMessage)
         let contentPresentation = NativeTimelineTextPresentation.make(
-            message: message,
+            message: effectiveMessage,
             plan: textPlan,
             model: model
         )
@@ -38,7 +45,7 @@ extension NativeTimelineRowLayout {
         // their own, so an image sent without a caption still gets one.
         let attributedContent = contentPresentation.attributedContent
         let hasText = (attributedContent?.length ?? 0) > 0
-        guard hasText || !message.attachments.isEmpty else { return nil }
+        guard hasText || !effectiveMessage.attachments.isEmpty else { return nil }
 
         let horizontalInset: CGFloat = 24
         let horizontalContentInset: CGFloat = 13
@@ -74,7 +81,7 @@ extension NativeTimelineRowLayout {
             // sliver. Set too high it pads short words like "gm" out to a
             // width their text never asked for, which reads as stray space on
             // the trailing edge while longer messages look correct.
-            bubbleWidth = message.content.contains("```")
+            bubbleWidth = effectiveMessage.content.contains("```")
                 ? maximumBubbleWidth
                 : min(
                     maximumBubbleWidth,
@@ -89,27 +96,15 @@ extension NativeTimelineRowLayout {
             )
         }
 
-        var prefixHeight: CGFloat = 0
-        var daySeparatorFrame: CGRect?
-        if row.startsDay {
-            daySeparatorFrame = CGRect(
-                x: conversationMinX + horizontalInset,
-                y: prefixHeight,
-                width: conversationWidth - horizontalInset * 2,
-                height: NativeTimelineDateSeparatorMetrics.rowHeight
-            )
-            prefixHeight += NativeTimelineDateSeparatorMetrics.rowHeight
-        }
-        var unreadSeparatorFrame: CGRect?
-        if isUnreadBoundary {
-            unreadSeparatorFrame = CGRect(
-                x: conversationMinX + horizontalInset,
-                y: prefixHeight,
-                width: conversationWidth - horizontalInset * 2,
-                height: NativeTimelineUnreadSeparatorMetrics.rowHeight
-            )
-            prefixHeight += NativeTimelineUnreadSeparatorMetrics.rowHeight
-        }
+        let separators = directMessageSeparators(
+            row,
+            isUnreadBoundary: isUnreadBoundary,
+            minX: conversationMinX + horizontalInset,
+            width: conversationWidth - horizontalInset * 2
+        )
+        var prefixHeight = separators.height
+        let daySeparatorFrame = separators.dayFrame
+        let unreadSeparatorFrame = separators.unreadFrame
 
         let isOutgoing = message.author.id == model?.snapshot?.currentUser.id
         let bubbleX = isOutgoing
@@ -138,6 +133,22 @@ extension NativeTimelineRowLayout {
         // The quoted line sits directly above its bubble and shares the
         // bubble's leading edge, so a reply reads as belonging to the bubble
         // under it rather than as a separate row.
+        var forwardedHeaderFrame: CGRect?
+        if message.forwardedSnapshot != nil {
+            let headerHeight: CGFloat = 18
+            forwardedHeaderFrame = CGRect(
+                x: bubbleX + horizontalContentInset,
+                y: prefixHeight,
+                width: max(
+                    64,
+                    conversationMinX + conversationWidth
+                        - horizontalInset - bubbleX
+                ),
+                height: headerHeight
+            )
+            prefixHeight += headerHeight
+        }
+
         var replyFrame: CGRect?
         if row.replyMessageID != nil {
             let replyHeight: CGFloat = 20
@@ -192,10 +203,10 @@ extension NativeTimelineRowLayout {
             width: 0,
             height: 0
         )
-        if !message.attachments.isEmpty {
+        if !effectiveMessage.attachments.isEmpty {
             let galleryWidth = max(180, maximumBubbleWidth)
             let galleryFrames = directMessageGalleryFrames(
-                message.attachments,
+                effectiveMessage.attachments,
                 width: galleryWidth
             )
             let galleryHeight = galleryFrames.map(\.maxY).max() ?? 0
@@ -208,7 +219,7 @@ extension NativeTimelineRowLayout {
                     - horizontalInset - galleryExtent
                 : conversationMinX + horizontalInset
             attachmentRegions = zip(
-                message.attachments,
+                effectiveMessage.attachments,
                 galleryFrames
             ).map { attachment, frame in
                 AttachmentRegion(
@@ -229,19 +240,19 @@ extension NativeTimelineRowLayout {
         // image frames are absolute, so it cannot be repositioned afterwards;
         // it is given a band on the message's own side to occupy.
         var embedRegions: [EmbedRegion] = []
-        if !message.embeds.isEmpty {
+        if !effectiveMessage.embeds.isEmpty {
             let embedWidth = min(maximumBubbleWidth, 520)
             let embedX = isOutgoing
                 ? conversationMinX + conversationWidth
                     - horizontalInset - embedWidth
                 : conversationMinX + horizontalInset
             var embedY = anchorFrame.maxY + (anchorFrame.height > 0 ? 4 : 0)
-            for embed in MessageEmbedPresentation.visibleEmbeds(for: message) {
+            for embed in MessageEmbedPresentation.visibleEmbeds(for: effectiveMessage) {
                 guard let region = NativeTimelineEmbedLayout.make(
                     embed: embed,
                     message: message,
                     model: model,
-                    attachments: message.attachments,
+                    attachments: effectiveMessage.attachments,
                     origin: CGPoint(x: embedX, y: embedY),
                     maximumWidth: embedWidth
                 ) else { continue }
@@ -345,7 +356,7 @@ extension NativeTimelineRowLayout {
             contentFrame: contentFrame,
             attributedContent: attributedContent,
             contentFramesetter: contentPresentation.framesetter,
-            forwardedHeaderFrame: nil,
+            forwardedHeaderFrame: forwardedHeaderFrame,
             forwardedBarFrame: nil,
             forwardedSourceRegion: nil,
             linkedImageRegions: [],
@@ -373,6 +384,48 @@ extension NativeTimelineRowLayout {
 
     /// Reaction chips for a bubble, hung under it on the edge the message is
     /// anchored to.
+    struct DirectMessageSeparatorLayout {
+        let dayFrame: CGRect?
+        let unreadFrame: CGRect?
+        let height: CGFloat
+    }
+
+    /// Day and unread rules above a bubble. Split out to keep the bubble
+    /// builder inside its complexity budget as message kinds accumulate.
+    static func directMessageSeparators(
+        _ row: MessageRowPresentation,
+        isUnreadBoundary: Bool,
+        minX: CGFloat,
+        width: CGFloat
+    ) -> DirectMessageSeparatorLayout {
+        var height: CGFloat = 0
+        var dayFrame: CGRect?
+        if row.startsDay {
+            dayFrame = CGRect(
+                x: minX,
+                y: height,
+                width: width,
+                height: NativeTimelineDateSeparatorMetrics.rowHeight
+            )
+            height += NativeTimelineDateSeparatorMetrics.rowHeight
+        }
+        var unreadFrame: CGRect?
+        if isUnreadBoundary {
+            unreadFrame = CGRect(
+                x: minX,
+                y: height,
+                width: width,
+                height: NativeTimelineUnreadSeparatorMetrics.rowHeight
+            )
+            height += NativeTimelineUnreadSeparatorMetrics.rowHeight
+        }
+        return DirectMessageSeparatorLayout(
+            dayFrame: dayFrame,
+            unreadFrame: unreadFrame,
+            height: height
+        )
+    }
+
     static func directMessageReactions(
         _ message: Message,
         anchorFrame: CGRect,
@@ -479,5 +532,21 @@ extension NativeTimelineRowLayout {
             )
         }
         return min(width, maximumWidth)
+    }
+}
+
+extension Message {
+    /// The message whose content a bubble should render.
+    ///
+    /// A forward is a shell: its own content is empty and the text, images
+    /// and embeds it is carrying live in the snapshot. Everywhere else this
+    /// is just the message itself.
+    var directMessageBubbleContentSource: Message {
+        guard let snapshot = forwardedSnapshot else { return self }
+        var resolved = self
+        resolved.content = snapshot.content
+        resolved.attachments = snapshot.attachments
+        resolved.embeds = snapshot.embeds
+        return resolved
     }
 }
