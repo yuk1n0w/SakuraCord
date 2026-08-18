@@ -331,10 +331,24 @@ extension NativeTimelineCanvasView {
                 })
                 ?? items.firstIndex(where: { $0.messageID == messageID })
         else { return }
+        // A standard row fills the pane, so its actions belong at the far
+        // edge. A bubble does not: pinning the capsule to the pane would
+        // strand it across empty space from the message being hovered, so it
+        // sits just outside the bubble on the side away from the text.
+        let layout = layouts[index]
+        let originX: CGFloat
+        if let bubble = layout.messageBubbleFrame {
+            let preferred = layout.messageBubbleIsOutgoing
+                ? bubble.minX - 8 - size.width
+                : bubble.maxX + 8
+            originX = min(max(0, preferred), max(0, bounds.width - size.width))
+        } else {
+            originX = max(0, bounds.width - 14 - size.width)
+        }
         host.frame = CGRect(
-            x: max(0, bounds.width - 14 - size.width),
+            x: originX,
             y: displayedRowOrigin(at: index)
-                + (layouts[index].highlightFrame?.minY ?? 0)
+                + (layout.highlightFrame?.minY ?? 0)
                 - 13,
             width: size.width,
             height: size.height
