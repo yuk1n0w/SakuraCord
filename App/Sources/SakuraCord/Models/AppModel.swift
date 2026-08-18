@@ -993,6 +993,19 @@ final class AppModel {
     @ObservationIgnored var batchedAcknowledgementChannelIDs:
         Set<ChannelID> = []
     @ObservationIgnored let maximumCreatedMessagesPerFlush = 4
+    /// Shortest gap between full unread projections. Short enough that badge
+    /// updates still read as immediate, long enough to collapse a burst of
+    /// gateway traffic into a single pass.
+    @ObservationIgnored static let unreadPresentationRefreshInterval:
+        Duration = .milliseconds(150)
+    @ObservationIgnored var lastUnreadPresentationRefresh: ContinuousClock.Instant?
+    @ObservationIgnored var unreadPresentationRefreshTask: Task<Void, Never>?
+    /// Upper bound on chunks drained before unread side effects run anyway,
+    /// so a conversation that never stops arriving still refreshes its
+    /// badges instead of deferring them indefinitely.
+    @ObservationIgnored static let
+        maximumChunksBetweenSideEffects = 8
+    @ObservationIgnored var chunksSinceCreatedMessageSideEffects = 0
     @ObservationIgnored var localTypingTask: Task<Void, Never>?
     @ObservationIgnored var localTypingChannelID: ChannelID?
     @ObservationIgnored var lastTypingRequestAt: [ChannelID: Date] = [:]

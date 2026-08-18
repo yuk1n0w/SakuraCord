@@ -21,24 +21,11 @@ struct ForwardMessageWindowOverlay: View {
                 }
             )
         }
-        // Destination discovery depends only on already-loaded local stores.
-        // Warm its revisioned index after workspace changes settle so the first
-        // explicit Forward action normally attaches an immediately populated
-        // picker instead of starting permission and fuzzy-index work on open.
-        .task(id: model.forwardSearchSourceRevision) {
-            guard model.snapshot != nil else { return }
-            while model.selectedGuildID != nil,
-                  model.memberListGroups.isEmpty || model.guildRoles.isEmpty
-            {
-                try? await Task.sleep(for: .milliseconds(100))
-                guard !Task.isCancelled else { return }
-            }
-            try? await Task.sleep(for: .milliseconds(150))
-            guard !Task.isCancelled else { return }
-            _ = await ForwardDestinationSearchIndexCache.shared.prepare(
-                for: model,
-                priority: .utility
-            )
-        }
+        // The index is built when the picker opens, not before. This overlay
+        // is mounted for the whole session, and forwardSearchSourceRevision
+        // advances on ordinary gateway traffic, so warming here rebuilt an
+        // index over every channel, user and guild each time a message
+        // arrived -- continuous CPU spent on a feature nobody had invoked.
+        // The picker's own revisioned task still populates it on open.
     }
 }

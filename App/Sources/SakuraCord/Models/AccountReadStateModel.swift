@@ -92,7 +92,18 @@ final class AccountReadStateModel {
 
     private(set) var accountID: String?
     private(set) var entries: [ChannelID: Entry] = [:]
-    private(set) var settingsByGuild: [GuildID?: GuildNotificationSettings] = [:]
+    private(set) var settingsByGuild: [GuildID?: GuildNotificationSettings] = [:] {
+        didSet { rebuildChannelOverrideIndex() }
+    }
+
+    /// Channel overrides keyed for lookup rather than scanned.
+    ///
+    /// `effectivePolicy` resolves up to three overrides per channel, and the
+    /// unread projection runs it for every channel in the account each time a
+    /// batch of messages arrives. Searching `channelOverrides` made that
+    /// O(channels x overrides x 3), which dominated the profile during use.
+    private var overridesByGuild:
+        [GuildID?: [ChannelID: ChannelNotificationOverride]] = [:]
     private(set) var presentations: [ChannelID: Presentation] = [:]
     private(set) var acknowledgementToken: String?
     private(set) var readStateVersion: Int?
@@ -262,18 +273,29 @@ final class AccountReadStateModel {
         channelID: ChannelID,
         guildID: GuildID?
     ) -> ChannelNotificationOverride? {
-        settingsByGuild[guildID]?.channelOverrides.last {
-            $0.channelID == channelID
+        overridesByGuild[guildID]?[channelID]
+    }
+
+    /// Rebuilt whenever settings change, which happens on notification
+    /// updates rather than on message traffic, so the cost sits well away
+    /// from the hot path it removes work from.
+    private func rebuildChannelOverrideIndex() {
+        overridesByGuild = settingsByGuild.mapValues { settings in
+            var index: [ChannelID: ChannelNotificationOverride] = [:]
+            index.reserveCapacity(settings.channelOverrides.count)
+            // Later entries win, preserving the previous `last(where:)`
+            // resolution when a channel appears more than once.
+            for override in settings.channelOverrides {
+                index[override.channelID] = override
+            }
+            return index
         }
     }
 
     func isChannelMuted(_ channel: Channel, at date: Date = .now) -> Bool {
         guard !channel.isMuted else { return true }
-        let settings = settingsByGuild[channel.guildID]
-        let directOverride = settings?.channelOverrides.last {
-            $0.channelID == channel.id
-        }
-        guard let override = directOverride else {
+        guard let override = overridesByGuild[channel.guildID]?[channel.id]
+        else {
             return false
         }
         return override.isMuted
@@ -282,8 +304,8 @@ final class AccountReadStateModel {
 
     func inheritedNotificationLevel(for channel: Channel) -> MessageNotificationLevel {
         let guildSettings = settingsByGuild[channel.guildID]
-        let parentOverride = channel.categoryID.flatMap { parentID in
-            guildSettings?.channelOverrides.last { $0.channelID == parentID }
+        let parentOverride = channel.categoryID.flatMap {
+            overridesByGuild[channel.guildID]?[$0]
         }
         if let level = parentOverride?.messageNotifications,
            level != .inherit
@@ -1189,16 +1211,13 @@ private extension AccountReadStateModel {
         let isDirectMessage =
             entry.kind == .directMessage || entry.kind == .groupDirectMessage
         let guildSettings = settingsByGuild[entry.guildID]
-        let directOverride = guildSettings?.channelOverrides.last { $0.channelID == entry.channelID }
-        let parentOverride = entry.parentID.flatMap { parentID in
-            guildSettings?.channelOverrides.last { $0.channelID == parentID }
-        }
+        let guildOverrides = overridesByGuild[entry.guildID]
+        let directOverride = guildOverrides?[entry.channelID]
+        let parentOverride = entry.parentID.flatMap { guildOverrides?[$0] }
         let ancestorOverride =
             entry.parentID
             .flatMap { channelByID[$0]?.categoryID }
-            .flatMap { ancestorID in
-                guildSettings?.channelOverrides.last { $0.channelID == ancestorID }
-            }
+            .flatMap { guildOverrides?[$0] }
         let overrideHierarchy = [directOverride, parentOverride, ancestorOverride]
         let parentIsConversation = entry.parentID.flatMap { channelByID[$0] } != nil
         let categoryOverride = parentIsConversation ? ancestorOverride : parentOverride

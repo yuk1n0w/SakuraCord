@@ -317,7 +317,20 @@ extension AppModel {
         }
         commitBatchedSelectedMessages()
         isFlushingCreatedMessageBatch = false
-        flushBatchedCreatedMessageSideEffects()
+        // Side effects project unread state across every channel. Running
+        // them per chunk meant a burst of forty messages paid for ten full
+        // projections instead of one, which dominated CPU while messages
+        // arrived. The batched flags accumulate across chunks, so this only
+        // has to run once the queue drains -- with a bound so a continuously
+        // busy account still updates its badges rather than starving.
+        chunksSinceCreatedMessageSideEffects += 1
+        let drained = pendingCreatedMessages.isEmpty
+        if drained || chunksSinceCreatedMessageSideEffects
+            >= Self.maximumChunksBetweenSideEffects
+        {
+            chunksSinceCreatedMessageSideEffects = 0
+            flushBatchedCreatedMessageSideEffects()
+        }
         if !pendingCreatedMessages.isEmpty {
             // A display or AppKit transaction can occasionally delay the
             // eight-millisecond timer long enough for dozens of gateway
@@ -343,6 +356,7 @@ extension AppModel {
         batchedUnreadPresentationNeedsRefresh = false
         batchedAcknowledgementChannelIDs.removeAll(keepingCapacity: false)
         isFlushingCreatedMessageBatch = false
+        chunksSinceCreatedMessageSideEffects = 0
     }
 
     func flushBatchedCreatedMessageSideEffects() {
@@ -1336,10 +1350,38 @@ extension AppModel {
 
     func requestUnreadPresentationRefresh() {
         guard !liveScrollingConversationIDs.isEmpty else {
-            refreshUnreadPresentation()
+            scheduleCoalescedUnreadPresentationRefresh()
             return
         }
         hasDeferredUnreadPresentationRefresh = true
+    }
+
+    /// The projection walks every read-state entry and every channel. Gateway
+    /// traffic can request it many times a second, and running it that often
+    /// was the largest single cost while the app was in use. Collapsing the
+    /// requests into one refresh per interval keeps badges current -- they
+    /// are not something the eye tracks frame by frame -- without spending
+    /// the main actor on repeated full projections.
+    func scheduleCoalescedUnreadPresentationRefresh() {
+        let now = ContinuousClock.now
+        if let last = lastUnreadPresentationRefresh,
+           now - last < Self.unreadPresentationRefreshInterval
+        {
+            guard unreadPresentationRefreshTask == nil else { return }
+            let delay = Self.unreadPresentationRefreshInterval - (now - last)
+            unreadPresentationRefreshTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: delay)
+                guard let self, !Task.isCancelled else { return }
+                self.unreadPresentationRefreshTask = nil
+                self.lastUnreadPresentationRefresh = .now
+                self.refreshUnreadPresentation()
+            }
+            return
+        }
+        unreadPresentationRefreshTask?.cancel()
+        unreadPresentationRefreshTask = nil
+        lastUnreadPresentationRefresh = now
+        refreshUnreadPresentation()
     }
 
     func flushUnreadPresentationRefresh() {
