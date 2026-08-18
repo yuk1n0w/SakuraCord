@@ -753,6 +753,8 @@ extension NativeTimelineCanvasView {
             $0.messageID == messageID
         }) else { return }
         let identifier = items[rowIndex].identifier
+        visibleMediaProjection = nil
+        mediaKeysByIdentifier[identifier] = nil
         invalidateBitmap(identifier)
         requestMedia(for: items[rowIndex], at: rowIndex)
         setNeedsDisplay(rowFrame(at: rowIndex))
@@ -928,7 +930,8 @@ extension NativeTimelineCanvasView {
             canEdit: canEdit,
             canRetry: row.message.outboxState == .failed,
             canReply: actions.reply != nil,
-            canForward: actions.forward != nil && model?.canForward(row.message) == true
+            canForward: actions.forward != nil && model?.canForward(row.message) == true,
+            context: messageInteractionContext
         ) {
             guard case let .action(
                 action,
@@ -965,6 +968,8 @@ extension NativeTimelineCanvasView {
         actions: NativeTimelineRowActions
     ) -> () -> Void {
         switch action {
+        case .jumpToMessage:
+            { actions.openMessage?(row.message) }
         case .retrySending:
             { actions.retry(row.message) }
         case .addReaction:
@@ -992,6 +997,8 @@ extension NativeTimelineCanvasView {
             }
         case .copyMessageID:
             { Self.copyText(row.message.id.description) }
+        case .copyAuthorID:
+            { Self.copyText(row.message.author.id.description) }
         case .deleteMessage:
             { [weak self] in self?.confirmDelete(row.message) }
         }

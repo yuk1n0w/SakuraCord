@@ -44,8 +44,8 @@ observable models so it does not invalidate the complete app tree.
 `AppUpdateController` owns Sparkle's `SPUStandardUpdaterController` for the
 application lifetime. It starts only when the canonical release bundle contains
 the complete production update configuration. Source, debug, ad-hoc developer,
-offline, and linked-worktree builds omit that configuration, make no update
-request, and leave the native **Check for Updates…** controls disabled.
+and offline builds omit that configuration, make no update request, and leave
+the native **Check for Updates…** controls disabled.
 Production checks the signed feed every six hours while the app is running, or
 after launch when a check is overdue, and presents Sparkle's standard update
 alert when a release is available. Sparkle persists the user's automatic-check
@@ -66,10 +66,18 @@ Within the production provider:
   scheduling, caches, capability gates, upload coordination, safety stops, and
   domain-event decoding.
 - REST and Gateway share one `DiscordClientMetadata` source and one provider
-  lifetime. A session-wide safety stop cancels both without affecting unrelated
-  app networking.
+  lifetime, but production gives them separate provider-owned `URLSession`
+  connection pools. A confirmed REST transport timeout can therefore replace
+  only the stalled pool without interrupting Gateway heartbeats. Safe reads may
+  retry once on the replacement; mutations are never replayed after an
+  ambiguous failure. A session-wide safety stop still cancels both without
+  affecting unrelated app networking.
 - Every authenticated REST route uses the central transport. Views and feature
   helpers do not create one-off authenticated `URLSession` paths.
+- Production Gateway ETF is parsed directly from the decompressed bounded byte
+  buffer into a JSON-compatible value tree. Dispatch DTOs decode directly from
+  that tree, avoiding a second JSON serialization/parser pass while retaining
+  the same typed validation and event ordering.
 - `CatboxAttachmentUploader` is a separate unauthenticated app service used
   only after an explicit choice in the oversized-attachment warning. It never
   receives Discord credentials or sends a Discord message; its validated HTTPS
@@ -129,6 +137,20 @@ workspace, message, read, member, and Gateway state is session-memory only. A
 database migration drops the obsolete tables from earlier builds while
 preserving drafts. Normal and offline runs use separate storage behavior.
 
+Startup and account switching publish READY-derived read state in one atomic
+Main Actor update after building it off-main. Once the initial channel is known,
+the app starts its read-only newest-history request concurrently with the
+remaining navigation projection and consumes that single in-flight task when
+the channel loader starts. This prefetch is process-only coordination: it is
+cancelled on account/session reset and never persists messages across launches.
+
+Authenticated performance launch modes retain detailed signposts and exact
+resource windows for startup, account switching, DM/server/channel navigation,
+older-history pagination, timeline/member scrolling, parsing, state commits,
+and rendering. They use real credentials and network data while suppressing
+acknowledgements and other account mutations; offline fixtures are not accepted
+as production performance evidence.
+
 ## Message and media flow
 
 History responses and Gateway events decode into the same domain message
@@ -143,6 +165,20 @@ headers, pagination, permissions, composers, and thread/forum state remain
 outside that shared row engine. SwiftUI/AppKit hosting inside the timeline is
 bounded to interaction surfaces that need native controls, including editing,
 media playback, menus, pickers, and component interactions.
+
+The channel member inspector likewise uses one virtualized AppKit/Core Text
+canvas. Its bounded visible-row overlays remain mounted and animated during
+live scrolling so avatars, decorations, presence, and activity emoji preserve
+their normal presentation. As rows enter and leave the viewport, their hosting
+views are recycled rather than allocated and destroyed. Cached canvas frames
+remain underneath as a zero-gap presentation while optional new animated-frame
+expansion is deferred until motion ends. The animation decode scheduler tracks
+timeline and member-list gestures independently, so one surface ending a
+gesture cannot reopen the decode lane while another is still moving. Canvas
+image requests use presentation-sized pixel budgets (96-pixel
+avatars/decorations, 64-pixel emoji, and 32-pixel guild badges), while full-row
+nameplates retain their 512-pixel budget. All decoded state remains in bounded
+process-memory caches and is discarded at process exit.
 
 `MediaPipeline` owns public-media caching and the complete native voice/video
 stack. `DaveKit` is an implementation dependency of `MediaPipeline`; the app

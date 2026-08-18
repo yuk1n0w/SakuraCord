@@ -750,6 +750,55 @@ private func appendETFBinary(_ value: String, to data: inout Data) {
     #expect(update.groups?.map(\.count) == [1, 2, 388])
 }
 
+@Test func `indexed role catalog preserves complete member projection semantics`() throws {
+    let roles = try JSONDecoder().decode(
+        [GuildRoleDTO].self,
+        from: Data(#"""
+        [
+            {"id":"100","name":"Everyone","position":0,"hoist":false,"permissions":"1024"},
+            {"id":"300","name":"Three","position":5,"hoist":true,"color":16711680},
+            {"id":"200","name":"Two","position":5,"hoist":true,"unicode_emoji":"🌸"},
+            {"id":"400","name":"Four","position":2,"hoist":false,"permissions":"2048"}
+        ]
+        """#.utf8)
+    )
+    let member = try JSONDecoder().decode(
+        GuildMemberDTO.self,
+        from: Data(#"""
+        {
+            "user":{"id":"42","username":"member","global_name":"Global"},
+            "nick":"Guild Nick",
+            "roles":["400","200","300","200"],
+            "presence":{"status":"idle","activities":[]},
+            "pending":false
+        }
+        """#.utf8)
+    )
+    let fallback = try member.domain(
+        currentUserID: nil,
+        currentStatus: .online,
+        guildRoles: roles,
+        guildID: GuildID(rawValue: 100)
+    )
+    let indexed = try member.domain(
+        currentUserID: nil,
+        currentStatus: .online,
+        guildRoles: roles,
+        guildRoleCatalog: GuildMemberRoleCatalog(roles),
+        guildID: GuildID(rawValue: 100)
+    )
+
+    #expect(indexed == fallback)
+    #expect(indexed.roleName == "Three")
+    #expect(indexed.roles.map(\.id) == [
+        RoleID(rawValue: 300), RoleID(rawValue: 200), RoleID(rawValue: 400),
+    ])
+    #expect(indexed.roleIDs == [
+        RoleID(rawValue: 400), RoleID(rawValue: 200),
+        RoleID(rawValue: 300), RoleID(rawValue: 200),
+    ])
+}
+
 @Test func `voice state update uses gateway opcode four and explicit null to leave`() throws {
     let join = DiscordGatewayPayloadFactory.voiceStateUpdate(
         guildID: GuildID(rawValue: 100),
@@ -968,6 +1017,48 @@ private func appendETFBinary(_ value: String, to data: inout Data) {
     #expect(guild.members.map(\.user.username) == ["first", "second"])
 }
 
+@Test func `ready payload decodes directly from ETF value tree without JSON round trip`() throws {
+    let data = Data(#"""
+    {
+        "guilds": [
+            {
+                "id":"100",
+                "properties":{
+                    "name":"Direct Decode",
+                    "permissions":2048,
+                    "rules_channel_id":"101"
+                },
+                "channels":[{"id":"101","name":"rules","type":0}],
+                "members":[
+                    {"user":{"id":"200","username":"member"},"roles":[]},
+                    {"future_shape":true}
+                ]
+            }
+        ],
+        "relationships":[
+            {
+                "id":"201",
+                "type":1,
+                "nickname":"  Friend  ",
+                "user":{"id":"201","username":"friend"}
+            }
+        ]
+    }
+    """#.utf8)
+    let jsonReady = try JSONDecoder().decode(GatewayReadyGuildsDTO.self, from: data)
+    let value = try JSONDecoder().decode(JSONValue.self, from: data)
+    let directReady = try JSONValueDecoder().decode(GatewayReadyGuildsDTO.self, from: value)
+
+    let jsonGuild = try #require(jsonReady.guilds.first?.domain(currentUserID: nil))
+    let directGuild = try #require(directReady.guilds.first?.domain(currentUserID: nil))
+    #expect(directGuild == jsonGuild)
+    #expect(directReady.guilds.first?.channels.map(\.id) == ["101"])
+    #expect(directReady.guilds.first?.members.map(\.user.username) == ["member"])
+    #expect(directReady.friendUserIDs == jsonReady.friendUserIDs)
+    #expect(directReady.relationshipNicknamesByUserID == jsonReady.relationshipNicknamesByUserID)
+    #expect(directReady.users.map(\.id) == jsonReady.users.map(\.id))
+}
+
 @Test func `ready payload preserves relationship nickname and embedded legacy user`() throws {
     let data = Data(#"""
     {
@@ -1154,14 +1245,15 @@ private func appendETFBinary(_ value: String, to data: inout Data) {
         requested: [UserID(rawValue: 2)]
     )
 
-    #expect(missing.count == 100)
+    #expect(missing.count == 101)
     #expect(missing.prefix(3) == [
-        UserID(rawValue: 3), UserID(rawValue: 4), UserID(rawValue: 5)
+        UserID(rawValue: 100), UserID(rawValue: 99), UserID(rawValue: 98)
     ])
+    #expect(missing.count <= DiscordMessageMemberHydration.maximumUserIDsPerHistoryPage)
     #expect(missing.contains(UserID(rawValue: 100)))
     #expect(missing.contains(UserID(rawValue: 1_000)))
     #expect(missing.contains(UserID(rawValue: 1_001)))
-    #expect(!missing.contains(UserID(rawValue: 1_002)))
+    #expect(missing.contains(UserID(rawValue: 1_002)))
 }
 
 @Test func `ready and guild emoji updates decode complete custom emoji catalogs`() throws {
@@ -1307,6 +1399,21 @@ private func appendETFBinary(_ value: String, to data: inout Data) {
     #expect(data["guild_id"] as? String == "10")
     #expect(data["query"] as? String == "maya")
     #expect(data["limit"] as? Int == 10)
+    #expect(data["presences"] as? Bool == true)
+    #expect(Set(data.keys) == ["guild_id", "query", "limit", "presences"])
+}
+
+@Test func `account wide member search uses current desktop payload shape`() throws {
+    let payload = DiscordGatewayPayloadFactory.searchMembers(
+        guildIDs: [GuildID(rawValue: 10)],
+        query: "hen",
+        limit: 100
+    )
+    #expect(payload["op"] as? Int == 8)
+    let data = try #require(payload["d"] as? [String: Any])
+    #expect(data["guild_id"] as? [String] == ["10"])
+    #expect(data["query"] as? String == "hen")
+    #expect(data["limit"] as? Int == 100)
     #expect(data["presences"] as? Bool == true)
     #expect(Set(data.keys) == ["guild_id", "query", "limit", "presences"])
 }

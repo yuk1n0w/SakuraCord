@@ -87,6 +87,8 @@ struct ChannelSidebarView: View {
     let voiceModel: AppModel
     let guild: Guild?
     let channels: [Channel]
+    let channelGroups: [ChannelGroup]
+    let unreadCategoryIDs: Set<ChannelID>
     @Binding var selection: ChannelID?
     let currentUser: User?
     let connectionState: ConnectionState
@@ -102,51 +104,37 @@ struct ChannelSidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ZStack {
+            if guild == nil {
                 DirectMessageInboxView(
                     model: voiceModel,
-                    channels: directMessageChannels,
+                    channels: channels,
                     membersByID: voiceModel.membersByID,
                     privateCallsByChannel: voiceModel.privateCallsByChannel.filter {
                         !$0.value.isUnavailable
                     },
-                    animatesAvatars: guild == nil,
-                    selection: $selection
+                    animatesAvatars: true,
+                    selection: directMessageSelection
                 )
-                .opacity(guild == nil ? 1 : 0)
-                .allowsHitTesting(guild == nil)
-                .accessibilityHidden(guild != nil)
-
-                if guild != nil {
-                    let unreadCategoryIDs = guild.map {
-                        voiceModel.unreadCategoryIDs(guildID: $0.id)
-                    } ?? []
-                    List(selection: deferredGuildSelection) {
-                        let groups = ChannelGroup.make(from: displayedChannels)
-                        ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
-                            ChannelGroupRows(
-                                model: voiceModel,
-                                group: group,
-                                addsTopSpacing: index == groups.startIndex,
-                                rulesChannelID: guild?.rulesChannelID,
-                                activeVoiceChannelID: activeVoiceChannelID,
-                                hiddenChannelIDs: hiddenChannelIDs,
-                                checkingChannelIDs: checkingChannelIDs,
-                                isUnread: group.categoryID.map(
-                                    unreadCategoryIDs.contains
-                                ) ?? false,
-                                voiceParticipantsByChannel: voiceSidebarParticipantsByChannel
-                            )
-                        }
-                    }
-                    .listStyle(.sidebar)
-                    .scrollContentBackground(.hidden)
-                    .clipped()
-                    .onChange(of: selection) { _, newSelection in
-                        selectionCommitter.selectedValueChanged(
-                            to: newSelection
-                        )
-                    }
+            } else {
+                GuildChannelList(
+                    input: GuildChannelListInput(
+                        modelIdentity: ObjectIdentifier(voiceModel),
+                        channelGroups: channelGroups,
+                        rulesChannelID: guild?.rulesChannelID,
+                        activeVoiceChannelID: activeVoiceChannelID,
+                        hiddenChannelIDs: hiddenChannelIDs,
+                        checkingChannelIDs: checkingChannelIDs,
+                        unreadCategoryIDs: unreadCategoryIDs,
+                        selectedChannelID: selection
+                    ),
+                    model: voiceModel,
+                    selection: deferredGuildSelection
+                )
+                .equatable()
+                .onChange(of: selection) { _, newSelection in
+                    selectionCommitter.selectedValueChanged(
+                        to: newSelection
+                    )
                 }
             }
 
@@ -197,8 +185,26 @@ struct ChannelSidebarView: View {
                 selectionCommitter.schedule(
                     newSelection,
                     currentSelection: { selection },
-                    commit: { selection = $0 }
+                    commit: { newSelection in
+                        if let newSelection {
+                            voiceModel.recordForwardDestinationVisit(newSelection)
+                        }
+                        selection = newSelection
+                    }
                 )
+            }
+        )
+    }
+
+    private var directMessageSelection: Binding<ChannelID?> {
+        Binding(
+            get: { selection },
+            set: { newSelection in
+                guard selection != newSelection else { return }
+                if let newSelection {
+                    voiceModel.recordForwardDestinationVisit(newSelection)
+                }
+                selection = newSelection
             }
         )
     }
@@ -211,78 +217,65 @@ struct ChannelSidebarView: View {
         voiceModel.checkingChannelIDs
     }
 
-    private var displayedChannels: [Channel] {
-        channels
+}
+
+/// An explicit invalidation boundary around SwiftUI's native outline keeps
+/// unrelated timeline/member publications from recursively diffing every
+/// channel row. All list-level presentation inputs participate in equality;
+/// observable row leaves continue to receive their own model updates.
+nonisolated private struct GuildChannelListInput: Equatable, Sendable {
+    let modelIdentity: ObjectIdentifier
+    let channelGroups: [ChannelGroup]
+    let rulesChannelID: ChannelID?
+    let activeVoiceChannelID: ChannelID?
+    let hiddenChannelIDs: Set<ChannelID>
+    let checkingChannelIDs: Set<ChannelID>
+    let unreadCategoryIDs: Set<ChannelID>
+    let selectedChannelID: ChannelID?
+}
+
+private struct GuildChannelList: View, Equatable {
+    let input: GuildChannelListInput
+    let model: AppModel
+    @Binding var selection: ChannelID?
+
+    nonisolated static func == (
+        lhs: GuildChannelList,
+        rhs: GuildChannelList
+    ) -> Bool {
+        lhs.input == rhs.input
     }
 
-    private var directMessageChannels: [Channel] {
-        let snapshotChannels = voiceModel.snapshot?.channels.filter {
-            $0.guildID == nil
-        }
-        return (snapshotChannels ?? channels).filter {
-            voiceModel.conversationAccess(for: $0) != .hidden
-        }
-    }
-
-    private var voiceSidebarParticipantsByChannel: [ChannelID: [VoiceSidebarParticipant]] {
-        let currentUserID = currentUser?.id
-        let voiceChannelIDs = Set(displayedChannels.filter { $0.kind == .voice }.map(\.id))
-        var statesByChannel: [ChannelID: [UserID: VoiceParticipantState]] = [:]
-        for state in voiceModel.voiceStates.values {
-            guard let channelID = state.channelID, voiceChannelIDs.contains(channelID) else { continue }
-            statesByChannel[channelID, default: [:]][state.userID] = state
-        }
-
-        if let channelID = activeVoiceChannelID,
-           let currentUserID,
-           statesByChannel[channelID]?[currentUserID] == nil
-        {
-            statesByChannel[channelID, default: [:]][currentUserID] = VoiceParticipantState(
-                userID: currentUserID,
-                channelID: channelID,
-                guildID: voiceModel.activeVoiceChannel?.guildID,
-                sessionID: "local",
-                isSelfMuted: voiceModel.isVoiceMuted,
-                isSelfDeafened: voiceModel.isVoiceDeafened,
-                isVideoEnabled: voiceModel.isCameraEnabled
-            )
-        }
-
-        return statesByChannel.mapValues { statesByUser in statesByUser.map { userID, state in
-            let user = currentUser?.id == userID
-                ? currentUser
-                : voiceModel.membersByID[userID]?.user
-            return VoiceSidebarParticipant(
-                id: userID,
-                name: user?.displayName ?? "User \(userID.rawValue)",
-                avatarURL: user?.avatarURL,
-                isCurrentUser: userID == currentUserID,
-                isMuted: state.isMuted || state.isSelfMuted,
-                isDeafened: state.isDeafened || state.isSelfDeafened,
-                isStreaming: state.isStreaming,
-                isVideoEnabled: state.isVideoEnabled
-            )
-        }.sorted {
-            if $0.isCurrentUser != $1.isCurrentUser {
-                return $0.isCurrentUser
+    var body: some View {
+        List(selection: $selection) {
+            ForEach(input.channelGroups) { group in
+                ChannelGroupRows(
+                    model: model,
+                    group: group,
+                    addsTopSpacing:
+                        group.id == input.channelGroups.first?.id,
+                    rulesChannelID: input.rulesChannelID,
+                    activeVoiceChannelID: input.activeVoiceChannelID,
+                    hiddenChannelIDs: input.hiddenChannelIDs,
+                    checkingChannelIDs: input.checkingChannelIDs,
+                    isUnread: group.categoryID.map(
+                        input.unreadCategoryIDs.contains
+                    ) ?? false
+                )
             }
-            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-        }}
+        }
+        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .clipped()
+        .background {
+            ScrollInputPerformanceProbeAttachment(surface: .channelList)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
     }
 }
 
-private struct VoiceSidebarParticipant: Identifiable {
-    let id: UserID
-    let name: String
-    let avatarURL: URL?
-    let isCurrentUser: Bool
-    let isMuted: Bool
-    let isDeafened: Bool
-    let isStreaming: Bool
-    let isVideoEnabled: Bool
-}
-
-struct ChannelGroup: Identifiable {
+nonisolated struct ChannelGroup: Identifiable, Equatable, Sendable {
     let id: String
     let categoryID: ChannelID?
     let guildID: GuildID?
@@ -292,11 +285,15 @@ struct ChannelGroup: Identifiable {
 
     static func make(from channels: [Channel]) -> [ChannelGroup] {
         var result: [ChannelGroup] = []
+        var indexByID: [String: Int] = [:]
+        result.reserveCapacity(min(channels.count, 32))
+        indexByID.reserveCapacity(min(channels.count, 32))
         for channel in channels {
             let groupID = channel.categoryID?.description ?? "uncategorized"
-            if let index = result.firstIndex(where: { $0.id == groupID }) {
+            if let index = indexByID[groupID] {
                 result[index].channels.append(channel)
             } else {
+                indexByID[groupID] = result.count
                 result.append(ChannelGroup(
                     id: groupID,
                     categoryID: channel.categoryID,
@@ -367,7 +364,8 @@ private struct ChannelGroupRows: View {
     let hiddenChannelIDs: Set<ChannelID>
     let checkingChannelIDs: Set<ChannelID>
     let isUnread: Bool
-    let voiceParticipantsByChannel: [ChannelID: [VoiceSidebarParticipant]]
+    let voiceParticipantEntriesByChannel:
+        [ChannelID: VoiceSidebarChannelEntry]
     @State private var isExpanded: Bool
 
     init(
@@ -378,8 +376,7 @@ private struct ChannelGroupRows: View {
         activeVoiceChannelID: ChannelID?,
         hiddenChannelIDs: Set<ChannelID>,
         checkingChannelIDs: Set<ChannelID>,
-        isUnread: Bool,
-        voiceParticipantsByChannel: [ChannelID: [VoiceSidebarParticipant]]
+        isUnread: Bool
     ) {
         self.model = model
         self.group = group
@@ -389,7 +386,16 @@ private struct ChannelGroupRows: View {
         self.hiddenChannelIDs = hiddenChannelIDs
         self.checkingChannelIDs = checkingChannelIDs
         self.isUnread = isUnread
-        self.voiceParticipantsByChannel = voiceParticipantsByChannel
+        voiceParticipantEntriesByChannel = Dictionary(
+            uniqueKeysWithValues: group.channels.lazy
+                .filter { $0.kind == .voice }
+                .map { channel in
+                    (
+                        channel.id,
+                        model.voiceSidebarPresentation.entry(for: channel.id)
+                    )
+                }
+        )
         let isCollapsed = group.categoryID.flatMap { categoryID in
             group.guildID.map {
                 model.isCategoryCollapsed(guildID: $0, categoryID: categoryID)
@@ -416,7 +422,10 @@ private struct ChannelGroupRows: View {
                             isChecking: checkingChannelIDs.contains(channel.id)
                         )
                         .tag(channel.id)
-                        ForEach(voiceParticipantsByChannel[channel.id] ?? []) { participant in
+                        ForEach(
+                            voiceParticipantEntriesByChannel[channel.id]?.participants
+                                ?? []
+                        ) { participant in
                             VoiceParticipantRow(participant: participant)
                         }
                     } else {
@@ -444,7 +453,6 @@ private struct ChannelGroupRows: View {
                    let guildID = group.guildID
                 {
                     Button {
-                        let previousValue = isExpanded
                         let nextValue = !isExpanded
                         withAnimation(.snappy(duration: ChatAnimationSpeed.scaled(0.18))) {
                             isExpanded = nextValue
@@ -453,12 +461,7 @@ private struct ChannelGroupRows: View {
                             !nextValue,
                             guildID: guildID,
                             categoryID: categoryID
-                        ) { accepted in
-                            guard !accepted else { return }
-                            withAnimation(.snappy(duration: ChatAnimationSpeed.scaled(0.18))) {
-                                isExpanded = previousValue
-                            }
-                        }
+                        )
                     } label: {
                         HStack(spacing: 5) {
                             Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
@@ -471,9 +474,6 @@ private struct ChannelGroupRows: View {
                     }
                     .buttonStyle(.plain)
                     .help(isExpanded ? "Collapse \(name)" : "Expand \(name)")
-                    .disabled(
-                        model.isChannelNotificationMutationPending(categoryID)
-                    )
                     .overlay {
                         ChannelContextMenuBridge(
                             subject: .category,
@@ -532,15 +532,15 @@ private struct ChannelGroupRows: View {
                 }
             }
         }
-        .onChange(of: shouldCollapseFromServer) { _, shouldCollapse in
-            guard shouldCollapse, isExpanded else { return }
+        .onChange(of: isCollapsedInModel) { _, isCollapsed in
+            guard isExpanded == isCollapsed else { return }
             withAnimation(.snappy(duration: ChatAnimationSpeed.scaled(0.18))) {
-                isExpanded = false
+                isExpanded = !isCollapsed
             }
         }
     }
 
-    private var shouldCollapseFromServer: Bool {
+    private var isCollapsedInModel: Bool {
         guard let categoryID = group.categoryID,
               let guildID = group.guildID
         else { return false }
@@ -800,7 +800,7 @@ private struct ChannelRow: View {
         .overlay {
             ChannelContextMenuBridge(
                 isSelected: model.selectedChannelID == channel.id,
-                isUnread: model.isChannelUnread(channel.id),
+                isUnread: channel.unreadCount > 0,
                 isMutationPending:
                     model.isChannelNotificationMutationPending(channel.id),
                 allowsMutations: !isChecking,

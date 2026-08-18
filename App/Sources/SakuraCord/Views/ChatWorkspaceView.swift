@@ -4,6 +4,7 @@ import SwiftUI
 struct ChatWorkspaceView: View {
     let model: AppModel
     @Binding var presentsForumComposer: Bool
+    let toolbarSearchFieldMetrics: ToolbarSearchFieldMetrics
 
     var body: some View {
         let presentation = ChatWorkspacePresentation(
@@ -11,7 +12,12 @@ struct ChatWorkspaceView: View {
             isForumChannel: model.selectedChannel?.kind == .forum,
             hasOpenThread: model.openThread != nil,
             hasOpenVoiceChat: model.isVoiceChatOpen,
-            showsInspector: model.showInspector
+            showsInspector: model.showInspector,
+            showsMessageSearch: model.messageSearch.isPresented
+                && MessageSearchSurfacePolicy.showsToolbar(
+                    channelKind: model.selectedChannel?.kind,
+                    hasOpenThread: model.openThread != nil
+                )
         )
 
         HStack(spacing: 0) {
@@ -28,7 +34,11 @@ struct ChatWorkspaceView: View {
                 {
                     Divider()
                 }
-                ChatWorkspaceSupplementaryContent(model: model, content: supplementaryContent)
+                ChatWorkspaceSupplementaryContent(
+                    model: model,
+                    content: supplementaryContent,
+                    toolbarSearchFieldMetrics: toolbarSearchFieldMetrics
+                )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -67,6 +77,7 @@ struct ChatWorkspacePresentation: Equatable {
         case thread
         case voiceChat
         case memberInspector
+        case messageSearch
     }
 
     let primaryContent: PrimaryContent
@@ -77,11 +88,14 @@ struct ChatWorkspacePresentation: Equatable {
         isForumChannel: Bool = false,
         hasOpenThread: Bool,
         hasOpenVoiceChat: Bool,
-        showsInspector: Bool
+        showsInspector: Bool,
+        showsMessageSearch: Bool = false
     ) {
         primaryContent = isVoiceChannel ? .voice : (isForumChannel ? .forum : .chat)
 
-        if hasOpenThread, !isVoiceChannel || hasOpenVoiceChat {
+        if showsMessageSearch {
+            supplementaryContent = .messageSearch
+        } else if hasOpenThread, !isVoiceChannel || hasOpenVoiceChat {
             supplementaryContent = .thread
         } else if isVoiceChannel {
             supplementaryContent = hasOpenVoiceChat ? .voiceChat : nil
@@ -147,6 +161,7 @@ private struct ChatWorkspacePrimaryContent: View {
 private struct ChatWorkspaceSupplementaryContent: View {
     let model: AppModel
     let content: ChatWorkspacePresentation.SupplementaryContent
+    let toolbarSearchFieldMetrics: ToolbarSearchFieldMetrics
 
     var body: some View {
         switch content {
@@ -170,6 +185,7 @@ private struct ChatWorkspaceSupplementaryContent: View {
                     profilePresentation:
                         model.inspectorProfilePresentation,
                     isProfilePresented: model.isInspectorProfilePresented,
+                    interactionsBlocked: model.workspaceNavigationOverlay != nil,
                     selectMember: model.selectMember,
                     dismissProfile: model.dismissInspectorProfile,
                     viewportIdentity: model.selectedChannelID,
@@ -177,6 +193,12 @@ private struct ChatWorkspaceSupplementaryContent: View {
                 )
                 .frame(width: ChatChromeMetrics.memberListWidth)
                 .frame(maxHeight: .infinity)
+            }
+        case .messageSearch:
+            if toolbarSearchFieldMetrics.isValid {
+                MessageSearchPanelView(model: model)
+                    .frame(width: toolbarSearchFieldMetrics.panelWidth)
+                    .frame(maxHeight: .infinity)
             }
         }
     }

@@ -3,19 +3,15 @@ set -euo pipefail
 
 MODE="${1:-run}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-# shellcheck source=worktree_runtime.sh
-source "$ROOT_DIR/script/worktree_runtime.sh"
+# shellcheck source=runtime.sh
+source "$ROOT_DIR/script/runtime.sh"
 # shellcheck source=release_metadata.sh
 source "$ROOT_DIR/script/release_metadata.sh"
+# shellcheck source=debug_credentials_config.sh
+source "$ROOT_DIR/script/debug_credentials_config.sh"
 
 case "$MODE" in
-  package|package-release|--offline|--offline-long-server-list|--offline-forum-performance|--offline-chat-performance|--offline-chat-performance-autoscroll|--offline-chat-performance-live-autoscroll|--offline-chat-media-performance-autoscroll|--offline-incoming-private-call|--verify) ;;
-  run|--debug|--logs|--telemetry)
-    if [[ "$SAKURACORD_IS_MAIN_WORKTREE" -ne 1 && "${SAKURACORD_ALLOW_LIVE_WORKTREE:-0}" != "1" ]]; then
-      echo "Live-account launch is disabled in linked worktrees. Use --offline, or set SAKURACORD_ALLOW_LIVE_WORKTREE=1 deliberately." >&2
-      exit 2
-    fi
-    ;;
+  package|package-release|run|--offline|--offline-long-server-list|--offline-forum-performance|--offline-chat-performance|--offline-chat-performance-autoscroll|--offline-chat-performance-live-autoscroll|--offline-chat-media-performance-autoscroll|--offline-incoming-private-call|--verify|--debug|--logs|--telemetry) ;;
   *)
     echo "usage: $0 [package|package-release|run|--offline|--offline-long-server-list|--offline-forum-performance|--offline-chat-performance|--offline-chat-performance-autoscroll|--offline-chat-performance-live-autoscroll|--offline-chat-media-performance-autoscroll|--offline-incoming-private-call|--verify|--debug|--logs|--telemetry]" >&2
     exit 2
@@ -44,21 +40,11 @@ if [[ "$UPDATES_ENABLED" != "0" && "$UPDATES_ENABLED" != "1" ]]; then
   echo "SAKURACORD_ENABLE_UPDATES must be 0 or 1." >&2
   exit 2
 fi
-INSECURE_DEBUG_CREDENTIALS="${SAKURACORD_INSECURE_DEBUG_CREDENTIALS:-0}"
-if [[ "$INSECURE_DEBUG_CREDENTIALS" != "0" && "$INSECURE_DEBUG_CREDENTIALS" != "1" ]]; then
-  echo "SAKURACORD_INSECURE_DEBUG_CREDENTIALS must be 0 or 1." >&2
-  exit 2
-fi
-if [[ "$INSECURE_DEBUG_CREDENTIALS" == "1" \
-  && ( "$MODE" == "package-release" || "$UPDATES_ENABLED" == "1" ) ]]; then
-  echo "Insecure debug credentials cannot be used for release or update-enabled packages." >&2
-  exit 2
-fi
+sakuracord_resolve_insecure_debug_credentials "$ROOT_DIR"
+sakuracord_apply_secure_release_credential_policy "$MODE" "$UPDATES_ENABLED"
+INSECURE_DEBUG_CREDENTIALS="$SAKURACORD_RESOLVED_INSECURE_DEBUG_CREDENTIALS"
+INSECURE_DEBUG_CREDENTIALS_SOURCE="$SAKURACORD_INSECURE_DEBUG_CREDENTIALS_SOURCE"
 if [[ "$UPDATES_ENABLED" == "1" ]]; then
-  if [[ "$SAKURACORD_IS_MAIN_WORKTREE" -ne 1 ]]; then
-    echo "Production updates can only be enabled for the canonical main-checkout bundle." >&2
-    exit 2
-  fi
   if [[ -z "${SPARKLE_ED_PUBLIC_KEY:-}" ]]; then
     echo "SPARKLE_ED_PUBLIC_KEY is required when production updates are enabled." >&2
     exit 2
@@ -104,6 +90,11 @@ cleanup() {
 trap cleanup EXIT
 
 sakuracord_print_identity
+if [[ "$INSECURE_DEBUG_CREDENTIALS" == "1" ]]; then
+  echo "Debug credentials: enabled ($INSECURE_DEBUG_CREDENTIALS_SOURCE)"
+else
+  echo "Debug credentials: disabled ($INSECURE_DEBUG_CREDENTIALS_SOURCE)"
+fi
 
 if [[ "$MODE" != "package" && "$MODE" != "package-release" ]]; then
   sakuracord_stop_scoped_app

@@ -122,9 +122,7 @@ nonisolated enum MessageRowPersistentHighlight: Equatable {
         if message.flags.contains(.ephemeral) {
             return .ephemeral
         }
-        guard let currentUserID,
-              message.author.id != currentUserID
-        else {
+        guard let currentUserID else {
             return .none
         }
         if message.mentionedUsers.contains(where: {
@@ -469,8 +467,14 @@ enum ReactionActionMenuPresentation {
     case toolbar
     case inline
 
-    var width: CGFloat { self == .toolbar ? 28 : 30 }
-    var height: CGFloat { self == .toolbar ? 28 : MessageReactionMetrics.pillHeight }
+    var width: CGFloat {
+        self == .toolbar ? HoverActionPillMetrics.controlDiameter : 30
+    }
+    var height: CGFloat {
+        self == .toolbar
+            ? HoverActionPillMetrics.controlDiameter
+            : MessageReactionMetrics.pillHeight
+    }
     var cornerRadius: CGFloat { self == .toolbar ? 14 : 9 }
     var popoverEdge: NSRectEdge {
         StableReactionPickerAnchorPolicy.preferredEdge(isInline: self == .inline)

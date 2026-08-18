@@ -8,6 +8,15 @@ import QuartzCore
 import SakuraCordModels
 import SwiftUI
 
+nonisolated enum TimelineAccessibilityWorkPolicy {
+    static func reconcilesEagerly(
+        isVoiceOverEnabled: Bool,
+        isSwitchControlEnabled: Bool
+    ) -> Bool {
+        isVoiceOverEnabled || isSwitchControlEnabled
+    }
+}
+
 struct NativeTimelineTextAccessibilityInput {
     let value: NSAttributedString
     let framesetter: CTFramesetter
@@ -47,6 +56,7 @@ extension NativeTimelineCanvasView {
     }
 
     override func accessibilityChildren() -> [Any]? {
+        reconcileAccessibilityProxies()
         var orderedChildren = accessibilityProxyRowsInTimelineOrder()
         var additionalChildren = (super.accessibilityChildren() ?? []).filter { child in
             guard let childView = child as? NSView else { return true }
@@ -73,10 +83,12 @@ extension NativeTimelineCanvasView {
     }
 
     override func accessibilityRows() -> [Any]? {
-        accessibilityProxyRowsInTimelineOrder()
+        reconcileAccessibilityProxies()
+        return accessibilityProxyRowsInTimelineOrder()
     }
 
     override func accessibilityVisibleRows() -> [Any]? {
+        reconcileAccessibilityProxies()
         let viewport =
             enclosingScrollView?.documentVisibleRect ?? visibleRect
         return accessibilityProxyRowsInTimelineOrder().filter {
@@ -148,6 +160,17 @@ extension NativeTimelineCanvasView {
             accessibilityProxies.remove(identifier)
         }
         accessibilityProxies.setOrder(desiredOrder)
+    }
+
+    func reconcileAccessibilityProxiesIfActive() {
+        let workspace = NSWorkspace.shared
+        guard TimelineAccessibilityWorkPolicy
+            .reconcilesEagerly(
+                isVoiceOverEnabled: workspace.isVoiceOverEnabled,
+                isSwitchControlEnabled: workspace.isSwitchControlEnabled
+            )
+        else { return }
+        reconcileAccessibilityProxies()
     }
 
     func accessibilityProxy(
@@ -297,15 +320,29 @@ extension NativeTimelineCanvasView {
         let rowLabel = message.type.hasGeneratedContent
             ? "System message, \(generatedLabel)"
             : "Message from \(author.displayName), \(timestamp)"
+        let rowPress: (@MainActor @Sendable () -> Bool)? =
+            if actions?.openMessage != nil {
+                { [weak self] in
+                    guard let openMessage = self?.actions?.openMessage else {
+                        return false
+                    }
+                    openMessage(message)
+                    return true
+                }
+            } else {
+                nil
+            }
         let element = accessibilityElement(
             role: .row,
             label: rowLabel,
             value: MessageOutboxPresentation.accessibilityStatus(
                 for: message.outboxState
             ),
+            help: row.searchContext == nil ? nil : "Jump to message",
             identifier: "timeline-message-\(message.id)",
             frame: rowFrame,
-            parent: self
+            parent: self,
+            press: rowPress
         )
         element.setAccessibilityCustomActions(
             accessibilityMessageActions(
@@ -335,27 +372,26 @@ extension NativeTimelineCanvasView {
                 parent: element
             ))
         }
-        if let preview = row.replyPreview,
+        if let replyMessageID = row.replyMessageID,
            let frame = layout.replyFrame
         {
-            let summary = accessibilityResolvedText(
-                preview.content,
-                message: message
-            )
+            let label = if let preview = row.replyPreview {
+                "Replying to \(preview.author.displayName): \(accessibilityResolvedText(preview.content, message: message))"
+            } else {
+                "Message could not be loaded"
+            }
             children.append(accessibilityElement(
                 role: .button,
-                label: row.isReplyAvailable
-                    ? "Replying to \(preview.author.displayName): \(summary)"
-                    : "Original reply unavailable",
+                label: label,
                 help: row.isReplyAvailable
                     ? "Jump to original message"
-                    : "Original message unavailable",
+                    : "Load and jump to original message",
                 frame: accessibilityChildFrame(frame, rowIndex: rowIndex),
                 parent: element,
-                isEnabled: row.isReplyAvailable
+                isEnabled: true
             ) { [weak self] in
-                guard row.isReplyAvailable, let self else { return false }
-                self.actions?.openReply(preview.messageID)
+                guard let self else { return false }
+                self.actions?.openReply(replyMessageID)
                 return true
             })
         }
@@ -1147,6 +1183,12 @@ extension NativeTimelineCanvasView {
         let message = row.message
         let canEdit =
             message.author.id == model?.snapshot?.currentUser.id
+        if messageInteractionContext == .searchResult {
+            return accessibilitySearchResultActions(
+                for: message,
+                canDelete: canEdit
+            )
+        }
         var result: [NSAccessibilityCustomAction] = []
         if message.outboxState == .failed {
             result.append(NSAccessibilityCustomAction(
@@ -1219,6 +1261,53 @@ extension NativeTimelineCanvasView {
             return true
         })
         if canEdit {
+            result.append(NSAccessibilityCustomAction(
+                name: "Delete Message"
+            ) { [weak self] in
+                self?.confirmDelete(message)
+                return self != nil
+            })
+        }
+        return result
+    }
+
+    private func accessibilitySearchResultActions(
+        for message: Message,
+        canDelete: Bool
+    ) -> [NSAccessibilityCustomAction] {
+        var result = [
+            NSAccessibilityCustomAction(name: "Jump to Message") { [weak self] in
+                guard let openMessage = self?.actions?.openMessage else {
+                    return false
+                }
+                openMessage(message)
+                return true
+            },
+            NSAccessibilityCustomAction(name: "Mark Unread") { [weak self] in
+                self?.actions?.markUnread(message)
+                return self != nil
+            },
+            NSAccessibilityCustomAction(name: "Copy Text") {
+                Self.copyText(message.content)
+                return true
+            },
+            NSAccessibilityCustomAction(name: "Copy Link") { [weak self] in
+                guard let self else { return false }
+                Self.copyText(self.messageLink(for: message))
+                return true
+            },
+        ]
+        result.append(contentsOf: [
+            NSAccessibilityCustomAction(name: "Copy Message ID") {
+                Self.copyText(message.id.description)
+                return true
+            },
+            NSAccessibilityCustomAction(name: "Copy Message Author ID") {
+                Self.copyText(message.author.id.description)
+                return true
+            },
+        ])
+        if canDelete {
             result.append(NSAccessibilityCustomAction(
                 name: "Delete Message"
             ) { [weak self] in

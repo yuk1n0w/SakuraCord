@@ -561,7 +561,7 @@ extension NativeTimelineCanvasView {
         }
         if let replyFrame = layout.replyFrame,
            replyFrame.contains(local),
-           let replyID = row.replyPreview?.messageID
+           let replyID = row.replyMessageID
         {
             actions.openReply(replyID)
             return
@@ -647,6 +647,8 @@ extension NativeTimelineCanvasView {
             actions.openThread(thread)
             return
         }
+
+        actions.openMessage?(row.message)
 
         }
     }
@@ -1230,7 +1232,7 @@ extension NativeTimelineCanvasView {
             return .invocationProfile(message.id)
         }
         if layout.replyFrame?.contains(local) == true,
-           let replyID = row.replyPreview?.messageID
+           let replyID = row.replyMessageID
         {
             return .reply(message.id, replyID)
         }
@@ -1269,6 +1271,11 @@ extension NativeTimelineCanvasView {
            let thread = message.thread
         {
             return .thread(message.id, thread.id)
+        }
+        if actions?.openMessage != nil,
+           layout.searchCardFrame?.contains(local) == true
+        {
+            return .message(message.id)
         }
         return nil
 
@@ -1575,10 +1582,7 @@ extension NativeTimelineCanvasView {
             color: color
         ))
         let host = NativeTimelineReactionCountAnimationHost(rootView: root)
-        let countFont = NSFont.monospacedDigitSystemFont(
-            ofSize: NSFont.preferredFont(forTextStyle: .caption1).pointSize,
-            weight: .semibold
-        )
+        let countFont = NativeTimelineReactionFonts.count
         let stableCountWidth = max(
             countFrame.width,
             ceil((String(from) as NSString).size(withAttributes: [

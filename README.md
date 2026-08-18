@@ -151,50 +151,71 @@ versions, cached under the ignored `.build/` directory. Existing SwiftFormat
 drift and every SwiftLint violation are rejected under the checked-in strict
 policy.
 
-When you deliberately want to open the normal app:
+For a read-only authenticated verification pass, open the normal app:
 
 ```sh
 ./script/build_and_run.sh run
 ```
 
-That launch can restore an existing SakuraCord session from Keychain. The
-offline command never contacts Discord and is the right starting point for UI
-work, screenshots, and fixture-driven development.
+That launch can restore an existing SakuraCord session from Keychain. For work
+that is not exclusively UI, a read-only authenticated pass is encouraged when
+it can exercise the changed behavior. Connection and session-maintenance
+traffic plus observation of existing state are allowed; agent-run verification
+must not deliberately mutate remote account state or content. Account-mutating
+verification requires an explicit user request for the specific bounded action.
+
+The offline command never contacts Discord and remains the right starting point
+for UI work, screenshots, and fixture-driven development.
 
 ### Insecure local credential mode (debug only)
 
-For temporary local work that must survive repeated ad-hoc rebuilds without
-Keychain prompts, opt into the explicitly insecure debug credential store:
+For local work that must survive repeated ad-hoc rebuilds without Keychain
+prompts, enable the persistent, explicitly insecure debug credential store once
+for this Git checkout:
 
 ```sh
-export SAKURACORD_INSECURE_DEBUG_CREDENTIALS=1
+./script/debug_credentials.sh enable
 ./script/build_and_run.sh run
 ```
 
-This is a build-time opt-in, so keep the variable set for every debug rebuild
-that should use local credentials. The first launch copies the existing
-credential from Keychain and can prompt once. A normal networking-enabled
-launch can then restore the authenticated session from the local copy. A launch
-with `SAKURACORD_DISABLE_DISCORD_NETWORK=1` may perform the migration, but stays
+The option is off by default and is stored as the boolean Git setting
+`sakuracord.insecureDebugCredentials` in the checkout's local `.git/config`, so
+it is never committed. Subsequent debug builds use it automatically. Run
+`./script/debug_credentials.sh status` to inspect it or
+`./script/debug_credentials.sh disable` to turn it off. An explicit
+`SAKURACORD_INSECURE_DEBUG_CREDENTIALS=0` or `1` overrides the repository setting
+for one build. Release and update-enabled packages always disable the repository
+preference; an explicit insecure environment override still fails those builds.
+
+The first enabled launch copies the existing credential from Keychain and can
+prompt once. A normal networking-enabled launch can then restore the
+authenticated session from the local copy. A launch with
+`SAKURACORD_DISABLE_DISCORD_NETWORK=1` may perform the migration, but stays
 signed out by design.
 
-The copied credential is an unencrypted mode-`0600` file under:
+Normal mode stores each account as a macOS Keychain generic-password item under
+service `dev.sakuracord.SakuraCord.session`, keyed by the Discord account ID and
+accessible only while this Mac is unlocked. Debug mode stores one file per
+account under:
 
 ```text
 ~/Library/Containers/dev.sakuracord.SakuraCord/Data/Library/Application Support/SakuraCord/InsecureDebugCredentials/
 ```
 
-Its parent directory is mode `0700`, and it is outside the Git checkout, but it
-is still readable by other processes running as the same macOS user and by
-local disk inspection. Never enable this mode on a shared or production
-machine, never copy that directory into the repository, and never attach its
-contents to logs or bug reports. Release and update-enabled packages reject the
-flag.
+Each `<account-id>.credential` file is unencrypted and mode `0600`; its parent
+directory is mode `0700`.
 
-When finished, unset `SAKURACORD_INSECURE_DEBUG_CREDENTIALS` to return to the
-normal Keychain store. The local copy is intentionally retained until you
-remove the `InsecureDebugCredentials` directory above, so do that after the
-debug session no longer needs to survive rebuilds.
+The directory is outside the Git checkout, but it is still readable by other
+processes running as the same macOS user and by local disk inspection. Never
+enable this mode on a shared or production machine, never copy that directory
+into the repository, and never attach its contents to logs or bug reports.
+
+When finished, run `./script/debug_credentials.sh disable` to return to the
+normal Keychain store while retaining the local copy. Run
+`./script/debug_credentials.sh delete` with SakuraCord closed to disable the
+mode and delete all local insecure credential files. The delete command never
+changes credentials stored in Keychain and preserves unexpected files rather
+than recursively deleting the directory.
 
 <details>
   <summary><strong>More development commands</strong></summary>
@@ -209,9 +230,9 @@ debug session no longer needs to survive rebuilds.
   | `./script/build_and_run.sh --offline-incoming-private-call` | Open the incoming direct-message call fixture. |
   | `./script/build_and_run.sh --verify` | Build the app bundle, launch it offline, and verify the scoped process. |
   | `./script/build_and_run.sh package` | Stage an ad-hoc signed debug app without launching it. |
-  | `./script/worktree_test.sh protocol` | Run the protocol package tests. |
-  | `./script/worktree_test.sh app` | Run the application package tests. |
-  | `./script/worktree_test.sh all` | Run the configured first-party package and application test matrix. |
+  | `./script/test.sh protocol` | Run the protocol package tests. |
+  | `./script/test.sh app` | Run the application package tests. |
+  | `./script/test.sh all` | Run the configured first-party package and application test matrix. |
   | `./script/code_quality.sh check` | Run the complete pinned SwiftFormat and SwiftLint policy used by CI and both Git hooks. |
   | `./script/code_quality.sh fix --staged` | Format only staged Swift files and re-stage them; refuses files with additional unstaged edits. |
   | `./script/code_quality.sh fix --files App/Sources/Example.swift` | Format only explicitly selected tracked Swift files. |
@@ -240,16 +261,13 @@ Packages/
 Brand/                      canonical logos, banners, and brand metadata
 Config/                     application entitlements
 docs/                       canonical architecture, protocol, and workflow guides
-script/                     build, package, quality, test, and worktree entrypoints
+script/                     build, package, quality, and test entrypoints
 ```
 
 SwiftPM manifests are the build source of truth; `SakuraCord.xcworkspace` is a
 convenience entry point. Start with the [documentation index](docs/README.md),
 then use the [architecture guide](docs/ARCHITECTURE.md) or
-[protocol baseline](docs/PROTOCOL_BASELINE.md) for deeper work. Contributors
-using actual linked checkouts should read the
-[linked-worktree workflow](docs/PARALLEL_WORKTREES.md) before starting parallel
-builds.
+[protocol baseline](docs/PROTOCOL_BASELINE.md) for deeper work.
 
 ## Releases and development
 
@@ -353,8 +371,8 @@ when the private and public keys do not match the packaged app; or when appcast,
 bundle, URL, version, or nested-signature validation fails. Discord is
 deliberately last: a Discord credential or permission failure leaves the
 already verified GitHub Release intact, and a manual retry resumes from its
-committed copy. Local, debug, and linked-worktree packages do not embed the
-production feed or public key and never perform update checks.
+committed copy. Local and debug packages do not embed the production feed or
+public key and never perform update checks.
 
 Canonical releases check the signed feed every six hours while SakuraCord is
 running and after launch when a check is overdue. Users can change automatic
@@ -394,7 +412,7 @@ Before proposing a change:
 ```sh
 git diff --check
 ./script/code_quality.sh check
-./script/worktree_test.sh all
+./script/test.sh all
 ./script/ci.sh
 ```
 

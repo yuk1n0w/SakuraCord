@@ -139,7 +139,7 @@ extension NativeTimelineRowLayout {
         // bubble's leading edge, so a reply reads as belonging to the bubble
         // under it rather than as a separate row.
         var replyFrame: CGRect?
-        if row.replyPreview != nil {
+        if row.replyMessageID != nil {
             let replyHeight: CGFloat = 20
             replyFrame = CGRect(
                 x: bubbleX,
@@ -319,6 +319,8 @@ extension NativeTimelineRowLayout {
             height: rowHeight,
             loaderLayout: nil,
             beginningLayout: nil,
+            searchSectionRegion: nil,
+            searchCardFrame: nil,
             highlightFrame: CGRect(
                 x: 0,
                 y: prefixHeight,
@@ -337,6 +339,7 @@ extension NativeTimelineRowLayout {
             editedFrame: editedFrame,
             loadingIndicatorFrame: nil,
             replyFrame: replyFrame,
+            replyContentFrame: replyFrame,
             commandInvocationRegion: nil,
             systemIconFrame: nil,
             contentFrame: contentFrame,

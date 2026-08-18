@@ -15,7 +15,7 @@ nonisolated enum NativeTimelineMediaMemoryPolicy {
     static let sharedAnimatedImageBytes = 24 * 1_024 * 1_024
     static let displayedAnimatedImageBytes = 16 * 1_024 * 1_024
     static let timelineAnimatedImageBytes = 16 * 1_024 * 1_024
-    static let rowBitmapBytes = 12 * 1_024 * 1_024
+    static let rowBitmapBytes = 32 * 1_024 * 1_024
 
     /// Explicit cost limits for decoded image and row-bitmap caches. This does
     /// not claim to include encoded media data, Lottie objects, decoder
@@ -864,7 +864,13 @@ actor NativeTimelineMediaDecodeScheduler {
             priority: taskPriority
         ) { [decodeOperation] in
             guard !Task.isCancelled else { return nil }
-            let image = decodeOperation(data, maximumPixelDimension)
+            let image = AppPerformanceSignposts.measureSync(
+                acquiredPriority == .visible
+                    ? "TimelineVisibleStaticMediaDecode"
+                    : "TimelinePrefetchStaticMediaDecode"
+            ) {
+                decodeOperation(data, maximumPixelDimension)
+            }
             return Task.isCancelled ? nil : image
         }
         let image = await withTaskCancellationHandler {
@@ -1389,6 +1395,7 @@ struct NativeTimelineActionCapsuleOverlay: View {
     let message: Message
     let canEdit: Bool
     @ObservedObject var state: NativeTimelineActionCapsuleState
+    let jumpToMessage: (() -> Void)?
     let retry: (() -> Void)?
     let edit: () -> Void
     let reply: (() -> Void)?
@@ -1400,23 +1407,36 @@ struct NativeTimelineActionCapsuleOverlay: View {
     let delete: () -> Void
 
     var body: some View {
-        MessageActionCapsule(
-            model: model,
-            message: message,
-            canEdit: canEdit,
-            isReactionPickerPresented: $state.isReactionPickerPresented,
-            isDeleteConfirmationPresented:
-                $state.isDeleteConfirmationPresented,
-            retry: retry,
-            edit: edit,
-            reply: reply,
-            forward: forward,
-            react: react,
-            copy: copy,
-            copyLink: copyLink,
-            openThread: openThread,
-            delete: delete
-        )
+        Group {
+            if let jumpToMessage {
+                HoverActionPill {
+                    HoverActionButton(
+                        systemImage: NativeTimelineSearchResultPresentation
+                            .jumpToMessageSystemImage,
+                        help: "Jump to Message",
+                        action: jumpToMessage
+                    )
+                }
+            } else {
+                MessageActionCapsule(
+                    model: model,
+                    message: message,
+                    canEdit: canEdit,
+                    isReactionPickerPresented: $state.isReactionPickerPresented,
+                    isDeleteConfirmationPresented:
+                        $state.isDeleteConfirmationPresented,
+                    retry: retry,
+                    edit: edit,
+                    reply: reply,
+                    forward: forward,
+                    react: react,
+                    copy: copy,
+                    copyLink: copyLink,
+                    openThread: openThread,
+                    delete: delete
+                )
+            }
+        }
         .fixedSize()
     }
 }

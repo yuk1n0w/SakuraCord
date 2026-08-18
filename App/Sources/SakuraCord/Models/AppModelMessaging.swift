@@ -380,6 +380,7 @@ extension AppModel {
             await SharedAnimatedImageDecodeScheduler.shared
                 .setInteractiveScrolling(
                     isScrollingNow,
+                    source: .timeline,
                     revision: revision
                 )
         }
@@ -407,6 +408,7 @@ extension AppModel {
             await SharedAnimatedImageDecodeScheduler.shared
                 .setInteractiveScrolling(
                     false,
+                    source: .timeline,
                     revision: revision
                 )
         }
@@ -1817,6 +1819,7 @@ extension AppModel {
 
     func isChannelNotificationMutationPending(_ channelID: ChannelID) -> Bool {
         channelNotificationMutationTasks[channelID] != nil
+            || categoryCollapseMutationTasks[channelID] != nil
     }
 
     func guildNotificationSettings(for guild: Guild) -> GuildNotificationSettings {
@@ -1957,6 +1960,9 @@ extension AppModel {
 
     func reportConversationHistoryLoaded(channelID: ChannelID) {
         guard channelID == selectedChannelID || channelID == openThread?.id else { return }
+        AppPerformanceSignposts.reportConversationHistoryReady(
+            channelID: channelID
+        )
         AppPerformanceSignposts.reportStartupConversationHistoryReady(
             channelID: channelID
         )

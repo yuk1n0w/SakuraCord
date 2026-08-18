@@ -19,6 +19,7 @@ extension DiscordRESTProvider {
         cachedJoinedThreadOrder.removeAll {
             cachedJoinedThreads[$0] == nil
         }
+        cachedForumThreadOrder.removeAll { channelIDs.contains($0) }
         cachedChannels[guildID] = nil
         cachedGuildChannelDTOs[guildID] = nil
         cachedGuildRoles[guildID] = nil
@@ -29,6 +30,7 @@ extension DiscordRESTProvider {
         memberListSubscriptionOrder[guildID] = nil
         cachedMemberListGroups[guildID] = nil
         requestedHistoryMemberIDs[guildID] = nil
+        resolvingHistoryMemberIDs[guildID] = nil
         cachedEmojis[guildID] = nil
         guildChannelTasks.removeValue(forKey: guildID)?.cancel()
         guildRoleTasks.removeValue(forKey: guildID)?.cancel()
