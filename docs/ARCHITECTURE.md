@@ -166,6 +166,27 @@ outside that shared row engine. SwiftUI/AppKit hosting inside the timeline is
 bounded to interaction surfaces that need native controls, including editing,
 media playback, menus, pickers, and component interactions.
 
+Direct and group direct messages select a bubble presentation within that same
+engine rather than a separate view. Conversation content—text, replies,
+reactions, images, code, link previews, forwards, and stickers—renders as a
+bubble aligned to the sender's side, with no avatar or author line; a group
+names each incoming sender once per run. Discord's own surfaces stay on the
+standard row, because a component grid is a bot interface rather than
+conversation. A forward renders its snapshot's content under a short header,
+without the source channel, origin guild, or dated backlink the standard row
+draws. Layout code and the row painter must agree on which message they read:
+a forward's text, images, and embeds live in its snapshot, while its stickers
+are still resolved from the message.
+
+The bubbles themselves are `NSGlassEffectView` instances, not painted fills.
+Subviews always render above their host's own drawing, so the glass cannot live
+inside the row canvas; it sits in a host behind the canvas, which stays
+non-opaque and draws text over it. That host is viewport-sized with zero-based
+bounds and recycles its views: a glass container spanning a long conversation
+allocates backdrop storage for the whole document, and the container renders
+nothing under a shifted bounds origin. The quick switcher's selection uses the
+same arrangement for the same reason.
+
 The channel member inspector likewise uses one virtualized AppKit/Core Text
 canvas. Its bounded visible-row overlays remain mounted and animated during
 live scrolling so avatars, decorations, presence, and activity emoji preserve
