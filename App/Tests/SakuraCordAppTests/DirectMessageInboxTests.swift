@@ -1080,3 +1080,32 @@ private func waitForDirectMessageCondition(
             == "[00:05]"
     )
 }
+
+@Test func `conversation composer carries a prompt`() {
+    // A conversation's input reads like a terminal client's: the prompt is
+    // part of its character.
+    #expect(
+        ComposerPlaceholderPolicy.text(
+            channelName: "marcos",
+            channelKind: .directMessage,
+            destination: .channel
+        ) == "> Message @marcos"
+    )
+    #expect(
+        ComposerPlaceholderPolicy.text(
+            channelName: "the crew",
+            channelKind: .groupDirectMessage,
+            destination: .channel
+        ) == "> Message @the crew"
+    )
+
+    // A server keeps the plain label. The prompt belongs to the
+    // conversation surface, not to the whole app.
+    #expect(
+        ComposerPlaceholderPolicy.text(
+            channelName: "general",
+            channelKind: .text,
+            destination: .channel
+        ) == "Message #general"
+    )
+}

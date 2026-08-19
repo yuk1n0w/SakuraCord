@@ -117,7 +117,14 @@ struct ComposerView: View {
                                 if draft.isEmpty {
                                     Text(composerPlaceholder)
                                         .foregroundStyle(.tertiary)
-                                        .font(.system(size: 15))
+                                        .font(
+                                            .system(
+                                                size: 15,
+                                                design: usesConversationChrome
+                                                    ? .monospaced
+                                                    : .default
+                                            )
+                                        )
                                         .lineLimit(1)
                                         .truncationMode(.tail)
                                         .allowsHitTesting(false)
@@ -937,6 +944,14 @@ struct ComposerView: View {
 
     private var composerInputAlignment: Alignment {
         usesDirectMessageChrome ? .topLeading : .center
+    }
+
+    /// A one-to-one or group conversation, which is where the retro chrome
+    /// applies. A server keeps the app's ordinary typography.
+    private var usesConversationChrome: Bool {
+        guard conversation == .channel else { return false }
+        let kind = model.selectedChannel?.kind
+        return kind == .directMessage || kind == .groupDirectMessage
     }
 
     private var composerPlaceholder: String {

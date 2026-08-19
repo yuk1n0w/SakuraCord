@@ -16,7 +16,10 @@ nonisolated enum ComposerPlaceholderPolicy {
            channelKind == .directMessage
             || channelKind == .groupDirectMessage
         {
-            return "Message @\(channelName)"
+            // The conversation's input carries a prompt, the way a terminal
+            // client's did. A server keeps the plain label: the prompt is
+            // part of the conversation's own character, not the app's.
+            return "> Message @\(channelName)"
         }
         return "Message #\(channelName)"
     }
