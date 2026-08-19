@@ -131,6 +131,16 @@ actor SharedMediaDataLoader {
         remoteDataCache.countLimit = 128
     }
 
+    /// Drops the in-memory copies under system memory pressure. The disk
+    /// cache is left alone: it costs no resident memory, and re-reading a
+    /// file is far cheaper than re-downloading it.
+    func purgeInMemoryCaches(includingLocalFiles: Bool) {
+        remoteDataCache.removeAllObjects()
+        if includingLocalFiles {
+            localFileCache.removeAllObjects()
+        }
+    }
+
     func data(
         for url: URL,
         priority: MediaLoadPriority = .visible

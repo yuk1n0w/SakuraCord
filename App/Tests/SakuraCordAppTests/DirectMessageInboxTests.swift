@@ -1231,3 +1231,22 @@ private func waitForDirectMessageCondition(
     #expect(!group.avatarRegions.isEmpty)
     #expect(group.frame.width > oneToOne.frame.width)
 }
+
+@Test func `memory pressure escalates from warning to critical`() {
+    // A warning gives up what is cheapest to rebuild.
+    #expect(AppMemoryPressureResponder.relief(for: .warning) == .partial)
+
+    // Critical gives up the rest and hands the pages back.
+    #expect(AppMemoryPressureResponder.relief(for: .critical) == .full)
+
+    // An event carrying both is treated as critical: it is the more severe
+    // request, and running the warning purge first would spend time exactly
+    // when the system has none.
+    #expect(
+        AppMemoryPressureResponder.relief(for: [.warning, .critical])
+            == .full
+    )
+
+    // Normal pressure asks for nothing, so nothing is dropped.
+    #expect(AppMemoryPressureResponder.relief(for: .normal) == nil)
+}

@@ -1995,6 +1995,19 @@ final class ForwardDestinationSearchIndexCache {
         revision = nil
     }
 
+    /// Releases the whole corpus under memory pressure. It is a derived
+    /// index over channels the app already holds, so dropping it costs a
+    /// rebuild on the next search and nothing else.
+    func purge() {
+        prewarmTask?.cancel()
+        prewarmTask = nil
+        prewarmKey = nil
+        preparationTask = nil
+        preparationKey = nil
+        index = nil
+        revision = nil
+    }
+
     func store(
         _ index: ForwardDestinationSearchPolicy.Index,
         for model: AppModel,

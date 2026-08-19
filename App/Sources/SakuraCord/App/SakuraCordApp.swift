@@ -218,6 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         updateController.start()
+        AppMemoryPressureResponder.shared.start()
     }
 }
 
