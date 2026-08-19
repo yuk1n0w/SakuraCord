@@ -57,6 +57,21 @@ nonisolated enum DirectMessageInboxPolicy {
         }
     }
 
+    /// The conversation a number key jumps to, counted the way the list
+    /// reads: the first entry is 1. Taken from the same filtered list the
+    /// sidebar renders, so the key matches the row you can see rather than
+    /// any internal ordering.
+    static func conversationShortcutDestination(
+        _ shortcutNumber: Int,
+        in channels: [Channel]
+    ) -> ChannelID? {
+        guard (1 ... 9).contains(shortcutNumber) else { return nil }
+        let conversations = conversations(in: channels)
+        let index = shortcutNumber - 1
+        guard conversations.indices.contains(index) else { return nil }
+        return conversations[index].id
+    }
+
     static func recipientMember(
         for channel: Channel,
         membersByID: [UserID: Member]

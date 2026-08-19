@@ -1250,3 +1250,52 @@ private func waitForDirectMessageCondition(
     // Normal pressure asks for nothing, so nothing is dropped.
     #expect(AppMemoryPressureResponder.relief(for: .normal) == nil)
 }
+
+@Test func `number keys jump to conversations in the order they are listed`() {
+    func channel(_ id: UInt64, kind: ChannelKindValue, name: String) -> Channel {
+        Channel(
+            id: ChannelID(rawValue: id),
+            guildID: kind == .text ? GuildID(rawValue: 7) : nil,
+            name: name,
+            kind: kind
+        )
+    }
+
+    // A server channel sits in the middle to prove the count follows the
+    // rendered conversation list rather than the raw channel array.
+    let channels = [
+        channel(1, kind: .directMessage, name: "marcos"),
+        channel(2, kind: .text, name: "general"),
+        channel(3, kind: .groupDirectMessage, name: "the crew"),
+        channel(4, kind: .directMessage, name: "lz")
+    ]
+
+    #expect(
+        DirectMessageInboxPolicy.conversationShortcutDestination(1, in: channels)
+            == ChannelID(rawValue: 1)
+    )
+    // Two is the group, not the server channel that precedes it.
+    #expect(
+        DirectMessageInboxPolicy.conversationShortcutDestination(2, in: channels)
+            == ChannelID(rawValue: 3)
+    )
+    #expect(
+        DirectMessageInboxPolicy.conversationShortcutDestination(3, in: channels)
+            == ChannelID(rawValue: 4)
+    )
+
+    // Out of range in either direction leaves the workspace alone rather
+    // than selecting something arbitrary.
+    #expect(
+        DirectMessageInboxPolicy.conversationShortcutDestination(0, in: channels)
+            == nil
+    )
+    #expect(
+        DirectMessageInboxPolicy.conversationShortcutDestination(4, in: channels)
+            == nil
+    )
+    #expect(
+        DirectMessageInboxPolicy.conversationShortcutDestination(10, in: channels)
+            == nil
+    )
+}

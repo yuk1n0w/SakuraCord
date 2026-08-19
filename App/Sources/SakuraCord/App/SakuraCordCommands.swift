@@ -38,6 +38,18 @@ struct SakuraCordCommands: Commands {
 
             Divider()
 
+            ForEach(1 ... 9, id: \.self) { shortcutNumber in
+                Button("Conversation \(shortcutNumber)") {
+                    model.navigateToConversationShortcut(shortcutNumber)
+                }
+                .keyboardShortcut(
+                    KeyEquivalent(Character(String(shortcutNumber))),
+                    modifiers: [.command, .option]
+                )
+            }
+
+            Divider()
+
             Button("Toggle Member Inspector") { NotificationCenter.default.post(name: .sakuracordToggleInspector, object: nil) }
                 .keyboardShortcut("i", modifiers: [.command, .option])
             Button("Focus Composer") { NotificationCenter.default.post(name: .sakuracordFocusComposer, object: nil) }

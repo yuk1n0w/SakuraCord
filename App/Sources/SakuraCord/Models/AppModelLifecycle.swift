@@ -991,6 +991,30 @@ extension AppModel {
         }
     }
 
+    /// The conversation a number key jumps to, counted the way the list
+    /// reads: first entry is 1. Mirrors what the sidebar shows rather than
+    /// any internal ordering, so the key matches the row you can see.
+    func conversationShortcutDestination(_ shortcutNumber: Int) -> ChannelID? {
+        DirectMessageInboxPolicy.conversationShortcutDestination(
+            shortcutNumber,
+            in: visibleChannels
+        )
+    }
+
+    /// Jumps straight to a conversation without the mouse, the way a client
+    /// with numbered windows did. Selecting the conversation home first
+    /// matters when the shortcut is used from inside a server: without it
+    /// the channel would be selected while the workspace still showed the
+    /// server it came from.
+    func navigateToConversationShortcut(_ shortcutNumber: Int) {
+        guard let channelID = conversationShortcutDestination(shortcutNumber)
+        else { return }
+        if selectedGuildID != nil {
+            selectGuild(nil)
+        }
+        selectedChannelID = channelID
+    }
+
     func rebuildMemberSections() {
         memberSections = AppPerformanceSignposts.measureSync(
             "MemberSectionBuild"
