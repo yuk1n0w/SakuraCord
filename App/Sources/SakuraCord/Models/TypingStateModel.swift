@@ -87,6 +87,23 @@ final class TypingStateModel {
         }
     }
 
+    /// The action line IRC used for anything that was not speech: `* nick
+    /// is typing`. No ellipsis - the asterisk already marks it as narration
+    /// rather than a message, which is the whole convention.
+    func conversationPresentation(in channelID: ChannelID) -> String? {
+        let users = users(in: channelID)
+        let names = users.map(\.displayName)
+        switch names.count {
+        case 0: return nil
+        case 1: return "* \(names[0]) is typing"
+        case 2: return "* \(names[0]) and \(names[1]) are typing"
+        default:
+            let others = names.count - 2
+            let plural = others == 1 ? "other" : "others"
+            return "* \(names[0]), \(names[1]) and \(others) \(plural) are typing"
+        }
+    }
+
     #if DEBUG
         func expiryGenerationForTesting(channelID: ChannelID, userID: UserID) -> UInt64? {
             entries[Key(channelID: channelID, userID: userID)]?.generation

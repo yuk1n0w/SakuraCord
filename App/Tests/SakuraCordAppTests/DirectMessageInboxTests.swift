@@ -1109,3 +1109,55 @@ private func waitForDirectMessageCondition(
         ) == "Message #general"
     )
 }
+
+@MainActor
+@Test func `conversation opens with a joined-the-room banner`() {
+    var channel = Channel(
+        id: ChannelID(rawValue: 9_801),
+        guildID: nil,
+        name: "marcos",
+        kind: .directMessage
+    )
+    let beginning = NativeTimelineBeginning.channel(
+        channel,
+        rulesChannelID: nil
+    )
+
+    // The banner an IRC client printed on joining, in place of an avatar, a
+    // large title and a sentence explaining what a conversation is.
+    #expect(
+        beginning.conversationBannerLines == ["*** Now talking with marcos"]
+    )
+
+    let banner = NativeTimelineBeginningLayout.make(
+        beginning: beginning,
+        width: 1_000,
+        presentationStyle: .directMessage
+    )
+    #expect(banner.bannerFrames.count == 1)
+    #expect(banner.iconFrame == .zero)
+
+    // A standard channel keeps the icon and title it always had.
+    let standard = NativeTimelineBeginningLayout.make(
+        beginning: beginning,
+        width: 1_000,
+        presentationStyle: .standard
+    )
+    #expect(standard.bannerFrames.isEmpty)
+    #expect(standard.iconFrame != .zero)
+    #expect(standard.height > banner.height)
+
+    // A topic is worth announcing; it is the one thing IRC printed besides
+    // the room itself.
+    channel.topic = "  release planning  "
+    let topical = NativeTimelineBeginning.channel(
+        channel,
+        rulesChannelID: nil
+    )
+    #expect(
+        topical.conversationBannerLines == [
+            "*** Now talking with marcos",
+            "*** Topic: release planning"
+        ]
+    )
+}

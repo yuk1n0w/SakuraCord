@@ -569,6 +569,25 @@ enum NativeTimelineRowPainter {
         textSelection: NativeTimelineTextSelection?
     ) {
         guard let layout = rowLayout.beginningLayout else { return }
+        // A conversation announces itself in a couple of monospaced lines
+        // instead of an avatar and a large title, so there is no icon well
+        // to fill and no prose to lay out.
+        if !layout.bannerFrames.isEmpty {
+            for (line, frame) in zip(
+                beginning.conversationBannerLines,
+                layout.bannerFrames
+            ) {
+                text(
+                    line,
+                    in: frame,
+                    font: NativeTimelineBeginningLayout.bannerFont,
+                    color: NSColor.secondaryLabelColor
+                        .withAlphaComponent(0.75),
+                    lineBreakMode: .byTruncatingTail
+                )
+            }
+            return
+        }
         NSColor.secondaryLabelColor.withAlphaComponent(0.10).setFill()
         NSBezierPath(ovalIn: layout.iconFrame).fill()
         let symbolConfiguration = NSImage.SymbolConfiguration(

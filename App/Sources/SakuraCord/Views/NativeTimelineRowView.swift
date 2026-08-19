@@ -213,17 +213,27 @@ struct NativeTimelineRowActions {
 }
 
 struct NativeTimelineBeginningLayout {
+    static let bannerFont = NSFont.monospacedSystemFont(
+        ofSize: 11,
+        weight: .regular
+    )
+    static let bannerLineHeight: CGFloat = 16
+
     let iconFrame: CGRect
     let titleFrame: CGRect
     let descriptionFrame: CGRect
     let dateSeparatorFrame: CGRect?
     let height: CGFloat
+    var bannerFrames: [CGRect] = []
 
     static func make(
         beginning: NativeTimelineBeginning,
         width: CGFloat,
         presentationStyle: NativeTimelinePresentationStyle = .standard
     ) -> Self {
+        if presentationStyle.usesBubbles {
+            return conversationBanner(beginning: beginning, width: width)
+        }
         let horizontalInset: CGFloat = 16
         let presentationWidth = presentationStyle == .directMessage
             ? min(width, ChatChromeMetrics.directMessageContentMaximumWidth)
@@ -277,6 +287,35 @@ struct NativeTimelineBeginningLayout {
             descriptionFrame: descriptionFrame,
             dateSeparatorFrame: dateSeparatorFrame,
             height: dateSeparatorFrame?.maxY ?? contentHeight
+        )
+    }
+
+    /// A joined-the-room banner: a couple of monospaced lines at the top of
+    /// the scrollback, with no avatar and no prose. It replaces a block of
+    /// chrome that only ever said a conversation was about to start.
+    private static func conversationBanner(
+        beginning: NativeTimelineBeginning,
+        width: CGFloat
+    ) -> Self {
+        let horizontalInset: CGFloat = 24
+        let topInset: CGFloat = 18
+        let contentWidth = max(1, width - horizontalInset * 2)
+        let frames = beginning.conversationBannerLines.indices.map { index in
+            CGRect(
+                x: horizontalInset,
+                y: topInset + CGFloat(index) * bannerLineHeight,
+                width: contentWidth,
+                height: bannerLineHeight
+            )
+        }
+        let contentHeight = (frames.last?.maxY ?? topInset) + 14
+        return Self(
+            iconFrame: .zero,
+            titleFrame: .zero,
+            descriptionFrame: .zero,
+            dateSeparatorFrame: nil,
+            height: contentHeight,
+            bannerFrames: frames
         )
     }
 

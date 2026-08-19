@@ -285,6 +285,31 @@ enum NativeTimelineBeginning: Equatable {
         }
     }
 
+    /// The banner an IRC client printed on joining: who you are talking to,
+    /// and the topic if there is one. Two short lines in place of an avatar,
+    /// a large title and a sentence of prose explaining what a conversation
+    /// is.
+    var conversationBannerLines: [String] {
+        var lines: [String] = []
+        switch self {
+        case let .channel(channel, _):
+            lines.append("*** Now talking with \(channel.name)")
+        case let .thread(_, title, starterName, _):
+            lines.append("*** Now talking in \(title)")
+            if let starterName {
+                lines.append("*** Started by \(starterName)")
+            }
+        }
+        if case let .channel(channel, _) = self,
+           let topic = channel.topic?.trimmingCharacters(
+               in: .whitespacesAndNewlines
+           ), !topic.isEmpty
+        {
+            lines.append("*** Topic: \(topic)")
+        }
+        return lines
+    }
+
     var description: String {
         switch self {
         case let .channel(channel, _):

@@ -343,9 +343,19 @@ private struct TypingIndicatorView: View {
     let channelID: ChannelID
     let isDirectMessage: Bool
 
+    private var label: String? {
+        isDirectMessage
+            ? typingState.conversationPresentation(in: channelID)
+            : typingState.presentation(in: channelID)
+    }
+
     var body: some View {
-        Text(typingState.presentation(in: channelID) ?? " ")
-            .font(.caption)
+        Text(label ?? " ")
+            .font(
+                isDirectMessage
+                    ? .system(size: 11, design: .monospaced)
+                    : .caption
+            )
             .foregroundStyle(.secondary)
             .lineLimit(1)
             .frame(maxWidth: .infinity, minHeight: 18, maxHeight: 18, alignment: .leading)
@@ -354,6 +364,6 @@ private struct TypingIndicatorView: View {
             // without a top gap the newest bubble butts against this row.
             .padding(.top, isDirectMessage ? 8 : 0)
             .padding(.bottom, isDirectMessage ? 4 : 0)
-            .accessibilityHidden(typingState.presentation(in: channelID) == nil)
+            .accessibilityHidden(label == nil)
     }
 }
