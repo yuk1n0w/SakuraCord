@@ -1161,3 +1161,73 @@ private func waitForDirectMessageCondition(
         ]
     )
 }
+
+@MainActor
+@Test func `one to one reactions drop the reactor avatars`() async throws {
+    let model = AppModel(
+        launchMode: .offlineTesting,
+        provider: MockChatProvider()
+    )
+    await model.start()
+    let currentUser = try #require(model.snapshot?.currentUser)
+    let other = User(
+        id: UserID(rawValue: currentUser.id.rawValue + 31_000),
+        username: "reactor",
+        displayName: "Reactor"
+    )
+
+    var message = Message(
+        id: MessageID(rawValue: 61_000),
+        channelID: ChannelID(rawValue: 9_901),
+        author: other,
+        content: "worth a look"
+    )
+    message.reactions = [
+        Reaction(
+            emoji: "🔥",
+            count: 2,
+            didCurrentUserReact: true,
+            reactors: [
+                ReactionReactor(id: other.id, displayName: other.displayName),
+                ReactionReactor(
+                    id: currentUser.id,
+                    displayName: currentUser.displayName
+                )
+            ]
+        )
+    ]
+
+    func layout(
+        _ style: NativeTimelinePresentationStyle
+    ) -> NativeTimelineRowLayout {
+        NativeTimelineRowLayout.make(
+            item: .message(
+                MessageRowPresentation(
+                    message: message,
+                    startsGroup: true,
+                    startsDay: false,
+                    replyPreview: nil,
+                    isReplyAvailable: false
+                ),
+                isUnreadBoundary: false,
+                isHighlighted: false
+            ),
+            width: 1_000,
+            model: model,
+            presentationStyle: style
+        )
+    }
+
+    // Two people can react in a one-to-one conversation, and you already
+    // know who sent the message, so the avatars carry nothing.
+    let oneToOne = try #require(layout(.directMessage).reactionRegions.first)
+    #expect(oneToOne.avatarRegions.isEmpty)
+
+    // A group keeps them: there they actually identify someone, and the
+    // pill is wider for carrying them.
+    let group = try #require(
+        layout(.groupDirectMessage).reactionRegions.first
+    )
+    #expect(!group.avatarRegions.isEmpty)
+    #expect(group.frame.width > oneToOne.frame.width)
+}

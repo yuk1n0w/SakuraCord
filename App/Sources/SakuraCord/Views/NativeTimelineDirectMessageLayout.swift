@@ -395,7 +395,12 @@ extension NativeTimelineRowLayout {
             topY: (editedFrame?.maxY ?? anchorFrame.maxY) + 4,
             maximumWidth: maximumBubbleWidth,
             minimumX: conversationMinX + horizontalInset,
-            isOutgoing: isOutgoing
+            isOutgoing: isOutgoing,
+            // Only two people can have reacted in a one-to-one conversation
+            // and you already know who sent the message, so the reactor
+            // avatars say nothing the pill does not. A group keeps them:
+            // there they actually identify someone.
+            showsReactors: namesIncomingAuthors
         )
         let reactionRegions = reactions.regions
         let addReactionFrame = reactions.addFrame
@@ -583,7 +588,8 @@ extension NativeTimelineRowLayout {
         topY: CGFloat,
         maximumWidth: CGFloat,
         minimumX: CGFloat,
-        isOutgoing: Bool
+        isOutgoing: Bool,
+        showsReactors: Bool
     ) -> DirectMessageReactionLayout {
         let presented = MessageReactionPresentation.items(
             from: message.reactions
@@ -596,7 +602,7 @@ extension NativeTimelineRowLayout {
             )
         }
 
-        let sizes = presented.map(reactionSize)
+        let sizes = presented.map { reactionSize($0, showsReactors: showsReactors) }
             + [CGSize(
                 width: ReactionActionMenuPresentation.inline.width,
                 height: MessageReactionMetrics.pillHeight
@@ -616,7 +622,8 @@ extension NativeTimelineRowLayout {
         ).map { reaction, frame in
             NativeTimelineRowLayout.reactionRegion(
                 reaction,
-                frame: frame.offsetBy(dx: originX, dy: topY)
+                frame: frame.offsetBy(dx: originX, dy: topY),
+                showsReactors: showsReactors
             )
         }
         return DirectMessageReactionLayout(

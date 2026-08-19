@@ -1225,7 +1225,7 @@ extension NativeTimelineRowLayout {
             if hasRichContent {
                 verticalOffset += 4
             }
-            let sizes = presentedReactions.map(reactionSize)
+            let sizes = presentedReactions.map { reactionSize($0) }
                 + [CGSize(
                     width: ReactionActionMenuPresentation.inline.width,
                     height: MessageReactionMetrics.pillHeight
@@ -1561,8 +1561,13 @@ extension NativeTimelineRowLayout {
         )
     }
 
-    static func reactionSize(_ reaction: Reaction) -> CGSize {
-        let plan = MessageReactionPresentation.previewPlan(for: reaction)
+    static func reactionSize(
+        _ reaction: Reaction,
+        showsReactors: Bool = true
+    ) -> CGSize {
+        let plan = showsReactors
+            ? MessageReactionPresentation.previewPlan(for: reaction)
+            : MessageReactionPreviewPlan(reactors: [], overflowCount: 0)
         var width: CGFloat = 12 + MessageReactionMetrics.emojiSize
         if reaction.count > 0 {
             width += 4 + measuredTextWidth(
@@ -1601,7 +1606,8 @@ extension NativeTimelineRowLayout {
 
     static func reactionRegion(
         _ reaction: Reaction,
-        frame: CGRect
+        frame: CGRect,
+        showsReactors: Bool = true
     ) -> ReactionRegion {
         var horizontalOffset = frame.minX + 6
         let emojiFrame = CGRect(
@@ -1628,7 +1634,9 @@ extension NativeTimelineRowLayout {
             horizontalOffset += countWidth
         }
 
-        let plan = MessageReactionPresentation.previewPlan(for: reaction)
+        let plan = showsReactors
+            ? MessageReactionPresentation.previewPlan(for: reaction)
+            : MessageReactionPreviewPlan(reactors: [], overflowCount: 0)
         var avatars: [ReactionRegion.AvatarRegion] = []
         var overflowFrame: CGRect?
         if !plan.isEmpty {
