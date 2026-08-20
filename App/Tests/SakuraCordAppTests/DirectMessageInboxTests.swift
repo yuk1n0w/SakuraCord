@@ -1299,3 +1299,69 @@ private func waitForDirectMessageCondition(
             == nil
     )
 }
+
+@Test func `conversation composer keeps only the controls it needs`() {
+    // The pickers are Discord's furniture beside a terminal-style prompt.
+    // A conversation drops them; a server keeps them.
+    for kind in [ChannelKindValue.directMessage, .groupDirectMessage] {
+        #expect(
+            ComposerControlPolicy.showsPickers(
+                channelKind: kind,
+                destination: .channel
+            ) == false
+        )
+    }
+    #expect(
+        ComposerControlPolicy.showsPickers(
+            channelKind: .text,
+            destination: .channel
+        )
+    )
+
+    // With Return sending, the button only repeats the key that already
+    // sent the message, so a conversation leaves it out.
+    #expect(
+        ComposerControlPolicy.showsSendButton(
+            channelKind: .directMessage,
+            destination: .channel,
+            sendsWithReturn: true
+        ) == false
+    )
+
+    // With Return inserting a newline, the button and Command-Return are
+    // the only ways to send, so it stays rather than stranding the message.
+    #expect(
+        ComposerControlPolicy.showsSendButton(
+            channelKind: .directMessage,
+            destination: .channel,
+            sendsWithReturn: false
+        )
+    )
+
+    // A server keeps the button under either setting.
+    for sendsWithReturn in [true, false] {
+        #expect(
+            ComposerControlPolicy.showsSendButton(
+                channelKind: .text,
+                destination: .channel,
+                sendsWithReturn: sendsWithReturn
+            )
+        )
+    }
+
+    // A thread is a server surface even though it carries no channel kind
+    // of its own, so it keeps both.
+    #expect(
+        ComposerControlPolicy.showsPickers(
+            channelKind: .directMessage,
+            destination: .thread
+        )
+    )
+    #expect(
+        ComposerControlPolicy.showsSendButton(
+            channelKind: .directMessage,
+            destination: .thread,
+            sendsWithReturn: true
+        )
+    )
+}
