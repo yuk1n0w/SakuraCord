@@ -205,6 +205,57 @@ process-memory caches and is discarded at process exit.
 stack. `DaveKit` is an implementation dependency of `MediaPipeline`; the app
 target does not import it directly.
 
+## Music
+
+YouTube Music playback runs inside a `WKWebView` that `MusicPlayerModel` owns
+for the app's lifetime. There is no public YouTube Music playback API, and its
+licensed audio only decodes inside Google's own player, so the page is the
+audio engine and the app reads and drives it rather than reimplementing it.
+Nothing of the page is shown: it is mounted at two points square and does no
+layout or painting worth the name. Everything the listener sees is drawn
+natively. A WebKit process is therefore the floor for playback, not a choice.
+
+The page presents as Safari. Google refuses sign-in to a user agent it can
+identify as an embedded view, so the desktop user agent is what makes the
+surface work at all. The session persists in the default website data store;
+nothing about it is copied into app storage.
+
+An injected observer reports playback state as JSON, and `MusicBridgeEvent`
+decodes it as a value so the contract is testable without a web view. None of
+the page's markup is a published contract: every read is defensive, a payload
+that no longer parses is dropped rather than applied, and an advertisement is
+reported as playing audio but never as a track. Playback state lives on its
+own observable model because it ticks once a second while a track plays, and
+the app tree must not redraw at that rate.
+
+Searching runs inside the page rather than against a reimplemented client:
+the page holds the credentials, API key and client context, so a signed-in
+listener searches as themselves and no key has to be maintained here. The
+response tree is walked for its row renderer rather than indexed by a fixed
+path, because InnerTube reshapes between builds. Playing a result clicks a
+link so the page's own router swaps the track, which a document reload would
+otherwise interrupt.
+
+Lyrics are fetched natively and are independent of the page. Sources are tried
+in order: LRCLib leads because it is open, needs no credential, and indexes by
+title and artist, so it answers even when the page has not reported a video
+id; the Better Lyrics community service follows. The aggregator those clients
+prefer sits behind a browser challenge and is not reachable from a native
+client. A recording is matched on duration, because a lyric timed against a
+different cut drifts further out of step the longer it plays, and no lyric
+beats a confidently wrong one. Word-level timings are used where a source
+carries them; otherwise the fill sweeps a line across its own span, measured
+by character so a language that does not space between words still fills.
+
+The now-playing bar sits inside the account panel's existing glass alongside
+the voice status. The lyrics panel takes the side slot the member list would
+have had, since they cannot both usefully occupy one column.
+
+A voice session takes the audio. `voiceSessionState` is the single choke point
+for every path into and out of a call, so the coordination lives there; the
+model only resumes music it paused itself, so a track the listener stopped
+during a call stays stopped afterwards.
+
 ## Plugins
 
 `SakuraCordPluginSDK` defines future-facing capability and permission

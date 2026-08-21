@@ -328,3 +328,80 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## YouTube Music player observer
+
+SakuraCord's YouTube Music bridge adapts the page-observation approach from
+Kaset, an unofficial YouTube and YouTube Music client for macOS. No file is
+copied verbatim; what is derived is the way the page is read — reading
+playback state from the media element rather than the play button, whose
+label is localised; gating artwork on the literal `src` attribute, because
+`img.src` resolves an absent attribute against the page URL; preferring the
+structured player metadata over the player bar's text, which mixes in
+localised view counts; and preferring a ready media element's clock over the
+progress bar's attributes, which can stop updating while playback continues.
+
+- Source: `https://github.com/sozercan/kaset`
+- Revision: `53763c1ad4ad706bc412f9722bbbc3fe9b403763` (2026-08-18)
+- Derived in: `App/Sources/SakuraCord/Services/Music/MusicBridgeScript.swift`
+
+Copyright © 2025 sozercan, integrated under the MIT license:
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+YouTube and YouTube Music are trademarks of Google LLC. SakuraCord is not
+affiliated with, endorsed by, or sponsored by Google.
+
+## Lyrics
+
+SakuraCord fetches lyrics natively. Two things are owed here.
+
+### Better Lyrics
+
+The provider chain, the source contracts, and the presentation follow Better
+Lyrics, a browser extension that adds time-synced lyrics to YouTube Music. No
+file is copied; what is derived is its approach — the ordering of sources and
+their fallbacks, the request shapes for the community lyric service, the
+handling of TTML with per-word span timings, the treatment of an unstamped
+line as an instrumental break drawn as a note, and the progressive fill of a
+line as it is sung.
+
+Better Lyrics is licensed GPL-3.0, as SakuraCord is.
+
+- Source: `https://github.com/better-lyrics/better-lyrics`
+- Retrieved: 2026-08-21
+- Derived in: `App/Sources/SakuraCord/Services/Music/`
+
+Better Lyrics' preferred aggregator is not used. It is reached through a
+browser challenge that mints a short-lived token, and answering that from a
+native client would be working around an access control rather than using the
+service as offered.
+
+### LRCLib
+
+Lyrics are looked up primarily on LRCLib, an open lyric database intended to
+be called by third-party players. It requires no credential. SakuraCord
+identifies itself in its `User-Agent` rather than presenting as a browser,
+which is what the service asks of its callers.
+
+- Service: `https://lrclib.net`
+- Used in: `App/Sources/SakuraCord/Services/Music/LRCLibProvider.swift`
+
+Lyrics remain the property of their rights holders. SakuraCord stores no
+lyrics: each is fetched for the track being played and held only in memory.

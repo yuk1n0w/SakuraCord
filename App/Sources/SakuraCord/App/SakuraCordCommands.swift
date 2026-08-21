@@ -54,6 +54,17 @@ struct SakuraCordCommands: Commands {
                 .keyboardShortcut("i", modifiers: [.command, .option])
             Button("Focus Composer") { NotificationCenter.default.post(name: .sakuracordFocusComposer, object: nil) }
                 .keyboardShortcut("l", modifiers: [.command, .shift])
+
+            Divider()
+
+            // The only way in before anything is playing: the sidebar bar
+            // appears with a track, and there is no track until someone has
+            // signed in here.
+            Button("YouTube Music") {
+                model.music.presentation =
+                    model.music.presentation == nil ? .browse : nil
+            }
+            .keyboardShortcut("m", modifiers: [.command, .shift])
         }
     }
 }

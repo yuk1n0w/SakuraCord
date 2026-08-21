@@ -283,6 +283,11 @@ final class AppModel {
     var sessionState: SessionState
     let launchMode: AppLaunchMode
     let typingState: TypingStateModel
+    let music = MusicPlayerModel()
+
+    /// Whether the side panel is showing lyrics rather than the member
+    /// list. They share one slot, so this wins over the inspector while set.
+    var showsLyrics = false
     let commandComposer = ApplicationCommandComposerModel()
     let readState = AccountReadStateModel()
     let notificationPreferences: NotificationPreferences
@@ -418,7 +423,30 @@ final class AppModel {
             refreshVoiceSidebarPresentation()
         }
     }
-    var voiceSessionState: VoiceSessionState = .idle
+    var voiceSessionState: VoiceSessionState = .idle {
+        didSet {
+            guard oldValue != voiceSessionState else { return }
+            coordinateMusicWithVoice(from: oldValue, to: voiceSessionState)
+        }
+    }
+
+    /// Hands the audio to a call and gives it back afterwards. Every path
+    /// into and out of a call moves this state, so coordinating here covers
+    /// joining, leaving, failing and reconnecting without each of them
+    /// having to remember the music.
+    private func coordinateMusicWithVoice(
+        from oldValue: VoiceSessionState,
+        to newValue: VoiceSessionState
+    ) {
+        let was = MusicVoiceCoordinationPolicy.callHoldsAudio(during: oldValue)
+        let now = MusicVoiceCoordinationPolicy.callHoldsAudio(during: newValue)
+        guard was != now else { return }
+        if now {
+            music.pauseForVoiceCall()
+        } else {
+            music.resumeAfterVoiceCall()
+        }
+    }
     var voiceParticipants: [VoiceRemoteParticipant] = []
     var isLocallySpeaking = false
     var voiceVideoFrames: [String: VoiceVideoFrame] = [:]

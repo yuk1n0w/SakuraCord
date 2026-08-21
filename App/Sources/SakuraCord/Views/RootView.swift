@@ -246,8 +246,11 @@ private struct ChatRootView: View {
             .frame(width: 0, height: 0)
         }
         .background {
-            ForwardMessageWindowOverlay(model: model)
-                .frame(width: 0, height: 0)
+            ZStack {
+                ForwardMessageWindowOverlay(model: model)
+                MusicWindowOverlay(model: model)
+            }
+            .frame(width: 0, height: 0)
         }
         .background {
             WindowModalOverlay(

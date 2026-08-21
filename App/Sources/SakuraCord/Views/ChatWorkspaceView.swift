@@ -13,6 +13,7 @@ struct ChatWorkspaceView: View {
             hasOpenThread: model.openThread != nil,
             hasOpenVoiceChat: model.isVoiceChatOpen,
             showsInspector: model.showInspector,
+            showsLyrics: model.showsLyrics,
             showsMessageSearch: model.messageSearch.isPresented
                 && MessageSearchSurfacePolicy.showsToolbar(
                     channelKind: model.selectedChannel?.kind,
@@ -78,6 +79,7 @@ struct ChatWorkspacePresentation: Equatable {
         case voiceChat
         case memberInspector
         case messageSearch
+        case lyrics
     }
 
     let primaryContent: PrimaryContent
@@ -89,6 +91,7 @@ struct ChatWorkspacePresentation: Equatable {
         hasOpenThread: Bool,
         hasOpenVoiceChat: Bool,
         showsInspector: Bool,
+        showsLyrics: Bool = false,
         showsMessageSearch: Bool = false
     ) {
         primaryContent = isVoiceChannel ? .voice : (isForumChannel ? .forum : .chat)
@@ -99,6 +102,10 @@ struct ChatWorkspacePresentation: Equatable {
             supplementaryContent = .thread
         } else if isVoiceChannel {
             supplementaryContent = hasOpenVoiceChat ? .voiceChat : nil
+        } else if showsLyrics {
+            // Lyrics take the panel the member list would have had: it is
+            // the same slot, and showing both at once would halve each.
+            supplementaryContent = .lyrics
         } else {
             supplementaryContent = showsInspector ? .memberInspector : nil
         }
@@ -194,6 +201,8 @@ private struct ChatWorkspaceSupplementaryContent: View {
                 .frame(width: ChatChromeMetrics.memberListWidth)
                 .frame(maxHeight: .infinity)
             }
+        case .lyrics:
+            LyricsPanelView(music: model.music)
         case .messageSearch:
             if toolbarSearchFieldMetrics.isValid {
                 MessageSearchPanelView(model: model)

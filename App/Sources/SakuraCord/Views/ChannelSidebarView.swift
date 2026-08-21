@@ -609,6 +609,11 @@ private struct AccountControlView: View {
                     Divider().padding(.horizontal, 10)
                 }
 
+                if voiceModel.music.state.hasTrack {
+                    MusicNowPlayingBar(model: voiceModel)
+                    Divider().padding(.horizontal, 10)
+                }
+
                 HStack(spacing: 9) {
                     AccountAvatar(name: displayName, avatarURL: user?.avatarURL, status: currentStatus)
                     VStack(alignment: .leading, spacing: 1) {
