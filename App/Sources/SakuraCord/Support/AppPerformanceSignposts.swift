@@ -336,11 +336,19 @@ enum AppPerformanceSignposts {
         _ name: StaticString,
         operation: () async throws -> T
     ) async rethrows -> T {
+        let startedAt = DispatchTime.now().uptimeNanoseconds
         let interval = signposter.beginInterval(
             name,
             id: signposter.makeSignpostID()
         )
-        defer { signposter.endInterval(name, interval) }
+        defer {
+            signposter.endInterval(name, interval)
+            AppPerformanceDiagnostics.recordOperation(
+                name,
+                durationNanoseconds:
+                    DispatchTime.now().uptimeNanoseconds - startedAt
+            )
+        }
         return try await operation()
     }
 
@@ -348,11 +356,19 @@ enum AppPerformanceSignposts {
         _ name: StaticString,
         operation: () throws -> T
     ) rethrows -> T {
+        let startedAt = DispatchTime.now().uptimeNanoseconds
         let interval = signposter.beginInterval(
             name,
             id: signposter.makeSignpostID()
         )
-        defer { signposter.endInterval(name, interval) }
+        defer {
+            signposter.endInterval(name, interval)
+            AppPerformanceDiagnostics.recordOperation(
+                name,
+                durationNanoseconds:
+                    DispatchTime.now().uptimeNanoseconds - startedAt
+            )
+        }
         return try operation()
     }
 }

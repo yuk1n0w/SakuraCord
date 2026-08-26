@@ -422,7 +422,9 @@ struct ForumPostContextMenuBridge: NSViewRepresentable {
         }
 
         private func forceVisibleImage(for item: NSMenuItem) {
-            item.preferredImageVisibility = .visible
+            if #available(macOS 27.0, *) {
+                item.preferredImageVisibility = .visible
+            }
         }
 
         @objc private func markReadFromMenu() {

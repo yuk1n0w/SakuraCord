@@ -113,15 +113,11 @@ public enum MediaDeviceCatalog {
     }
 
     public static func selectInput(_ deviceID: AudioDeviceID, on engine: AVAudioEngine) throws {
-        try engine.inputNode.withAudioUnit { audioUnit throws(MediaDeviceError) in
-            try select(deviceID, on: audioUnit)
-        }
+        try select(deviceID, on: engine.inputNode.audioUnit)
     }
 
     public static func selectOutput(_ deviceID: AudioDeviceID, on engine: AVAudioEngine) throws {
-        try engine.outputNode.withAudioUnit { audioUnit throws(MediaDeviceError) in
-            try select(deviceID, on: audioUnit)
-        }
+        try select(deviceID, on: engine.outputNode.audioUnit)
     }
 
     public static func defaultOutputDeviceID() -> AudioDeviceID? {

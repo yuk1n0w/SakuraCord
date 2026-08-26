@@ -452,7 +452,9 @@ private final class GIFPickerCollectionCellView: NSView {
         favoriteButton.action = #selector(toggleFavoritePressed)
         favoriteGlass.style = .regular
         favoriteGlass.cornerRadius = 14
-        favoriteGlass.effectIsInteractive = true
+        if #available(macOS 27.0, *) {
+            favoriteGlass.effectIsInteractive = true
+        }
         favoriteGlass.contentView = favoriteButton
         favoriteGlass.isHidden = true
         addSubview(favoriteGlass)

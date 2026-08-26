@@ -383,7 +383,8 @@ affiliated with, endorsed by, or sponsored by Google.
 
 ## Lyrics
 
-SakuraCord fetches lyrics natively. Two things are owed here.
+SakuraCord fetches lyrics natively. The following projects and services are
+used or informed the implementation.
 
 ### Better Lyrics
 
@@ -406,10 +407,43 @@ browser challenge that mints a short-lived token, and answering that from a
 native client would be working around an access control rather than using the
 service as offered.
 
+### Google Translate language decoration
+
+When the listener explicitly enables romanized or translated lyrics,
+SakuraCord batches only lyric lines missing provider-supplied language metadata
+through the public Google Translate request shape used by Better Lyrics. Like
+Better Lyrics, the request is made from the music page, which is the only
+context the service answers. Primary lyrics still work when this optional
+request fails, and generated language text is retained only in memory.
+
+- Service: `https://translate.googleapis.com/translate_a/single`
+- Used in: `App/Sources/SakuraCord/Services/Music/LyricsLanguageProvider.swift`
+
+### BiniLyrics
+
+BiniLyrics supplies open search results that point to TTML lyric documents.
+SakuraCord accepts documents only from BiniLyrics' HTTPS storage origin and
+uses their real word or syllable span timings when available.
+
+- Service: `https://lyrics-api.binimum.org`
+- Storage: `https://lyrics-storage.binimum.org`
+- Used in: `App/Sources/SakuraCord/Services/Music/AlternateLyricsProviders.swift`
+
+### Better Lyrics API / Legato
+
+The public Legato endpoint provides a final line-timed KuGou fallback using the
+Better Lyrics API service contract. SakuraCord does not send or manufacture an
+API key and treats rate limits or uncached protected responses as an ordinary
+provider miss.
+
+- Source: `https://github.com/boidushya/better-lyrics-api`
+- Service: `https://lyrics-api.boidu.dev/kugou/getLyrics`
+- Used in: `App/Sources/SakuraCord/Services/Music/AlternateLyricsProviders.swift`
+
 ### LRCLib
 
-Lyrics are looked up primarily on LRCLib, an open lyric database intended to
-be called by third-party players. It requires no credential. SakuraCord
+Line-timed and plain fallbacks are looked up on LRCLib, an open lyric database
+intended to be called by third-party players. It requires no credential. SakuraCord
 identifies itself in its `User-Agent` rather than presenting as a browser,
 which is what the service asks of its callers.
 

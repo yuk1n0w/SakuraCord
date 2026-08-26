@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "MediaPipeline",
-    platforms: [.macOS(.v27)],
+    platforms: [.macOS(.v26)],
     products: [.library(name: "MediaPipeline", targets: ["MediaPipeline"])],
     dependencies: [
         .package(path: "../SakuraCordModels"),

@@ -199,18 +199,11 @@ public final class ScreenShareCaptureEngine: NSObject, @unchecked Sendable {
 
     public func preparePreview() async throws {
         let picker = await MainActor.run { SCContentSharingPicker.shared }
-        guard await MainActor.run(body: { picker.isAvailable }) else {
-            throw ScreenShareCaptureError.unavailable
-        }
         await configurePicker(picker)
     }
 
     public func presentSourcePicker() async {
         let picker = await MainActor.run { SCContentSharingPicker.shared }
-        guard await MainActor.run(body: { picker.isAvailable }) else {
-            eventContinuation.yield(.error(ScreenShareCaptureError.unavailable.localizedDescription))
-            return
-        }
         await configurePicker(picker)
         await MainActor.run {
             if let stream = self.lock.withLock({ self.stream }) {

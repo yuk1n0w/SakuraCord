@@ -544,11 +544,7 @@ public final class VoiceAudioEngine {
         let player = try player(for: userID)
         player.scheduleBuffer(buffer)
         if !player.isPlaying {
-            do {
-                try player.playAudio()
-            } catch {
-                schedulePlaybackRecovery()
-            }
+            player.play()
         }
     }
 
@@ -559,7 +555,7 @@ public final class VoiceAudioEngine {
         let player = AVAudioPlayerNode()
         player.volume = participantVolumes[userID] ?? 1
         playbackEngine.attach(player)
-        try playbackEngine.connectNode(player, to: playbackEngine.mainMixerNode, format: OpusCodec.pcmFormat)
+        playbackEngine.connect(player, to: playbackEngine.mainMixerNode, format: OpusCodec.pcmFormat)
         players[userID] = player
         return player
     }
@@ -623,7 +619,13 @@ final class OpusSampleBufferEncoder: NSObject,
 
     func process(_ sampleBuffer: CMSampleBuffer) {
         guard let description = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
-        guard let format = AVAudioFormat(formatDescription: description) else { return }
+        let format: AVAudioFormat
+        if #available(macOS 27.0, *) {
+            guard let currentFormat = AVAudioFormat(formatDescription: description) else { return }
+            format = currentFormat
+        } else {
+            format = AVAudioFormat(cmAudioFormatDescription: description)
+        }
         let frameCount = AVAudioFrameCount(CMSampleBufferGetNumSamples(sampleBuffer))
         guard frameCount > 0,
               let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }

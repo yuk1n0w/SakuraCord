@@ -5,7 +5,7 @@ when working on SakuraCord but too detailed for the public project README.
 
 ## Setup
 
-SakuraCord requires macOS 27, Xcode 27 with Swift 6.4, and Git. After cloning,
+SakuraCord requires macOS 26, Xcode 27 with Swift 6.4, and Git. After cloning,
 complete the required [developer and agent bootstrap](README.md#developer-and-agent-bootstrap)
 before committing or pushing.
 

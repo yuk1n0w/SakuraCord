@@ -104,15 +104,37 @@ struct MusicNowPlayingBar: View {
     /// bar, either of which would be a claim about progress.
     @ViewBuilder private var progress: some View {
         if music.state.duration > 0 {
-            GeometryReader { geometry in
-                Capsule()
-                    .fill(.tint)
-                    .frame(width: geometry.size.width * music.state.fractionComplete)
-                    .animation(.linear(duration: 1), value: music.state.fractionComplete)
-            }
+            MusicPlaybackProgressView(music: music)
             .frame(height: 2)
             .padding(.horizontal, 10)
             .padding(.bottom, 2)
+        }
+    }
+}
+
+/// The only sidebar view that needs the interpolated playback clock.
+///
+/// Keeping its periodic invalidation in this two-point strip prevents a
+/// progress report from rebuilding the account controls and channel sidebar.
+private struct MusicPlaybackProgressView: View {
+    let music: MusicPlayerModel
+
+    var body: some View {
+        if music.state.isPlaying {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                bar(fraction: music.estimatedFractionComplete(at: context.date))
+            }
+        } else {
+            bar(fraction: music.estimatedFractionComplete())
+        }
+    }
+
+    private func bar(fraction: Double) -> some View {
+        GeometryReader { geometry in
+            Capsule()
+                .fill(.tint)
+                .frame(width: geometry.size.width * fraction)
+                .animation(.linear(duration: 1), value: fraction)
         }
     }
 }

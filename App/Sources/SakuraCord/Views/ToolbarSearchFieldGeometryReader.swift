@@ -349,6 +349,7 @@ struct ToolbarSearchFieldGeometryReader: NSViewRepresentable {
         private var observers: [NSObjectProtocol] = []
         private var searchFieldDelegateProxy: ToolbarSearchFieldDelegateProxy?
         private var retryTask: Task<Void, Never>?
+        private var searchInteractionTask: Task<Void, Never>?
         private var keyMonitor: Any?
         private var mouseMonitor: Any?
         private var nativeClearPointerActivationPending = false
@@ -399,6 +400,8 @@ struct ToolbarSearchFieldGeometryReader: NSViewRepresentable {
         func detach() {
             retryTask?.cancel()
             retryTask = nil
+            searchInteractionTask?.cancel()
+            searchInteractionTask = nil
             if let keyMonitor {
                 NSEvent.removeMonitor(keyMonitor)
                 self.keyMonitor = nil
@@ -573,8 +576,28 @@ struct ToolbarSearchFieldGeometryReader: NSViewRepresentable {
             let isHidden = isToolbarItemVisible
                 ? (originalSearchToolbarItemIsHidden ?? false)
                 : true
+            let revealsFocusedSearch = item.isHidden
+                && !isHidden
+                && isSearchFocused.wrappedValue
+            if !item.isHidden, isHidden {
+                item.endSearchInteraction()
+            }
             item.isHidden = isHidden
             appliedSearchToolbarItemIsHidden = isHidden
+            if revealsFocusedSearch {
+                searchInteractionTask?.cancel()
+                searchInteractionTask = Task { @MainActor [weak self, weak item] in
+                    await Task.yield()
+                    guard !Task.isCancelled,
+                          let self,
+                          let item,
+                          self.searchToolbarItem === item,
+                          self.isToolbarItemVisible,
+                          self.isSearchFocused.wrappedValue
+                    else { return }
+                    item.beginSearchInteraction()
+                }
+            }
             return true
         }
 

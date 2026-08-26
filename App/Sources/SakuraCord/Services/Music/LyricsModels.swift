@@ -8,6 +8,18 @@ nonisolated struct LyricWord: Equatable, Sendable {
     let text: String
     let start: TimeInterval
     let end: TimeInterval
+
+    /// Better Lyrics' rich-sync swipe: it leads the stated part by ten
+    /// percent and crosses it over 1.6 times its duration. The generous
+    /// tail keeps a short syllable from flashing while still anchoring the
+    /// movement to the source's real timing.
+    func highlightProgress(at time: TimeInterval) -> Double {
+        let duration = end - start
+        guard duration > 0 else { return time >= start ? 1 : 0 }
+        let swipeStart = start - duration * 0.1
+        let swipeDuration = duration * 1.6
+        return min(max((time - swipeStart) / swipeDuration, 0), 1)
+    }
 }
 
 /// One line of a song, and when it starts.
@@ -28,7 +40,35 @@ nonisolated struct LyricLine: Equatable, Sendable, Identifiable {
     /// Empty means the line is lit as a whole.
     var words: [LyricWord] = []
 
+    /// Provider-supplied language decorations. TTML can carry both beside
+    /// the primary lyric; retaining them avoids translating text that the
+    /// lyric author already supplied and preserves timed romanization.
+    var translations: [String: String] = [:]
+    var romanization: String?
+    var romanizedWords: [LyricWord] = []
+
     var isWordTimed: Bool { !words.isEmpty }
+
+    /// Language helpers decorate a line after its karaoke layers are already
+    /// moving. Those additions must not make the primary lyric look like a
+    /// different timed line and restart its sweep halfway through a word.
+    func hasSamePrimaryAnimation(as other: Self) -> Bool {
+        id == other.id
+            && start == other.start
+            && end == other.end
+            && text == other.text
+            && words == other.words
+    }
+
+    func translation(for languageCode: String) -> String? {
+        let requested = languageCode.lowercased()
+        let requestedBase = requested.split(separator: "-").first.map(String.init)
+        return translations.first { code, _ in
+            let candidate = code.lowercased()
+            return candidate == requested
+                || candidate.split(separator: "-").first.map(String.init) == requestedBase
+        }?.value
+    }
 
     /// How many words have begun by this moment. Counting rather than
     /// finding an index keeps a line whose words overlap - held notes and
@@ -37,16 +77,37 @@ nonisolated struct LyricLine: Equatable, Sendable, Identifiable {
         words.reduce(0) { $1.start <= time ? $0 + 1 : $0 }
     }
 
+    /// The shortest a line's fill may take, so a line whose successor
+    /// follows immediately does not flash rather than sweep.
+    private static let shortestFill: TimeInterval = 1.2
+
+    /// The longest, so a line held open before a break does not crawl.
+    private static let longestFill: TimeInterval = 6
+
     /// How far through this line the singing has reached, as a fraction.
     ///
-    /// A line-timed source gives a start and nothing finer, but a line
-    /// still occupies a span of the song, and sweeping across that span is
-    /// what makes the words fill rather than blink on all at once. It is an
-    /// estimate - singing is not evenly paced - but it tracks far better
-    /// than lighting the whole line at its first instant.
+    /// Paced across the line's own span - from when it starts to when the
+    /// next one does - because that span is the only timing a line-synced
+    /// source actually gives, and the words of a line are sung across it.
+    /// An earlier version guessed a rate per character instead, which was
+    /// independent of the real timings and so drifted against the voice.
+    ///
+    /// This is still a linear sweep, not true word timing: it cannot know
+    /// which syllable is being held. Only a source carrying per-word
+    /// timings can do that, and where one exists it is used instead.
     func fractionSung(by time: TimeInterval) -> Double {
-        guard end > start else { return time >= start ? 1 : 0 }
-        return min(max((time - start) / (end - start), 0), 1)
+        let paced = fillDuration
+        guard paced > 0 else { return time >= start ? 1 : 0 }
+        return min(max((time - start) / paced, 0), 1)
+    }
+
+    /// How long the fill takes. The panel needs the same span to place each
+    /// word's glow when the source timed only the line, so the flare and the
+    /// fill move together rather than against one another.
+    var fillDuration: TimeInterval {
+        let span = end - start
+        guard span > 0 else { return 0 }
+        return min(max(span, Self.shortestFill), Self.longestFill)
     }
 }
 
@@ -61,10 +122,39 @@ nonisolated struct TimedLyrics: Equatable, Sendable {
 
     var lines: [LyricLine]
     var synchronisation: Synchronisation
+    var language: String?
+
+    init(
+        lines: [LyricLine],
+        synchronisation: Synchronisation,
+        language: String? = nil
+    ) {
+        self.lines = lines
+        self.synchronisation = synchronisation
+        self.language = language
+    }
 
     static let empty = TimedLyrics(lines: [], synchronisation: .none)
 
     var isEmpty: Bool { lines.isEmpty }
+
+    var isLineTimed: Bool {
+        !isEmpty && synchronisation == .line
+    }
+
+    /// Whether any line carries its own word timings. Better Lyrics ranks
+    /// every richly-timed source above every line-timed one, because a
+    /// lyric that knows where each word falls is worth more than one that
+    /// only knows where the line does.
+    var isWordTimed: Bool { lines.contains { $0.isWordTimed } }
+
+    /// Better Lyrics intentionally renders slightly ahead of the raw source
+    /// timestamps: 150 ms for rich sync and 115 ms for line sync. The visual
+    /// swipe then lands on the voice instead of appearing to react after it.
+    var timingLead: TimeInterval {
+        guard synchronisation == .line else { return 0 }
+        return isWordTimed ? 0.150 : 0.115
+    }
 
     /// The line that should be lit at this moment, or nil before the first
     /// one starts.

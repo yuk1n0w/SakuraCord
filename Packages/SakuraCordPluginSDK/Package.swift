@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "SakuraCordPluginSDK",
-    platforms: [.macOS(.v27)],
+    platforms: [.macOS(.v26)],
     products: [.library(name: "SakuraCordPluginSDK", targets: ["SakuraCordPluginSDK"])],
     targets: [
         .target(name: "SakuraCordPluginSDK"),

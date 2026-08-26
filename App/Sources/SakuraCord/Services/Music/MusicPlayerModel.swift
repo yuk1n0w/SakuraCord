@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 import WebKit
@@ -22,10 +23,36 @@ final class MusicPlayerModel {
     /// lookup follows the track without the panel having to watch for it.
     let lyrics = LyricsModel()
 
+    init() {
+        lyrics.pageFetch = { [weak self] url in
+            await self?.pageResponse(for: url)
+        }
+    }
+
     /// What the last search turned up, and what was asked.
     private(set) var searchResults: [MusicSearchResult] = []
     private(set) var searchQuery = ""
     private(set) var isSearching = false
+
+    /// The home feed, so there is something to browse without already
+    /// knowing what to ask for.
+    private(set) var homeSections: [MusicBrowseSection] = []
+    private(set) var isLoadingHome = false
+
+    /// A playlist or album the listener opened, and its tracks.
+    ///
+    /// A card in the feed is usually a collection rather than a track, and
+    /// opening one to see what is in it is most of what a feed is for.
+    private(set) var openedList: MusicOpenedList?
+
+    /// Whether the panel is showing the page itself rather than the native
+    /// surface.
+    ///
+    /// Signing in is Google's own flow and can only happen on the page, so
+    /// the page has to be reachable even though nothing else here uses it.
+    /// Making it invisible without leaving a way back to it took sign-in
+    /// away entirely.
+    var showsPage = false
 
     /// Whether the music surface is showing, and as what. The web view
     /// exists either way: the overlay retains its host when dismissed, so
@@ -37,6 +64,7 @@ final class MusicPlayerModel {
     private(set) var isReady = false
 
     @ObservationIgnored private var webView: WKWebView?
+    @ObservationIgnored private var engineWindow: NSWindow?
     @ObservationIgnored private var bridge: Bridge?
 
     /// Whether this side paused the music, and so owes it a resume. A track
@@ -49,7 +77,23 @@ final class MusicPlayerModel {
     /// lyric line on: a line would land up to a second late and the whole
     /// panel would step rather than follow. Interpolating from the last
     /// report gives a clock smooth enough to read against.
-    @ObservationIgnored private var progressReport: (seconds: TimeInterval, at: Date)?
+    @ObservationIgnored private var progressReport: ProgressReport?
+
+    private struct ProgressReport {
+        var seconds: TimeInterval
+        var at: Date
+        var rate: Double
+        var advances: Bool
+    }
+
+    /// Commands issued before the page installed the bridge.
+    ///
+    /// The web view is created on first use and the page takes seconds to
+    /// load, so the first search or home request almost always arrives
+    /// before there is anything to receive it. Without this they were
+    /// evaluated against an absent bridge and vanished, leaving whatever
+    /// asked for them waiting on a reply that could never come.
+    @ObservationIgnored private var queuedCommands: [(String, String)] = []
 
     /// YouTube Music refuses to serve an unrecognised client, and Google
     /// rejects sign-in from anything it can identify as an embedded view.
@@ -95,11 +139,78 @@ final class MusicPlayerModel {
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.customUserAgent = Self.userAgent
         webView.allowsBackForwardNavigationGestures = true
-        webView.load(URLRequest(url: Self.home))
-
         self.bridge = bridge
         self.webView = webView
+        parkWebView()
+        webView.load(URLRequest(url: Self.home))
         return webView
+    }
+
+    /// Moves the live page into the visible sign-in surface.
+    func webViewForPresentation() -> WKWebView {
+        let webView = webViewForDisplay()
+        if engineWindow?.contentView === webView {
+            engineWindow?.contentView = NSView(frame: .zero)
+        }
+        return webView
+    }
+
+    /// Keeps Google's player attached without attaching its video layer to
+    /// the SwiftUI chat window. An invisible engine window is enough for the
+    /// page router and audio pipeline, but its display commits no longer make
+    /// the complete DM interface participate in every video frame.
+    func parkWebView() {
+        guard let webView else { return }
+        let window: NSWindow
+        if let engineWindow {
+            window = engineWindow
+        } else {
+            window = NSWindow(
+                contentRect: NSRect(x: -10_000, y: -10_000, width: 2, height: 2),
+                styleMask: .borderless,
+                backing: .buffered,
+                defer: false
+            )
+            window.isReleasedWhenClosed = false
+            window.ignoresMouseEvents = true
+            window.isExcludedFromWindowsMenu = true
+            window.hasShadow = false
+            window.alphaValue = 0.01
+            window.collectionBehavior = [.stationary, .ignoresCycle, .canJoinAllSpaces]
+            self.engineWindow = window
+        }
+        webView.removeFromSuperview()
+        window.contentView = webView
+        window.orderFront(nil)
+    }
+
+    /// Runs a request from the music page rather than from the app.
+    ///
+    /// Google answers a native client 429 on the public translation endpoint
+    /// however the request is dressed - every host it is offered on, with or
+    /// without a browser user agent - while the identical request from a page
+    /// succeeds. The page is already open to keep playback alive, so lyric
+    /// decorations are asked for there rather than not at all.
+    func pageResponse(for url: URL) async -> Data? {
+        guard let webView, isReady else { return nil }
+        do {
+            let value = try await webView.callAsyncJavaScript(
+                """
+                // Match Better Lyrics' transport: repeated lyric lines should
+                // come from WebKit's HTTP cache instead of spending Google's
+                // tiny anonymous translation quota again after every refresh.
+                const response = await fetch(url, { cache: 'force-cache' });
+                if (!response.ok) { return null; }
+                return await response.text();
+                """,
+                arguments: ["url": url.absoluteString],
+                contentWorld: .page
+            )
+            guard let text = value as? String else { return nil }
+            return Data(text.utf8)
+        } catch {
+            return nil
+        }
     }
 
     /// Where playback has reached, carried forward from the last report.
@@ -108,12 +219,20 @@ final class MusicPlayerModel {
     /// track whose progress has never been reported has nowhere to carry
     /// forward from.
     func estimatedProgress(at now: Date = Date()) -> TimeInterval {
-        guard state.isPlaying, let report = progressReport else {
-            return state.progress
-        }
-        let carried = report.seconds + now.timeIntervalSince(report.at)
+        guard let report = progressReport else { return state.progress }
+        guard report.advances else { return report.seconds }
+        let carried = report.seconds
+            + max(now.timeIntervalSince(report.at), 0) * report.rate
         guard state.duration > 0 else { return carried }
         return min(carried, state.duration)
+    }
+
+    /// The narrow progress views ask for their own clock. Progress reports
+    /// therefore stay outside Observation and do not make unrelated sidebar
+    /// controls redraw once a second.
+    func estimatedFractionComplete(at now: Date = Date()) -> Double {
+        guard state.duration > 0, state.duration.isFinite else { return 0 }
+        return min(max(estimatedProgress(at: now) / state.duration, 0), 1)
     }
 
     // MARK: - Transport
@@ -131,13 +250,18 @@ final class MusicPlayerModel {
         // The page reports progress once a second, so without restamping
         // here the lyric would snap back to where it was until the next
         // report caught up.
-        progressReport = (seconds: seconds, at: Date())
+        progressReport = ProgressReport(
+            seconds: seconds,
+            at: Date(),
+            rate: state.playbackRate,
+            advances: state.isPlaying
+        )
     }
 
     func seek(toFraction fraction: Double) {
         guard state.duration > 0 else { return }
         let seconds = min(max(fraction, 0), 1) * state.duration
-        evaluate("seek", argument: "\(seconds)")
+        seek(toSeconds: seconds)
     }
 
     // MARK: - Searching
@@ -160,11 +284,93 @@ final class MusicPlayerModel {
         // been opened.
         _ = webViewForDisplay()
         evaluate("search", argument: encoded(trimmed))
+        expire(after: .seconds(20)) { [weak self] in
+            guard let self, isSearching, searchQuery == trimmed else { return }
+            isSearching = false
+        }
+    }
+
+    /// Loads the home feed once. It is the page's own home, so a
+    /// signed-in listener gets theirs.
+    func loadHomeIfNeeded() {
+        guard homeSections.isEmpty, !isLoadingHome else { return }
+        loadHome()
+    }
+
+    /// Fetches the feed again, whatever is already held.
+    ///
+    /// The feed is the page's, so it changes when the session does or when
+    /// YouTube rebuilds it. Nothing here can know when that happened, which
+    /// is why asking is a command rather than a schedule.
+    func refreshHome() {
+        guard !isLoadingHome else { return }
+        loadHome()
+    }
+
+    private func loadHome() {
+        isLoadingHome = true
+        _ = webViewForDisplay()
+        evaluate("home")
+        expire(after: .seconds(20)) { [weak self] in
+            guard let self, isLoadingHome else { return }
+            isLoadingHome = false
+        }
+    }
+
+    /// Gives up on a reply that never arrived. A page that failed to load,
+    /// or a build whose endpoints have moved, must not leave the panel
+    /// spinning at someone indefinitely.
+    private func expire(
+        after duration: Duration,
+        _ body: @escaping () -> Void
+    ) {
+        Task {
+            try? await Task.sleep(for: duration)
+            guard !Task.isCancelled else { return }
+            body()
+        }
+    }
+
+    /// Plays a track, or starts a playlist or album.
+    /// Whether this is the thing currently playing.
+    ///
+    /// An empty identifier never matches. A collection carries no video id,
+    /// and the player reports none of its own while it is switching tracks,
+    /// so comparing them directly marked every album in the feed as playing
+    /// at once for as long as the switch took.
+    func isPlaying(_ result: MusicSearchResult) -> Bool {
+        !result.videoId.isEmpty && result.videoId == state.videoID
+    }
+
+    /// Opens a playlist or album to show what is in it.
+    func openList(_ result: MusicSearchResult) {
+        guard !result.browseId.isEmpty else { return }
+        openedList = MusicOpenedList(
+            browseId: result.browseId,
+            title: result.title,
+            subtitle: result.subtitle,
+            artwork: result.artwork,
+            items: [],
+            isLoading: true
+        )
+        _ = webViewForDisplay()
+        evaluate("openList", argument: encoded(result.browseId))
+        expire(after: .seconds(20)) { [weak self] in
+            guard let self, openedList?.isLoading == true else { return }
+            openedList?.isLoading = false
+        }
+    }
+
+    func closeList() {
+        openedList = nil
     }
 
     func play(_ result: MusicSearchResult) {
         _ = webViewForDisplay()
-        evaluate("play", argument: encoded(result.videoId))
+        evaluate(
+            "play",
+            argument: "\(encoded(result.videoId)), \(encoded(result.playlistId))"
+        )
     }
 
     /// A query becomes a JavaScript string literal, and quotes, backslashes
@@ -203,9 +409,28 @@ final class MusicPlayerModel {
         switch event {
         case .ready:
             isReady = true
+            let queued = queuedCommands
+            queuedCommands = []
+            for (command, argument) in queued {
+                run(command, argument: argument)
+            }
         case .signedOut:
             isReady = false
             state = .idle
+            progressReport = nil
+            lyrics.track(.idle)
+        case let .list(browseId, results):
+            // A reply for a collection the listener has already left is
+            // dropped rather than filling the one they are looking at now.
+            guard openedList?.browseId == browseId else { return }
+            openedList?.items = results
+            openedList?.isLoading = false
+        case let .home(sections):
+            // Keep this clean surface aligned with the page the listener
+            // sees: it is a quick way back to familiar music, not a second
+            // recommendation feed competing with YouTube Music itself.
+            homeSections = MusicHomeFeed.visibleSections(from: sections)
+            isLoadingHome = false
         case let .searchResults(query, results):
             // A reply for a query the listener has already moved on from is
             // dropped rather than replacing what they are looking at now.
@@ -214,18 +439,59 @@ final class MusicPlayerModel {
             isSearching = false
         case let .state(state):
             isReady = true
+            // Signing in or out replaces whose feed this is, so the one on
+            // screen belonged to the previous session and is discarded.
+            // Without this, a listener signs in and keeps looking at the
+            // signed-out feed with no sign anything is stale.
+            if state.isSignedIn != self.state.isSignedIn {
+                homeSections = []
+                searchResults = []
+                loadHomeIfNeeded()
+            }
             // A report only restarts the clock when it actually moves the
             // playhead; the page repeats its progress while paused, and
             // restamping then would make a paused track appear to advance.
-            if state.progress != self.state.progress || state.isPlaying != self.state.isPlaying {
-                progressReport = (seconds: state.progress, at: Date())
+            if state.videoID != self.state.videoID
+                || state.progress != progressReport?.seconds
+                || state.isClockRunning != progressReport?.advances
+                || state.playbackRate != progressReport?.rate
+            {
+                let receivedAt = Date()
+                let sourceInstant = state.sampledAt ?? receivedAt
+                // JavaScript and Swift share the machine's wall clock. Still,
+                // reject a nonsensical source instant so a clock adjustment or
+                // malformed page value cannot fling the playhead around.
+                let sourceAge = receivedAt.timeIntervalSince(sourceInstant)
+                let reportInstant = (0 ... 5).contains(sourceAge)
+                    ? sourceInstant
+                    : receivedAt
+                progressReport = ProgressReport(
+                    seconds: state.progress,
+                    at: reportInstant,
+                    rate: state.playbackRate,
+                    advances: state.isClockRunning
+                )
             }
-            self.state = state
+            // A ticking playhead is not presentation state. Keep its latest
+            // report for the two narrow progress views, but only publish a
+            // new observed value when title, transport, artwork, duration or
+            // session state actually changed.
+            if !state.hasSamePresentation(as: self.state) {
+                self.state = state
+            }
             lyrics.track(state)
         }
     }
 
     private func evaluate(_ command: String, argument: String = "") {
+        guard isReady else {
+            queuedCommands.append((command, argument))
+            return
+        }
+        run(command, argument: argument)
+    }
+
+    private func run(_ command: String, argument: String) {
         guard let webView else { return }
         webView.evaluateJavaScript(
             "window.__sakuracordMusic && window.__sakuracordMusic.\(command)(\(argument))"

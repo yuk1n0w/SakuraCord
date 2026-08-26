@@ -55,11 +55,9 @@ nonisolated enum UnisonLyricsRequest {
 
 /// Holds the words for whatever is playing.
 ///
-/// Sources are tried in order and the first that answers wins. LRCLib leads
-/// because it is open, needs no credential, and indexes by title and artist
-/// rather than by video id - so it answers even when the page has not told
-/// us which video is playing. The community service follows for the tracks
-/// LRCLib has never seen.
+/// Sources are ranked by the timing they actually return, then by Better
+/// Lyrics' provider order. A rich word/syllable copy therefore beats every
+/// line-timed one, and an unsynced copy can never hide a timed alternate.
 @Observable
 final class LyricsModel {
     /// What the panel should say. A lookup that has not run yet and a
@@ -75,18 +73,79 @@ final class LyricsModel {
 
     private(set) var lyrics: TimedLyrics = .empty
     private(set) var status: Status = .idle
+    private(set) var showsRomanization: Bool
+    private(set) var showsTranslation: Bool
+    private(set) var translationLanguage: String
 
     /// The track the current words belong to, so a late response for a
     /// track that has already been skipped past is discarded rather than
     /// shown against the wrong song.
     @ObservationIgnored private var loadedTrack: String?
-    @ObservationIgnored private var missingTracks: Set<String> = []
     @ObservationIgnored private var task: Task<Void, Never>?
+    @ObservationIgnored private var decorationTask: Task<Void, Never>?
     @ObservationIgnored private let session: URLSession = .shared
+    @ObservationIgnored private let languageService = LyricsLanguageService()
+
+    /// How a decoration request reaches the network. Google refuses the
+    /// public translation endpoint to a native client, so the player hands
+    /// the panel its own page to ask from.
+    @ObservationIgnored var pageFetch: LyricsPageFetch?
+    @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let logger = Logger(
         subsystem: "dev.sakuracord.SakuraCord",
         category: "Lyrics"
     )
+
+    private static let romanizationDefaultsKey =
+        "dev.sakuracord.music.lyrics.romanization"
+    private static let translationDefaultsKey =
+        "dev.sakuracord.music.lyrics.translation"
+    private static let translationLanguageDefaultsKey =
+        "dev.sakuracord.music.lyrics.translation-language"
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        showsRomanization = defaults.bool(forKey: Self.romanizationDefaultsKey)
+        showsTranslation = defaults.bool(forKey: Self.translationDefaultsKey)
+        let storedLanguage = defaults.string(
+            forKey: Self.translationLanguageDefaultsKey
+        )
+        if let storedLanguage,
+           LyricsTranslationLanguage.supported.contains(where: {
+               $0.code == storedLanguage
+           }) {
+            translationLanguage = storedLanguage
+        } else {
+            translationLanguage = "en"
+        }
+    }
+
+    var translationLanguageName: String {
+        LyricsTranslationLanguage.named(translationLanguage)
+    }
+
+    func setShowsRomanization(_ showsRomanization: Bool) {
+        guard showsRomanization != self.showsRomanization else { return }
+        self.showsRomanization = showsRomanization
+        defaults.set(showsRomanization, forKey: Self.romanizationDefaultsKey)
+        refreshDecorations()
+    }
+
+    func setShowsTranslation(_ showsTranslation: Bool) {
+        guard showsTranslation != self.showsTranslation else { return }
+        self.showsTranslation = showsTranslation
+        defaults.set(showsTranslation, forKey: Self.translationDefaultsKey)
+        refreshDecorations()
+    }
+
+    func setTranslationLanguage(_ language: String) {
+        guard LyricsTranslationLanguage.supported.contains(where: {
+            $0.code == language
+        }), language != translationLanguage else { return }
+        translationLanguage = language
+        defaults.set(language, forKey: Self.translationLanguageDefaultsKey)
+        if showsTranslation { refreshDecorations() }
+    }
 
     /// Identifies the playing track for caching and for discarding stale
     /// responses. The video id is preferred because it survives the title
@@ -110,13 +169,12 @@ final class LyricsModel {
         loadedTrack = identity
         lyrics = .empty
         task?.cancel()
-
-        guard !missingTracks.contains(identity) else {
-            status = .unavailable
-            return
-        }
+        decorationTask?.cancel()
 
         status = .searching
+        logger.info(
+            "lyric lookup: \(state.title, privacy: .public) / \(state.artist, privacy: .public) [\(identity, privacy: .public)] duration \(Int(state.duration))"
+        )
         task = Task { [weak self] in
             await self?.load(for: state, identity: identity)
         }
@@ -126,31 +184,170 @@ final class LyricsModel {
         let found = await lookUp(state)
         guard !Task.isCancelled, loadedTrack == identity else { return }
         if found.isEmpty {
-            missingTracks.insert(identity)
             status = .unavailable
+            logger.info("lyric lookup: nothing for \(identity, privacy: .public)")
         } else {
             lyrics = found
             status = .found
+            logger.info(
+                "lyric lookup: \(found.lines.count) lines, synced \(found.synchronisation == .line)"
+            )
+            refreshDecorations()
         }
     }
 
-    /// Tries each source until one answers.
-    private func lookUp(_ state: MusicPlaybackState) async -> TimedLyrics {
-        if let request = LRCLibRequest.request(title: state.title, artist: state.artist) {
-            if let body = await body(for: request) {
-                let found = LRCLibRequest.lyrics(from: body, duration: state.duration)
-                if !found.isEmpty { return found }
-            }
+    private func refreshDecorations() {
+        decorationTask?.cancel()
+        guard status == .found,
+              let identity = loadedTrack,
+              showsRomanization || showsTranslation
+        else { return }
+
+        guard let pageFetch else {
+            logger.info("lyric decorations: no music page to request them from")
+            return
         }
-        if let url = UnisonLyricsRequest.url(
+        let source = lyrics
+        let romanizes = showsRomanization
+        let targetLanguage = showsTranslation ? translationLanguage : nil
+        decorationTask = Task { [weak self, languageService] in
+            let decorated = await languageService.enrich(
+                source,
+                romanizes: romanizes,
+                translationLanguage: targetLanguage,
+                fetch: pageFetch
+            )
+            guard !Task.isCancelled,
+                  let self,
+                  self.loadedTrack == identity
+            else { return }
+            self.lyrics = decorated
+        }
+    }
+
+    /// Starts independent sources together, then resolves them in Better
+    /// Lyrics' quality order. This keeps a slow line fallback from delaying a
+    /// rich answer while avoiding the old first-nonempty bug where LRCLib's
+    /// plain text could discard real timing from a later source.
+    private func lookUp(_ state: MusicPlaybackState) async -> TimedLyrics {
+        async let unisonTask = lookUpUnison(state)
+        async let biniTask = lookUpBini(state)
+        async let lrcLibTask = lookUpLRCLib(state)
+        async let legatoTask = lookUpLegato(state)
+
+        let unison = await unisonTask
+        let bini = await biniTask
+
+        if unison.isWordTimed {
+            return selected(unison, source: "Unison", quality: "word-timed")
+        }
+        if bini.isWordTimed {
+            return selected(bini, source: "BiniLyrics", quality: "word-timed")
+        }
+
+        if unison.isLineTimed {
+            return selected(unison, source: "Unison", quality: "line-timed")
+        }
+        if bini.isLineTimed {
+            return selected(bini, source: "BiniLyrics", quality: "line-timed")
+        }
+
+        let lrcLib = await lrcLibTask
+        let legato = await legatoTask
+        if lrcLib.isLineTimed {
+            return selected(lrcLib, source: "LRCLib", quality: "line-timed")
+        }
+        if legato.isLineTimed {
+            return selected(legato, source: "Legato", quality: "line-timed")
+        }
+
+        // Better Lyrics puts Unison's plain copy before LRCLib's. Bini and
+        // Legato normally return timed formats, but retaining a readable copy
+        // is still better than claiming there are no lyrics if one degrades.
+        for (source, found) in [
+            ("Unison", unison),
+            ("BiniLyrics", bini),
+            ("LRCLib", lrcLib),
+            ("Legato", legato)
+        ] where !found.isEmpty {
+            return selected(found, source: source, quality: "unsynced")
+        }
+        return .empty
+    }
+
+    private func lookUpUnison(_ state: MusicPlaybackState) async -> TimedLyrics {
+        guard let url = UnisonLyricsRequest.url(
             videoID: state.videoID,
             title: state.title,
             artist: state.artist,
             duration: state.duration
-        ), let body = await body(for: URLRequest(url: url)) {
-            return UnisonLyricsRequest.lyrics(from: body)
+        ), let body = await body(for: URLRequest(url: url)) else { return .empty }
+        return UnisonLyricsRequest.lyrics(from: body)
+    }
+
+    private func lookUpBini(_ state: MusicPlaybackState) async -> TimedLyrics {
+        var fallback = TimedLyrics.empty
+        for url in BiniLyricsRequest.urls(
+            title: state.title,
+            artist: state.artist,
+            duration: state.duration
+        ) {
+            guard !Task.isCancelled else { return .empty }
+            guard let searchBody = await body(for: URLRequest(url: url)),
+                  let lyricsURL = BiniLyricsRequest.lyricURL(
+                    from: searchBody,
+                    duration: state.duration
+                  ),
+                  let source = await body(for: URLRequest(url: lyricsURL)),
+                  let text = String(bytes: source, encoding: .utf8)
+            else { continue }
+
+            let found = LyricsParser.parse(text, format: "ttml")
+            if found.isWordTimed { return found }
+            if fallback.isEmpty { fallback = found }
         }
-        return .empty
+        return fallback
+    }
+
+    private func lookUpLRCLib(_ state: MusicPlaybackState) async -> TimedLyrics {
+        var fallback = TimedLyrics.empty
+
+        for query in LRCLibRequest.queries(title: state.title, artist: state.artist) {
+            guard !Task.isCancelled else { return .empty }
+            guard let request = LRCLibRequest.request(query: query) else { continue }
+            guard let body = await body(for: request) else { continue }
+            let found = LRCLibRequest.lyrics(from: body, duration: state.duration)
+            if found.isLineTimed { return found }
+            if fallback.isEmpty { fallback = found }
+        }
+        return fallback
+    }
+
+    private func lookUpLegato(_ state: MusicPlaybackState) async -> TimedLyrics {
+        var fallback = TimedLyrics.empty
+        for url in LegatoLyricsRequest.urls(
+            title: state.title,
+            artist: state.artist,
+            duration: state.duration
+        ) {
+            guard !Task.isCancelled else { return .empty }
+            guard let body = await body(for: URLRequest(url: url)) else { continue }
+            let found = LegatoLyricsRequest.lyrics(from: body)
+            if found.isLineTimed { return found }
+            if fallback.isEmpty { fallback = found }
+        }
+        return fallback
+    }
+
+    private func selected(
+        _ lyrics: TimedLyrics,
+        source: String,
+        quality: String
+    ) -> TimedLyrics {
+        logger.info(
+            "lyric lookup: \(quality, privacy: .public) copy from \(source, privacy: .public)"
+        )
+        return lyrics
     }
 
     /// A source that answers "not found" and a source that could not be
@@ -158,6 +355,8 @@ final class LyricsModel {
     /// the next either way.
     private func body(for request: URLRequest) async -> Data? {
         do {
+            var request = request
+            request.timeoutInterval = 8
             let (body, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200
             else { return nil }
@@ -173,6 +372,7 @@ final class LyricsModel {
     private func clear() {
         guard loadedTrack != nil else { return }
         task?.cancel()
+        decorationTask?.cancel()
         loadedTrack = nil
         lyrics = .empty
         status = .idle

@@ -185,6 +185,7 @@ private struct ChatWorkspaceSupplementaryContent: View {
                     model: model,
                     recipient: recipient
                 )
+                .ignoresSafeArea(.container, edges: .top)
             } else {
                 MemberInspectorView(
                     sections: model.directMessageInspectorSections,
@@ -203,6 +204,7 @@ private struct ChatWorkspaceSupplementaryContent: View {
             }
         case .lyrics:
             LyricsPanelView(music: model.music)
+                .ignoresSafeArea(.container, edges: .top)
         case .messageSearch:
             if toolbarSearchFieldMetrics.isValid {
                 MessageSearchPanelView(model: model)

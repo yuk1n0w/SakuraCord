@@ -55,16 +55,74 @@ struct SakuraCordCommands: Commands {
             Button("Focus Composer") { NotificationCenter.default.post(name: .sakuracordFocusComposer, object: nil) }
                 .keyboardShortcut("l", modifiers: [.command, .shift])
 
-            Divider()
+        }
 
+        CommandMenu("Music") {
             // The only way in before anything is playing: the sidebar bar
             // appears with a track, and there is no track until someone has
-            // signed in here.
+            // started one here.
             Button("YouTube Music") {
                 model.music.presentation =
                     model.music.presentation == nil ? .browse : nil
             }
             .keyboardShortcut("m", modifiers: [.command, .shift])
+
+            Button(model.showsLyrics ? "Hide Lyrics" : "Show Lyrics") {
+                model.showsLyrics.toggle()
+            }
+            .keyboardShortcut("l", modifiers: [.command, .option])
+            .disabled(!model.music.state.hasTrack)
+
+            Divider()
+
+            Toggle(
+                "Romanized Lyrics",
+                isOn: Binding(
+                    get: { model.music.lyrics.showsRomanization },
+                    set: { model.music.lyrics.setShowsRomanization($0) }
+                )
+            )
+            Toggle(
+                "Translated Lyrics",
+                isOn: Binding(
+                    get: { model.music.lyrics.showsTranslation },
+                    set: { model.music.lyrics.setShowsTranslation($0) }
+                )
+            )
+            Picker(
+                "Translation Language",
+                selection: Binding(
+                    get: { model.music.lyrics.translationLanguage },
+                    set: { model.music.lyrics.setTranslationLanguage($0) }
+                )
+            ) {
+                ForEach(LyricsTranslationLanguage.supported) { language in
+                    Text(language.name).tag(language.code)
+                }
+            }
+            .disabled(!model.music.lyrics.showsTranslation)
+
+            Divider()
+
+            // The feed belongs to the page and changes when YouTube rebuilds
+            // it, which nothing here can be told about. Asking is the only
+            // way to find out.
+            Button("Refresh Feed") { model.music.refreshHome() }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(model.music.isLoadingHome)
+
+            Divider()
+
+            Button(model.music.state.isPlaying ? "Pause" : "Play") {
+                model.music.playPause()
+            }
+            .disabled(!model.music.state.hasTrack)
+            Button("Next Track") { model.music.next() }
+                .keyboardShortcut("]", modifiers: [.command, .shift])
+                .disabled(!model.music.state.hasTrack)
+            Button("Previous Track") { model.music.previous() }
+                .keyboardShortcut("[", modifiers: [.command, .shift])
+                .disabled(!model.music.state.hasTrack)
         }
     }
 }

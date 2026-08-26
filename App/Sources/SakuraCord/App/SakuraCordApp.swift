@@ -219,6 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         updateController.start()
         AppMemoryPressureResponder.shared.start()
+        AppPerformanceDiagnostics.shared.start()
     }
 }
 

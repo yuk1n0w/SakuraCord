@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "SakuraCordApp",
-    platforms: [.macOS(.v27)],
+    platforms: [.macOS(.v26)],
     products: [
         .executable(name: "SakuraCord", targets: ["SakuraCord"]),
         .executable(name: "SakuraCordPluginHost", targets: ["SakuraCordPluginHost"])

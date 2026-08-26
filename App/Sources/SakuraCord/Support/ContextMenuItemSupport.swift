@@ -26,7 +26,9 @@ enum ContextMenuItemSupport {
             image.isTemplate = !isDestructive
             item.image = image
         }
-        item.preferredImageVisibility = .visible
+        if #available(macOS 27.0, *) {
+            item.preferredImageVisibility = .visible
+        }
         if isDestructive {
             item.attributedTitle = NSAttributedString(
                 string: title,
@@ -38,6 +40,8 @@ enum ContextMenuItemSupport {
     static func configure(_ item: NSMenuItem, image: NSImage) {
         image.isTemplate = false
         item.image = image
-        item.preferredImageVisibility = .visible
+        if #available(macOS 27.0, *) {
+            item.preferredImageVisibility = .visible
+        }
     }
 }

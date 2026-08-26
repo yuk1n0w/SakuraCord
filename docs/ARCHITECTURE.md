@@ -160,6 +160,14 @@ and rendering. They use real credentials and network data while suppressing
 acknowledgements and other account mutations; offline fixtures are not accepted
 as production performance evidence.
 
+The normal app also keeps a bounded, session-memory performance diagnostic
+projection. It samples process CPU and physical memory once per second,
+aggregates slow operations already covered by app signposts, and records a
+short spike history with non-sensitive feature-state booleans. Settings can
+display and export that projection as JSON. It never records account content,
+music metadata, credentials, cookies, identifiers, or URLs, and resetting or
+quitting discards it.
+
 ## Message and media flow
 
 History responses and Gateway events decode into the same domain message
@@ -233,9 +241,14 @@ An injected observer reports playback state as JSON, and `MusicBridgeEvent`
 decodes it as a value so the contract is testable without a web view. None of
 the page's markup is a published contract: every read is defensive, a payload
 that no longer parses is dropped rather than applied, and an advertisement is
-reported as playing audio but never as a track. Playback state lives on its
-own observable model because it ticks once a second while a track plays, and
-the app tree must not redraw at that rate.
+reported as playing audio but never as a track. The observer follows Better
+Lyrics' clock boundary: YouTube's movie player supplies authoritative time,
+duration, transport and buffering/seeking state; media events report seeks,
+stalls and track changes immediately; and a one-second snapshot corrects any
+missed event. Native interpolation uses the sampled wall time and playback
+rate, and advances only while the page says its clock is actually running.
+Playback state lives on its own observable model so those corrections do not
+redraw the app tree.
 
 Searching runs inside the page rather than against a reimplemented client:
 the page holds the credentials, API key and client context, so a signed-in
@@ -245,16 +258,37 @@ path, because InnerTube reshapes between builds. Playing a result clicks a
 link so the page's own router swaps the track, which a document reload would
 otherwise interrupt.
 
-Lyrics are fetched natively and are independent of the page. Sources are tried
-in order: LRCLib leads because it is open, needs no credential, and indexes by
-title and artist, so it answers even when the page has not reported a video
-id; the Better Lyrics community service follows. The aggregator those clients
-prefer sits behind a browser challenge and is not reachable from a native
-client. A recording is matched on duration, because a lyric timed against a
-different cut drifts further out of step the longer it plays, and no lyric
-beats a confidently wrong one. Word-level timings are used where a source
-carries them; otherwise the fill sweeps a line across its own span, measured
-by character so a language that does not space between words still fills.
+Lyrics are fetched natively and are independent of the page. Unison and
+BiniLyrics provide the first rich word/syllable tier; Unison and Bini line
+timings follow, then LRCLib and Better Lyrics Legato. An unsynced answer is
+retained only when every timed alternate misses. Independent sources start
+together so their fallback latency overlaps, but the result is resolved in
+that quality order rather than by whichever network request finishes first.
+The aggregator Better Lyrics clients prefer sits behind a browser challenge
+and is not used from the native client. A recording is matched on duration,
+because a lyric timed against a different cut drifts further out of step the
+longer it plays, and no lyric beats a confidently wrong one. Real word-level
+timings are used where a source carries them; a line-only source is presented
+as line timing rather than fabricated word timing. Both tiers use Better
+Lyrics' small presentation lead so the native fill lands with the voice.
+
+TTML-authored translations and timed transliterations stay attached to their
+source lines. Romanization and translation are separate persisted display
+choices in the Music menu and are off by default. When enabled, the native
+language layer uses source decorations first, then batches only undecorated
+non-instrumental lines through the same public Google translation surface used
+by Better Lyrics. Those requests are issued from the music page rather than
+from the app: the service answers a native client 429 whichever host, header
+or user agent it is asked with, while the identical request from a page is
+answered normally, and the page is already open to keep playback alive.
+Romanization asks for a real source language rather than `auto`, because
+`auto-Latn` is answered with an English translation rather than a
+transliteration; an undeclared language is detected once per lookup first.
+Requests are cancelled with the track, duplicate output is discarded, and
+results remain in the process-only lyric cache; no lyric or translation is
+written to disk. Romanization is presented as a compact
+supporting capsule and translation as an unboxed secondary line, while the
+primary lyric remains the only content carrying the full vocal glow.
 
 The now-playing bar sits inside the account panel's existing glass alongside
 the voice status. The lyrics panel takes the side slot the member list would

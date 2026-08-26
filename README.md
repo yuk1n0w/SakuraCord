@@ -11,7 +11,7 @@
 
   <p>
     <a href="https://github.com/SakuraCordApp/SakuraCord/actions/workflows/ci.yml"><picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/ci/SakuraCordApp/SakuraCord.svg?workflow=ci.yml&amp;branch=main&amp;label=Build&amp;variant=secondary&amp;mode=dark&amp;size=xs"><img alt="Build status" src="https://shieldcn.dev/github/ci/SakuraCordApp/SakuraCord.svg?workflow=ci.yml&amp;branch=main&amp;label=Build&amp;variant=secondary&amp;mode=light&amp;size=xs"></picture></a>
-    <a href="#build-from-source"><picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/macOS-27-18181B.svg?logo=apple&amp;mode=dark&amp;size=xs"><img alt="Requires macOS 27" src="https://shieldcn.dev/badge/macOS-27-18181B.svg?logo=apple&amp;mode=light&amp;size=xs"></picture></a>
+    <a href="#build-from-source"><picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/macOS-26-18181B.svg?logo=apple&amp;mode=dark&amp;size=xs"><img alt="Requires macOS 26" src="https://shieldcn.dev/badge/macOS-26-18181B.svg?logo=apple&amp;mode=light&amp;size=xs"></picture></a>
     <a href="https://www.swift.org"><picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/Swift-6.4-F05138.svg?logo=swift&amp;mode=dark&amp;size=xs"><img alt="Built with Swift 6.4" src="https://shieldcn.dev/badge/Swift-6.4-F05138.svg?logo=swift&amp;mode=light&amp;size=xs"></picture></a>
   </p>
 
@@ -64,11 +64,16 @@ Mac app.
 
 ## Download
 
-Download the [latest SakuraCord DMG](https://github.com/SakuraCordApp/SakuraCord/releases/latest)
-for macOS 27 or newer, open it, and move SakuraCord into Applications.
+| | |
+| --- | --- |
+| **Current release** | [Latest GitHub release](https://github.com/SakuraCordApp/SakuraCord/releases/latest) |
+| **System requirement** | macOS 26 or newer |
+| **Package** | [Download the latest versioned DMG](https://github.com/SakuraCordApp/SakuraCord/releases/latest) |
+| **Update channel** | Sparkle-signed feed hosted on GitHub Releases; production builds check every six hours or through **Check for Updates…** |
 
-Current releases are ad-hoc signed rather than notarized, so macOS may require
-approval from **System Settings → Privacy & Security** on first launch.
+Open the DMG and move SakuraCord into Applications. Current release artifacts
+are ad-hoc signed rather than notarized, so macOS may require approval from
+**System Settings → Privacy & Security** on first launch.
 
 SakuraCord is an independent project and is not affiliated with Discord.
 Discord does not provide a supported third-party platform for normal-account
@@ -76,7 +81,13 @@ clients, so compatibility can change as Discord evolves.
 
 ## Build from source
 
-Building SakuraCord requires macOS 27, Xcode 27 with Swift 6.4, and Git.
+You will need:
+
+- macOS 26;
+- Xcode 27 with Swift 6.4; and
+- Git.
+
+Clone the repository and start in the offline demo:
 
 ```sh
 git clone https://github.com/SakuraCordApp/SakuraCord.git

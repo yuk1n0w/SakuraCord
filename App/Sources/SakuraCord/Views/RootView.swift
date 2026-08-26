@@ -59,7 +59,7 @@ struct RootView: View {
             ZStack {
                 MessageSearchToolbarBridge(
                     model: model,
-                    isVisible: showsMessageSearchToolbar,
+                    isVisible: showsExpandedMessageSearchToolbar,
                     metrics: $toolbarSearchFieldMetrics
                 )
                 ToolbarSearchFieldLoadingStyler(isActive: showsSessionLoadingChrome)
@@ -71,6 +71,9 @@ struct RootView: View {
                 search.isFilterSheetPresented = false
                 model.dismissMessageSearch()
             }
+        }
+        .onChange(of: performanceContext, initial: true) { _, context in
+            AppPerformanceDiagnostics.shared.setContext(context)
         }
     }
 
@@ -93,6 +96,13 @@ struct RootView: View {
         Text(showsSessionLoadingChrome ? "" : model.messageSearchPromptTitle)
     }
 
+    private var showsExpandedMessageSearchToolbar: Bool {
+        guard showsMessageSearchToolbar else { return false }
+        return showsSessionLoadingChrome
+            || model.messageSearch.isInputFocused
+            || model.messageSearch.isPresented
+    }
+
     private var showsSessionLoadingChrome: Bool {
         switch model.sessionState {
         case .restoring, .connecting:
@@ -102,6 +112,16 @@ struct RootView: View {
         case .signedOut:
             model.launchMode != .normal
         }
+    }
+
+    private var performanceContext: AppPerformanceContext {
+        AppPerformanceContext(
+            isMusicPlaying: model.music.state.isPlaying,
+            showsLyrics: model.showsLyrics,
+            showsYouTubeMusic: model.music.presentation != nil,
+            showsMessageSearch: model.messageSearch.isPresented,
+            showsMemberInspector: model.showInspector
+        )
     }
 }
 
@@ -499,7 +519,6 @@ private struct ChatRootView: View {
                 .padding(.vertical, 5)
             }
         }
-        .visibilityPriority(.high)
 
         if !model.isSwitchingAccounts {
             if let presentation = supplementaryToolbarPresentation {
@@ -517,7 +536,6 @@ private struct ChatRootView: View {
                         alignment: .leading
                     )
                 }
-                .visibilityPriority(.high)
             }
 
             if hasOpenSupplementaryToolbarConversation {
@@ -528,7 +546,6 @@ private struct ChatRootView: View {
                     }
                     .help(supplementaryCloseHelp)
                 }
-                .visibilityPriority(.high)
             }
         }
     }
@@ -537,91 +554,194 @@ private struct ChatRootView: View {
     private var detailToolbar: some ToolbarContent {
         ToolbarSpacer(.flexible)
 
-        if !model.isSwitchingAccounts {
-            if let channel = selectedPrivateChannel {
-                ToolbarItemGroup {
-                    Button {
-                        Task {
-                            if model.joinablePrivateCall(in: channel.id) != nil {
-                                await model.joinPrivateCall(in: channel)
-                            } else {
-                                await model.startPrivateCall(in: channel)
-                            }
-                        }
-                    } label: {
-                        Label(
-                            model.joinablePrivateCall(in: channel.id) == nil
-                                ? "Start Voice Call" : "Join Voice Call",
-                            systemImage: "phone.fill"
-                        )
-                    }
-                    .disabled(
-                        model.activeVoiceChannel?.id == channel.id
-                            || model.isPrivateCallActionInFlight(in: channel.id)
-                    )
-                    .help(
-                        model.joinablePrivateCall(in: channel.id) == nil
-                            ? "Start Voice Call" : "Join Ongoing Call"
-                    )
-
-                    Button {
-                        Task {
-                            if model.joinablePrivateCall(in: channel.id) != nil {
-                                await model.joinPrivateCall(in: channel, withVideo: true)
-                            } else {
-                                await model.startPrivateCall(in: channel, withVideo: true)
-                            }
-                        }
-                    } label: {
-                        Label("Start Video Call", systemImage: "video.fill")
-                    }
-                    .disabled(
-                        model.activeVoiceChannel?.id == channel.id
-                            || model.isPrivateCallActionInFlight(in: channel.id)
-                    )
-                    .help(
-                        model.joinablePrivateCall(in: channel.id) == nil
-                            ? "Start Video Call" : "Join Ongoing Call with Video"
-                    )
-                }
-                .visibilityPriority(.high)
-            } else if let channel = selectedVoiceChannel, !model.isVoiceChatOpen {
-                ToolbarItem {
-                    Button { model.openVoiceChat(for: channel) } label: {
-                        Label("Open Chat", systemImage: "bubble.left.fill")
-                    }
-                    .help("Open voice channel chat")
-                }
-                .visibilityPriority(.high)
-            }
-        }
-
-        if model.isSwitchingAccounts
-            || (!hasOpenSupplementaryToolbarConversation && selectedVoiceChannel == nil)
-        {
-            if !model.isSwitchingAccounts, selectedPrivateChannel != nil {
-                ToolbarSpacer(.fixed)
-            }
-
+        if topExtendedSupplementaryPaneWidth > 0 {
             ToolbarItem {
-                ZStack {
-                    Button { model.showInspector.toggle() } label: {
-                        inspectorToolbarLabel
-                    }
-                    .disabled(model.isSwitchingAccounts)
-                    .opacity(model.isSwitchingAccounts ? 0 : 1)
-
-                    if model.isSwitchingAccounts {
-                        SkeletonShimmerTimeline {
-                            SkeletonShape(cornerRadius: 6)
-                                .frame(width: 20, height: 20)
+                GlassEffectContainer(spacing: 8) {
+                    HStack(spacing: 8) {
+                        if let channel = selectedPrivateChannel {
+                            HStack(spacing: 0) {
+                                privateVoiceCallButton(for: channel)
+                                    .frame(width: 38, height: 38)
+                                    .contentShape(Rectangle())
+                                privateVideoCallButton(for: channel)
+                                    .frame(width: 38, height: 38)
+                                    .contentShape(Rectangle())
+                            }
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.plain)
+                            .font(.system(size: 17, weight: .semibold))
+                            .frame(height: 38)
+                            .padding(.horizontal, 4)
+                            .glassEffect(
+                                .regular.tint(.white.opacity(0.08)).interactive(),
+                                in: Capsule()
+                            )
                         }
-                        .accessibilityHidden(true)
+
+                        Button { model.showInspector.toggle() } label: {
+                            inspectorToolbarLabel
+                                .labelStyle(.iconOnly)
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 17, weight: .semibold))
+                        .frame(width: 38, height: 38)
+                        .contentShape(Circle())
+                        .glassEffect(
+                            .regular.tint(.white.opacity(0.08)).interactive(),
+                            in: Circle()
+                        )
+
+                        if showsCompactMessageSearchButton {
+                            Button(action: model.presentMessageSearch) {
+                                Label("Search Messages", systemImage: "magnifyingglass")
+                                    .labelStyle(.iconOnly)
+                            }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 17, weight: .semibold))
+                            .frame(width: 38, height: 38)
+                            .contentShape(Circle())
+                            .glassEffect(
+                                .regular.tint(.white.opacity(0.08)).interactive(),
+                                in: Circle()
+                            )
+                            .help("Search messages")
+                            .accessibilityIdentifier("message-search-button")
+                        }
+
+                        Color.clear
+                            .frame(width: topExtendedSupplementaryPaneWidth, height: 1)
                     }
                 }
             }
-            .visibilityPriority(.high)
+            .sharedBackgroundVisibility(.hidden)
+        } else {
+            if !model.isSwitchingAccounts {
+                if let channel = selectedPrivateChannel {
+                    ToolbarItemGroup {
+                        privateVoiceCallButton(for: channel)
+                        privateVideoCallButton(for: channel)
+                    }
+                } else if let channel = selectedVoiceChannel, !model.isVoiceChatOpen {
+                    ToolbarItem {
+                        Button { model.openVoiceChat(for: channel) } label: {
+                            Label("Open Chat", systemImage: "bubble.left.fill")
+                        }
+                        .help("Open voice channel chat")
+                    }
+                }
+            }
+
+            if model.isSwitchingAccounts
+                || (!hasOpenSupplementaryToolbarConversation && selectedVoiceChannel == nil)
+            {
+                if !model.isSwitchingAccounts, selectedPrivateChannel != nil {
+                    ToolbarSpacer(.fixed)
+                }
+
+                ToolbarItem {
+                    ZStack {
+                        Button { model.showInspector.toggle() } label: {
+                            inspectorToolbarLabel
+                        }
+                        .disabled(model.isSwitchingAccounts)
+                        .opacity(model.isSwitchingAccounts ? 0 : 1)
+
+                        if model.isSwitchingAccounts {
+                            SkeletonShimmerTimeline {
+                                SkeletonShape(cornerRadius: 6)
+                                    .frame(width: 20, height: 20)
+                            }
+                            .accessibilityHidden(true)
+                        }
+                    }
+                }
+            }
+
+            if showsCompactMessageSearchButton {
+                ToolbarSpacer(.fixed)
+                ToolbarItem {
+                    Button(action: model.presentMessageSearch) {
+                        Label("Search Messages", systemImage: "magnifyingglass")
+                            .labelStyle(.iconOnly)
+                    }
+                    .help("Search messages")
+                    .accessibilityIdentifier("message-search-button")
+                }
+            }
         }
+    }
+
+    private func privateVoiceCallButton(for channel: Channel) -> some View {
+        Button {
+            Task {
+                if model.joinablePrivateCall(in: channel.id) != nil {
+                    await model.joinPrivateCall(in: channel)
+                } else {
+                    await model.startPrivateCall(in: channel)
+                }
+            }
+        } label: {
+            Label(
+                model.joinablePrivateCall(in: channel.id) == nil
+                    ? "Start Voice Call" : "Join Voice Call",
+                systemImage: "phone.fill"
+            )
+        }
+        .disabled(
+            model.activeVoiceChannel?.id == channel.id
+                || model.isPrivateCallActionInFlight(in: channel.id)
+        )
+        .help(
+            model.joinablePrivateCall(in: channel.id) == nil
+                ? "Start Voice Call" : "Join Ongoing Call"
+        )
+    }
+
+    private func privateVideoCallButton(for channel: Channel) -> some View {
+        Button {
+            Task {
+                if model.joinablePrivateCall(in: channel.id) != nil {
+                    await model.joinPrivateCall(in: channel, withVideo: true)
+                } else {
+                    await model.startPrivateCall(in: channel, withVideo: true)
+                }
+            }
+        } label: {
+            Label("Start Video Call", systemImage: "video.fill")
+        }
+        .disabled(
+            model.activeVoiceChannel?.id == channel.id
+                || model.isPrivateCallActionInFlight(in: channel.id)
+        )
+        .help(
+            model.joinablePrivateCall(in: channel.id) == nil
+                ? "Start Video Call" : "Join Ongoing Call with Video"
+        )
+    }
+
+    private var showsCompactMessageSearchButton: Bool {
+        !model.isSwitchingAccounts
+            && !model.messageSearch.isInputFocused
+            && !model.messageSearch.isPresented
+            && MessageSearchSurfacePolicy.showsToolbar(
+                channelKind: model.selectedChannel?.kind,
+                hasOpenThread: model.openThread != nil
+            )
+    }
+
+    /// A lyrics panel and the direct-message profile intentionally continue
+    /// beneath the title bar. Native toolbars do not know about that content
+    /// boundary, so reserve its width and keep the action glass over the chat
+    /// column instead of placing it over the panel's header.
+    private var topExtendedSupplementaryPaneWidth: CGFloat {
+        guard !model.messageSearch.isPresented,
+              model.openThread == nil,
+              selectedVoiceChannel == nil
+        else { return 0 }
+        if model.showsLyrics || model.showInspector && isDirectMessageSelected {
+            return ChatChromeMetrics.memberListWidth
+        }
+        return 0
     }
 
     private var sidebarDisplayName: String {
