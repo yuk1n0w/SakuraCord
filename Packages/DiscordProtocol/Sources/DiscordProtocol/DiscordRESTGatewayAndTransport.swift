@@ -202,6 +202,11 @@ extension DiscordRESTProvider {
             self.pendingVoiceNegotiation = nil
         }
         activeVoiceConnection = nil
+        cancelApplicationStreamNegotiations(error: CancellationError())
+        applicationStreamNegotiationTimeoutTasks.values.forEach { $0.cancel() }
+        applicationStreamNegotiationTimeoutTasks = [:]
+        applicationStreamConnections = [:]
+        applicationStreams = [:]
         gatewayEventTask?.cancel()
         gatewayEventTask = nil
         await gatewaySession?.stop()
@@ -290,15 +295,22 @@ extension DiscordRESTProvider {
                 gatewayLogger.info("Gateway session ready")
                 if usesDesktopHeartbeat {
                     do {
-                        try await sendGateway(
-                            DiscordGatewayPayloadFactory.voiceStateUpdate(
-                                guildID: nil,
-                                channelID: nil,
-                                selfMute: false,
-                                selfDeaf: false,
-                                selfVideo: false
+                        // The desktop lifecycle starts a new idle session with a
+                        // null voice state. Repeating that reset while an existing
+                        // Voice connection survives a Gateway gap would make
+                        // Discord remove the user from the call before AppModel can
+                        // republish the active state.
+                        if activeVoiceConnection == nil {
+                            try await sendGateway(
+                                DiscordGatewayPayloadFactory.voiceStateUpdate(
+                                    guildID: nil,
+                                    channelID: nil,
+                                    selfMute: false,
+                                    selfDeaf: false,
+                                    selfVideo: false
+                                )
                             )
-                        )
+                        }
                         try await sendGateway([
                             "op": 3,
                             "d": [
@@ -1988,6 +2000,41 @@ extension DiscordRESTProvider {
                 self.activeVoiceConnection = info
                 continuation?.yield(.voiceServerChanged(info))
             }
+        case "STREAM_CREATE", "STREAM_UPDATE":
+            guard let update = try? JSONDecoder().decode(ApplicationStreamDTO.self, from: data),
+                  let key = ApplicationStreamKey(rawValue: update.streamKey),
+                  let stream = update.merging(applicationStreams[key])
+            else { return }
+            reconcileApplicationStream(stream)
+        case "STREAM_SERVER_UPDATE":
+            guard let update = try? JSONDecoder().decode(
+                ApplicationStreamServerUpdateDTO.self,
+                from: data
+            ) else { return }
+            reconcileApplicationStreamServer(update)
+        case "STREAM_DELETE":
+            guard let deletion = try? JSONDecoder().decode(
+                ApplicationStreamDeleteDTO.self,
+                from: data
+            ), let key = ApplicationStreamKey(rawValue: deletion.streamKey)
+            else { return }
+            if deletion.unavailable != true {
+                applicationStreams[key] = nil
+            }
+            applicationStreamConnections[key] = nil
+            failApplicationStreamNegotiation(
+                key: key,
+                error: ChatProviderError.invalidRequest(
+                    deletion.reason ?? "Discord ended the screen share."
+                )
+            )
+            continuation?.yield(
+                .applicationStreamDeleted(
+                    key: key,
+                    unavailable: deletion.unavailable ?? false,
+                    reason: deletion.reason
+                )
+            )
         case "CALL_CREATE":
             guard let update = try? JSONDecoder().decode(PrivateCallDTO.self, from: data),
                   let call = update.domain()

@@ -187,6 +187,7 @@ final class NativeTimelineCanvasView: NSView {
     var model: AppModel?
     var presentedConversationID: ChannelID?
     var mediaReadyConversationID: ChannelID?
+    var mediaViewerHighlightedMessageID: MessageID?
     var messageInteractionContext: NativeTimelineMessageInteractionContext = .conversation
     var actions: NativeTimelineRowActions?
     var onWidthChange: ((CGFloat) -> Void)?
@@ -203,7 +204,9 @@ final class NativeTimelineCanvasView: NSView {
     var actionCapsuleMessageID: MessageID?
     var actionCapsuleSize: NSSize?
     let editing = NativeTimelineEditingSession()
-    var messageProfilePopover: NSPopover?
+    let messageProfilePopoverCoordinator =
+        StableAnchoredPopoverPresenter<AnyView>.Coordinator()
+    var activeMessageProfilePopoverAnchor: StablePopoverAnchor?
     var componentChoicePopover: NSPopover?
     let mentionPopoverCoordinator =
         StableAnchoredPopoverPresenter<AnyView>.Coordinator()

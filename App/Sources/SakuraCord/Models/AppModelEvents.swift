@@ -372,6 +372,7 @@ extension AppModel {
 
     func consumePresenceAndCommandEvent(_ event: ClientEvent) {
         if consumeForwardSearchPeopleEvent(event) { return }
+        if consumeApplicationStreamEvent(event) { return }
         switch event {
         case .currentUserRolesChanged, .currentUserRolesSnapshot:
             consumeCurrentUserRoleEvent(event)
@@ -467,6 +468,7 @@ extension AppModel {
     func consumeConnectionChange(_ state: ConnectionState) {
         let previousState = connectionState
         connectionState = state
+        handleApplicationStreamsForGatewayState(state)
         if state != .ready {
             if previousState == .ready {
                 // A resumed session can reconcile missed messages through the
@@ -479,6 +481,16 @@ extension AppModel {
             stopLocalTyping(clearThrottle: true)
             typingState.clearAll()
         } else {
+            if previousState != .ready, activeVoiceChannel != nil {
+                let account = accountSession()
+                let generation = voiceMigrationGeneration
+                startAccountChildTask(account: account) { model, account in
+                    await model.publishVoiceState(
+                        account: account,
+                        generation: generation
+                    )
+                }
+            }
             if previousState != .ready,
                selectedChannelID != nil,
                hasCompletedInitialMessageLoad
@@ -771,6 +783,8 @@ extension AppModel {
             currentUserID: snapshot?.currentUser.id
         )
         voiceStates[state.userID] = state.channelID == nil ? nil : state
+        reconcileApplicationStreamWatchSuppression(for: state)
+        watchAvailableDirectMessageStreamsAutomatically()
         if !state.isVideoEnabled {
             voiceVideoFrames[String(state.userID.rawValue)] = nil
         }
@@ -1983,16 +1997,4 @@ extension AppModel {
         messageRowsNonAppendRevision &+= 1
     }
 
-    func reconcileCachedMessageUpdate(_ message: Message) {
-        guard var cached = messageCache[message.channelID],
-              let index = cached.firstIndex(where: { $0.id == message.id })
-        else { return }
-        var resolved = message
-        resolved.replyTo = resolved.replyTo ?? cached[index].replyTo
-        resolved.replyPreview =
-            resolved.replyPreview ?? cached[index].replyPreview
-        guard resolved != cached[index] else { return }
-        cached[index] = resolved
-        messageCache[message.channelID] = cached
-    }
 }

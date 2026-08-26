@@ -233,6 +233,19 @@ final class NativeTimelineAccessibilityProxyStore<
 }
 
 extension NativeTimelineCanvasView {
+    func invalidateBitmap(
+        _ identifier: NativeMessageTimelineItem.Identifier
+    ) {
+        guard let removed = bitmapCache.removeValue(forKey: identifier) else {
+            return
+        }
+        bitmapCost -= removed.cost
+        bitmapInsertionOrder.removeAll { $0 == identifier }
+        NativeTimelineMediaStore.shared.releasePinnedImages(
+            owner: removed.mediaPinOwner
+        )
+    }
+
     var hoveredRow: Int? {
         get { pointer.hoveredRow }
         set { pointer.hoveredRow = newValue }

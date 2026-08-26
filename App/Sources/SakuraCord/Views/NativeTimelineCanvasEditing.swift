@@ -194,7 +194,12 @@ extension NativeTimelineCanvasView {
             return
         }
         guard editingMessageID == nil,
-              let index = hoveredRow,
+              let index = hoveredRow
+                ?? mediaViewerHighlightedMessageID.flatMap({ messageID in
+                    items.firstIndex(where: {
+                        $0.messageID == messageID
+                    })
+                }),
               items.indices.contains(index),
               case let .message(row, _, _) = items[index],
               let model,
@@ -1205,9 +1210,15 @@ extension NativeTimelineCanvasView {
         return item
     }
 
-    func confirmDelete(_ message: Message) {
+    func requestDelete(_ message: Message) {
         guard let window, let actions else { return }
         removeActionCapsule()
+        if MessageDeleteConfirmationPolicy.isBypassed(
+            by: NSEvent.modifierFlags
+        ) {
+            actions.delete(message)
+            return
+        }
         let alert = NSAlert()
         alert.messageText = "Delete this message?"
         alert.informativeText = "This action cannot be undone."

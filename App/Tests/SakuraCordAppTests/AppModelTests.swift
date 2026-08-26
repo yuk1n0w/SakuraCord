@@ -1719,8 +1719,7 @@ import UserNotifications
 @Test func `saved account registry filters removed credentials and remembers the newest account`()
     async throws
 {
-    let suiteName = "dev.sakuracord.tests.saved-accounts.\(UUID().uuidString)"
-    let store = UserDefaultsSavedAccountStore(suiteName: suiteName)
+    let store = UserDefaultsSavedAccountStore(defaults: InMemoryPreferences())
     let older = SavedAccount(
         accountID: "100",
         username: "older",
@@ -1752,7 +1751,6 @@ import UserNotifications
         await store.accounts(matching: [CredentialHandle(accountID: "100")])
             == [older]
     )
-    await store.removePersistentDomain(named: suiteName)
 }
 
 @MainActor
@@ -3413,6 +3411,32 @@ private actor FailingRemovalCredentialStore: CredentialStore {
 }
 
 @MainActor
+@Test func `gateway recovery republishes an active voice state once`() async {
+    let provider = SuspendedAccountOperationTestProvider(suspendsOperations: false)
+    let model = AppModel(launchMode: .offlineTesting, provider: provider)
+    model.activeVoiceChannel = Channel(
+        id: provider.channelID,
+        guildID: nil,
+        name: "Recovered call",
+        kind: .directMessage
+    )
+    model.voiceSessionState = .reconnecting
+    model.connectionState = .resuming
+
+    model.consumeConnectionChange(.ready)
+    for task in Array(model.accountChildTasks.values) {
+        await task.value
+    }
+    #expect(await provider.voiceStateUpdateRequestCount == 1)
+
+    model.consumeConnectionChange(.ready)
+    for task in Array(model.accountChildTasks.values) {
+        await task.value
+    }
+    #expect(await provider.voiceStateUpdateRequestCount == 1)
+}
+
+@MainActor
 @Test func `unchanged unread projection does not republish the account snapshot`() async throws {
     let snapshot = try await MockChatProvider().bootstrap()
     #expect(
@@ -4217,6 +4241,7 @@ private func hiddenMockChannel(
     try await Task.sleep(for: .milliseconds(20))
     #expect(model.incomingPrivateCalls.map(\.channelID) == [channelID])
     #expect(model.privateCall(in: channelID)?.isRinging(currentUserID) == true)
+    #expect(model.joinablePrivateCall(in: channelID) != nil)
     #expect(sounds.looping[.callRinging] == true)
 
     await provider.emit(
@@ -4240,6 +4265,7 @@ private func hiddenMockChannel(
     try await Task.sleep(for: .milliseconds(20))
     #expect(model.incomingPrivateCalls.isEmpty)
     #expect(model.privateCall(in: channelID)?.voiceStates?.map(\.userID) == [senderID])
+    #expect(model.joinablePrivateCall(in: channelID) != nil)
     #expect(sounds.looping[.callRinging] == false)
 
     let destinationChannelID = ChannelID(rawValue: 88_804)
@@ -4268,6 +4294,8 @@ private func hiddenMockChannel(
             && model.privateCall(in: destinationChannelID)?.voiceStates?.map(\.userID)
                 == [senderID]
     })
+    #expect(model.joinablePrivateCall(in: channelID) == nil)
+    #expect(model.joinablePrivateCall(in: destinationChannelID) != nil)
 
     await provider.emit(.privateCallDeleted(channelID: channelID, unavailable: false))
     try await Task.sleep(for: .milliseconds(20))
@@ -4286,6 +4314,12 @@ private func hiddenMockChannel(
         })
     )
     let baselineCounts = await provider.counts()
+    model.privateCallsByChannel[channel.id] = PrivateCall(
+        channelID: channel.id,
+        messageID: MessageID(rawValue: 88_813),
+        region: "rotterdam",
+        voiceStates: []
+    )
 
     let firstStart = Task {
         await model.startPrivateCall(in: channel)

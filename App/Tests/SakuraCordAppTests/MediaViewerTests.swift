@@ -92,6 +92,35 @@ struct MediaViewerTests {
         #expect(model.selection == 2)
     }
 
+    @Test func `pinch dismissal only commits from minimum zoom`() {
+        let model = MediaViewerInteractionModel(itemCount: 1, selection: 0)
+
+        model.commitScale(2)
+        model.updatePinchDismissal(magnification: 0.7)
+        #expect(model.pinchDismissalProgress == 0)
+        #expect(
+            !model.shouldCommitPinchDismissal(magnification: 0.7)
+        )
+
+        model.commitScale(1)
+        #expect(
+            model.updatePinchDismissal(magnification: 0.65)
+                == .willCommit
+        )
+        #expect(abs(model.pinchDismissalProgress - 0.405) < 0.001)
+        #expect(
+            model.shouldCommitPinchDismissal(magnification: 0.68)
+        )
+        #expect(model.updatePinchDismissal(magnification: 0.68) == nil)
+        #expect(
+            model.updatePinchDismissal(magnification: 0.71)
+                == .willCancel
+        )
+        #expect(
+            !model.shouldCommitPinchDismissal(magnification: 0.71)
+        )
+    }
+
     @Test func `save filename keeps the media extension and removes path separators`() throws {
         let source = try #require(URL(string: "https://cdn.example/image.png?token=1"))
 

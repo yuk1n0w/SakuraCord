@@ -17,6 +17,20 @@ enum ServerRailNavigationDestination: Equatable {
     case guild(GuildID)
 }
 
+enum ApplicationStreamPlaybackState: Equatable {
+    case available
+    case connecting
+    case watching
+    case broadcasting
+    case reconnecting
+    case failed(String)
+}
+
+struct ApplicationStreamDemandIntent: Equatable {
+    var isEnabled: Bool
+    var pixelCount: Int?
+}
+
 nonisolated struct ConversationPermissionBasis: Sendable {
     let guild: Guild
     let resolvedBasePermissions: UInt64?
@@ -25,22 +39,22 @@ nonisolated struct ConversationPermissionBasis: Sendable {
     let currentUserIsPending: Bool
 }
 
+struct CommandMemberQuery: Hashable {
+    var guildID: GuildID
+    var query: String
+}
+
+struct MentionMemberSearchCacheEntry {
+    var members: [Member]
+    var storedAt: Date
+}
+
 @Observable
 final class AppModel {
     enum ThreadErrorScope {
         case initialPage
         case earlierPage
         case action
-    }
-
-    struct CommandMemberQuery: Hashable {
-        var guildID: GuildID
-        var query: String
-    }
-
-    struct MentionMemberSearchCacheEntry {
-        var members: [Member]
-        var storedAt: Date
     }
 
     struct MemberListViewportRequest: Equatable {
@@ -453,6 +467,20 @@ final class AppModel {
     var voiceEncryptionVersion: UInt16?
     var voiceLatencyMilliseconds: Int?
     var voiceErrorMessage: String?
+    var applicationStreams: [ApplicationStreamKey: ApplicationStream] = [:]
+    var applicationStreamStates: [ApplicationStreamKey: ApplicationStreamPlaybackState] = [:]
+    var applicationStreamFrames: [ApplicationStreamKey: VoiceVideoFrame] = [:]
+    var localApplicationStreamKey: ApplicationStreamKey?
+    var isScreenSharePreviewPresented = false
+    var screenShareSettings = ScreenShareSettings()
+    var screenSharePreviewFrame: VoiceVideoFrame?
+    var screenShareCaptureState: ScreenShareCaptureState = .idle
+    var screenShareSourceName = "Choose a source"
+    var screenShareErrorMessage: String?
+    var isStartingScreenShare = false
+    var isScreenShareCaptureAvailable = false
+    var isLocalScreenSharePreviewPaused = false
+    var voiceDeviceStatusMessage: String?
     var voiceStates: [UserID: VoiceParticipantState] = [:] {
         didSet {
             guard oldValue != voiceStates else { return }
@@ -540,64 +568,6 @@ final class AppModel {
     func isPrivateCallActionInFlight(in channelID: ChannelID) -> Bool {
         privateCallActionChannelIDs.contains(channelID)
     }
-    var selectedConversationAccess: ConversationAccess {
-        guard let channel = selectedChannel else { return .checking }
-        return conversationAccess(for: channel)
-    }
-
-    var canCreateForumPosts: Bool {
-        selectedConversationAccess.canSend
-            && supportedCapabilities.contains(.forums)
-    }
-
-    var canManageForumPosts: Bool {
-        guard let permissions = selectedEffectivePermissions else { return false }
-        return permissions & DiscordPermissionBits.manageThreads != 0
-    }
-
-    func canDeleteForumPost(_ post: ForumPost) -> Bool {
-        return Self.canDeleteForumPost(
-            ownerID: post.thread.ownerID ?? post.owner?.id,
-            currentUserID: snapshot?.currentUser.id,
-            canManage: canManageForumPosts
-        )
-    }
-
-    func canArchiveForumPost(_ post: ForumPost) -> Bool {
-        if canManageForumPosts { return true }
-        guard !post.thread.isLocked else { return false }
-        let ownerID = post.thread.ownerID ?? post.owner?.id
-        return ownerID != nil && ownerID == snapshot?.currentUser.id
-    }
-
-    func canEditForumPostTags(_ post: ForumPost) -> Bool {
-        if canManageForumPosts { return true }
-        guard !post.thread.isLocked else { return false }
-        let ownerID = post.thread.ownerID ?? post.owner?.id
-        return ownerID != nil && ownerID == snapshot?.currentUser.id
-    }
-
-    func canToggleForumTag(_ tag: ForumTag, on post: ForumPost) -> Bool {
-        guard canEditForumPostTags(post), canManageForumPosts || !tag.isModerated else {
-            return false
-        }
-        if selectedChannel?.requiresForumTag == true,
-           post.thread.appliedTagIDs.count == 1,
-           post.thread.appliedTagIDs.contains(tag.id)
-        {
-            return false
-        }
-        return true
-    }
-
-    nonisolated static func canDeleteForumPost(
-        ownerID: UserID?,
-        currentUserID: UserID?,
-        canManage: Bool
-    ) -> Bool {
-        canManage || (ownerID != nil && ownerID == currentUserID)
-    }
-
     func currentUserRoleIDs(for guildID: GuildID?) -> Set<RoleID> {
         guard let guildID else { return [] }
         return currentUserRoleIDsByGuild[guildID] ?? []
@@ -941,6 +911,7 @@ final class AppModel {
     var selectedChannelID: ChannelID? {
         didSet {
             guard selectedChannelID != oldValue else { return }
+            timelineSpoilerRevealStore.reset()
             if let previousChannel = selectedChannel,
                let guildID = previousChannel.guildID
             {
@@ -1134,6 +1105,22 @@ final class AppModel {
     @ObservationIgnored var voiceEventTask: Task<Void, Never>?
     @ObservationIgnored var voiceMigrationTask: Task<Void, Never>?
     @ObservationIgnored var voiceSession: DiscordVoiceSession?
+    @ObservationIgnored var applicationStreamSessions:
+        [ApplicationStreamKey: DiscordVoiceSession] = [:]
+    @ObservationIgnored var applicationStreamEventTasks:
+        [ApplicationStreamKey: Task<Void, Never>] = [:]
+    @ObservationIgnored var applicationStreamOperationGenerations:
+        [ApplicationStreamKey: UInt64] = [:]
+    @ObservationIgnored var applicationStreamDemandGenerations:
+        [ApplicationStreamKey: UInt64] = [:]
+    @ObservationIgnored var applicationStreamDemandUpdateTasks = [ApplicationStreamKey: Task<Void, Never>]()
+    @ObservationIgnored var manuallyStoppedApplicationStreamKeys = Set<ApplicationStreamKey>()
+    @ObservationIgnored var applicationStreamDemandIntents:
+        [ApplicationStreamKey: ApplicationStreamDemandIntent] = [:]
+    @ObservationIgnored var screenShareCaptureEngine: ScreenShareCaptureEngine?
+    @ObservationIgnored var screenSharePreviewTask: Task<Void, Never>?
+    @ObservationIgnored var screenShareCaptureEventTask: Task<Void, Never>?
+    @ObservationIgnored var mediaDeviceMonitor: MediaDeviceMonitor?
     @ObservationIgnored var voiceMigrationGeneration = 0
     @ObservationIgnored var voiceActionGeneration: UInt64 = 0
     @ObservationIgnored var privateCallActionGeneration: UInt64 = 0
@@ -1299,5 +1286,10 @@ final class AppModel {
             launchMode == .offlineTesting ? "offline" : "signed-out"
         )
         readState.reset(accountID: launchMode == .offlineTesting ? "offline" : nil)
+        mediaDeviceMonitor = MediaDeviceMonitor { [weak self] snapshot in
+            Task { @MainActor [weak self] in
+                await self?.installMediaDeviceSnapshot(snapshot)
+            }
+        }
     }
 }

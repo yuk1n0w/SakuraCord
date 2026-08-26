@@ -1441,13 +1441,79 @@ struct NativeTimelineActionCapsuleOverlay: View {
     }
 }
 
+struct MediaViewerTransitionSource {
+    let itemID: String
+    let image: NSImage
+    let frameInWindow: CGRect
+    let visibleFrameInWindow: CGRect
+    let cornerRadius: CGFloat
+    let fillsFrame: Bool
+}
+
 struct NativeTimelineMediaViewerPresentation: Identifiable {
-    let id = UUID()
+    let id: UUID
+    let messageID: MessageID?
     let items: [RichMediaItem]
     let selection: Int
     let authorName: String
     let authorAvatarURL: URL?
     let timestamp: Date
+    let timelinePreviewImages: [String: NSImage]
+    let transitionSource: MediaViewerTransitionSource?
+
+    init(
+        id: UUID = UUID(),
+        messageID: MessageID? = nil,
+        items: [RichMediaItem],
+        selection: Int,
+        authorName: String,
+        authorAvatarURL: URL?,
+        timestamp: Date,
+        timelinePreviewImages: [String: NSImage] = [:],
+        transitionSource: MediaViewerTransitionSource? = nil
+    ) {
+        self.id = id
+        self.messageID = messageID
+        self.items = items
+        self.selection = selection
+        self.authorName = authorName
+        self.authorAvatarURL = authorAvatarURL
+        self.timestamp = timestamp
+        self.timelinePreviewImages = timelinePreviewImages
+        self.transitionSource = transitionSource
+    }
+
+    func withTimelinePreviewImages(
+        _ timelinePreviewImages: [String: NSImage]
+    ) -> Self {
+        Self(
+            id: id,
+            messageID: messageID,
+            items: items,
+            selection: selection,
+            authorName: authorName,
+            authorAvatarURL: authorAvatarURL,
+            timestamp: timestamp,
+            timelinePreviewImages: timelinePreviewImages,
+            transitionSource: transitionSource
+        )
+    }
+
+    func withTransitionSource(
+        _ transitionSource: MediaViewerTransitionSource
+    ) -> Self {
+        Self(
+            id: id,
+            messageID: messageID,
+            items: items,
+            selection: selection,
+            authorName: authorName,
+            authorAvatarURL: authorAvatarURL,
+            timestamp: timestamp,
+            timelinePreviewImages: timelinePreviewImages,
+            transitionSource: transitionSource
+        )
+    }
 }
 
 enum NativeTimelineMediaViewerPlan {
@@ -1585,6 +1651,7 @@ enum NativeTimelineMediaViewerPlan {
             $0.id == selectedID
         }) else { return nil }
         return NativeTimelineMediaViewerPresentation(
+            messageID: message.id,
             items: items,
             selection: selection,
             authorName: message.guildMember?.nickname

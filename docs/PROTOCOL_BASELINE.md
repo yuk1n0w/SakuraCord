@@ -1,7 +1,7 @@
 # Discord production protocol baseline
 
-Last repository audit: 15 August 2026, in a working tree based on SakuraCord
-commit `924e52e2`.
+Last repository audit: 23 August 2026, in a working tree based on SakuraCord
+commit `0f2c7fdb`.
 
 This document describes SakuraCord's durable network contract and the dated
 evidence behind it. It is not a claim that Discord's undocumented
@@ -77,6 +77,47 @@ likewise consume their one remaining attempt. Deterministic transport tests
 cover timed-out GET, read-only DM-search POST, generation coalescing, and
 non-replayed mutation behavior. No new Discord route, header, body, or account
 action was introduced for this recovery audit.
+
+Screen sharing was re-audited on 20 August 2026 against a clean, authenticated,
+renamed official Discord desktop `0.0.408` (Electron `42.7.1`, Chromium
+`148.0.7778.280`) using an isolated profile and CDP. The current main asset was
+`web.e7ec05b4366c76c6.js`, SHA-256
+`90bc5211ada76376a0a0131668e57f2889e5cfc7be9f52c8fd4a63d031ed35e0`.
+The inspection retained no credential, cookie, authorization value, personal
+identifier, media frame, or unsanitized payload. DiscordKit commit
+`32b2e3130f5da93f4c95646e7fbbe1abe5045960` independently corroborated the
+main-Gateway opcodes, event fields, stream-key grammar, and preview route, but
+contains no capture or RTC media implementation. Pinned Paicord contains the
+opcode constants and voice-state flag but leaves stream dispatch incomplete;
+pinned Swiftcord v1 contains no matching screen-sharing implementation. Those sources
+were cross-checks, not media code to copy.
+
+Three controlled entire-screen broadcasts were also started and stopped in
+that authenticated client in the `Testing Server 2` voice channel while the
+main page and worker targets were monitored through CDP. Each observed start
+sent opcode 18 with `type:guild`, guild/channel IDs, and
+`preferred_region:"warsaw"`, followed by opcode 22 with the allocated key and
+`paused:false`; each stop sent opcode 19 with only that key. No `/streams/`
+HTTP request was made during any observed start or stop. The REST preview route
+below is therefore a separately verified on-demand read, not part of broadcast
+allocation or teardown.
+Authenticated interoperability in the same server additionally confirmed that
+SakuraCord can decode/watch an official-client broadcast and that an official
+client can watch SakuraCord's broadcast.
+
+Private DM and group-DM calls were re-audited on 22 August 2026 against a
+fresh, signed, notarized, renamed official Discord desktop `0.0.408`
+(Electron `42.7.1`, Chromium `148.0.7778.280`, client build `595897`, native
+build `88466`) in an isolated profile. CDP was attached before each scenario.
+The two test accounts alternated broadcaster/viewer roles between the official
+client and SakuraCord. The sanitized capture covered call start, join, leave,
+last-participant end, broadcast start/stop, initial watch behavior, explicit
+watch/leave/rejoin, stream termination while watched, source-selection failure,
+main Gateway, REST, call Voice, stream Voice, DAVE negotiation, and cleanup.
+No credential, cookie, authorization value, personal identifier, IP address,
+media frame, or unsanitized payload was retained. The temporary automation and
+capture paths and all capture files were removed after the durable evidence
+below was recorded.
 
 Server search uses `GET /guilds/{guild}/messages/search`; it does not use the
 older selected-channel route. The ordered query contains optional repeated
@@ -649,7 +690,8 @@ Durable requirements:
 - in-memory session ID, resume URL, and sequence for same-process Resume;
 - Resume before a fresh Identify when state is valid;
 - explicit invalid-session and close-code handling;
-- bounded, jittered reconnect backoff;
+- capped, jittered reconnect backoff that persists until recovery or an explicit
+  stop;
 - a connection generation that prevents stale tasks from affecting a new
   socket; and
 - explicit stop/logout with no reconnect.
@@ -657,8 +699,11 @@ Durable requirements:
 The complete outgoing main-Gateway opcode surface is 2 Identify, 3 presence, 4
 voice state, 6 Resume, 8 bounded guild-member request/search, 13 private-call
 subscription, 37 bulk guild subscription, 40 QoS heartbeat, and 41 time-spent
-session update. After Ready, the desktop lifecycle order is 4 (null voice
-state), 3 (current presence), 41, then 40. QoS payloads use version 29 and only
+session update. After an initial idle Ready, the desktop lifecycle order is 4
+(null voice state), 3 (current presence), 41, then 40. When a Voice connection
+survives a Gateway gap, SakuraCord preserves that active state instead of
+publishing the idle reset, then republishes the current channel and local
+mute/deafen/video flags after Ready. QoS payloads use version 29 and only
 the locally known `foregrounded` reason; heartbeat sessions rotate after 30
 minutes inactive and the REST super-properties update with the same session.
 Paicord supplies current JSON/zstd and 40/41 cross-checks. Swiftcord v1 supplies
@@ -761,7 +806,12 @@ is not the whole network surface. The remaining production connections are:
   `VOICE_SERVER_UPDATE`, normalized to `wss://{endpoint}?v=8`, followed by UDP
   discovery and encrypted RTP to the server-supplied IP and port. This path is
   reached only by an explicit voice/call action and uses the existing
-  DAVE-capable voice state machine; and
+  DAVE-capable voice state machine;
+- for each explicitly started or watched screen-sharing stream, a separate Voice v8
+  Gateway/DAVE/UDP connection at the endpoint supplied by
+  `STREAM_SERVER_UPDATE`. It identifies with the main voice session ID, the
+  stream RTC server/channel IDs, and one `screen` video stream. It neither
+  opens another microphone nor plays the voice channel's audio; and
 - unauthenticated HTTPS media GETs to `cdn.discordapp.com` and
   `media.discordapp.net` for server-returned or locally derived Discord asset
   paths. These loads use an isolated ephemeral URLSession with memory-cache
@@ -1410,17 +1460,145 @@ account action or traffic capture was performed.
   the current first-party shape plus the stricter nonce, deduplication, and
   one-attempt safety rules above.
 
+### Screen sharing
+
+The dated 20 and 22 August evidence above establishes two distinct control planes:
+the main Gateway owns stream discovery and viewer intent, while a separate
+Voice v8 connection owns each selected screen media session.
+
+The following matrix is the redacted action-to-payload sequence observed in the
+authenticated private-call capture. Angle-bracketed values denote a stable
+redaction category, not literal traffic.
+
+| Surface and UI action | Exact observed network sequence and result |
+| --- | --- |
+| DM, start call | Main Gateway opcode 4 with `guild_id:null`, `<CHANNEL_ID>`, current mute/deafen/video, `flags:0`, `preferred_region:"warsaw"`, and ordered `preferred_regions`; receive `CALL_CREATE`, own `VOICE_STATE_UPDATE`, then send `POST /api/v9/channels/<CHANNEL_ID>/call/ring` body `{"recipients":null}`; receive `VOICE_SERVER_UPDATE`, `CALL_UPDATE`, and HTTP `204`. |
+| GDM, start call | Same guildless opcode-4 voice join and pushed call/voice events; the group start performs the ring mutation without the DM readiness read. Selecting the existing GDM before a call was active also sent main opcode 13 `{"channel_id":"<CHANNEL_ID>"}`. |
+| DM or GDM, join existing call | Main opcode 4 with the private channel and region preferences; receive own `VOICE_STATE_UPDATE`, `CALL_UPDATE`, and `VOICE_SERVER_UPDATE`; no ring mutation. Call Voice then identifies and negotiates as described below. |
+| DM or GDM, leave | Main opcode 4 with `channel_id:null`, `guild_id:null`, current mute/deafen/video, and `flags:0`; receive own null-channel `VOICE_STATE_UPDATE`; the call remains while another participant is present. |
+| DM or GDM, last participant leaves / end | The same null-channel opcode 4 and voice-state update, followed by `CALL_DELETE {channel_id:<CHANNEL_ID>}`; the Voice WebSocket closes and media resources are released. |
+| DM or GDM, start sharing | Main opcode 18 `{"type":"call","guild_id":null,"channel_id":"<CHANNEL_ID>","preferred_region":"warsaw"}` immediately followed by opcode 22 `{"stream_key":"call:<CHANNEL_ID>:<OWNER_ID>","paused":false}`; receive `STREAM_CREATE`, `VOICE_STATE_UPDATE self_stream:true`, then `STREAM_SERVER_UPDATE`; open a separate stream Voice connection. |
+| Broadcaster, stop sharing | Main opcode 19 with only `stream_key`; stream Voice opcode 12 becomes inactive; receive `STREAM_DELETE` and `VOICE_STATE_UPDATE` without `self_stream`; close only the stream Voice connection. Official self-stop used reason `user_requested`; a remote broadcaster ending while watched used `stream_ended`. |
+| DM, remote share becomes available | On the remote `VOICE_STATE_UPDATE self_stream:true`, the connected viewer automatically sends main opcode 20 with the `call:` key before its `STREAM_CREATE`; it then receives `STREAM_CREATE`/`STREAM_SERVER_UPDATE` and opens stream Voice. This occurred in both broadcaster/viewer role directions. |
+| DM, manually stop viewing | Main opcode 19 with only the watched key; receive `STREAM_DELETE reason:user_requested`; close the viewer's stream Voice connection but remain in the call. |
+| DM, manually rejoin | Main opcode 20 with only the key; receive a new `STREAM_CREATE`/`STREAM_SERVER_UPDATE`; open a fresh stream Voice connection. |
+| GDM, remote share becomes available | No opcode 20 and no stream Voice connection were emitted automatically. The official UI presented `Watch Stream`; this is a verified behavioral difference from one-to-one DMs. |
+| GDM, Watch Stream | Optional preview GET and main opcode 20; receive `STREAM_CREATE` then `STREAM_SERVER_UPDATE`; open stream Voice and send viewer demand. |
+| GDM, Stop Watching / rejoin | Opcode 19 produces `STREAM_DELETE reason:user_requested` and closes stream Voice; the later Watch action sends opcode 20 again and creates a fresh stream Voice allocation. |
+
+The call and stream Voice handshakes used WebSocket v9 framing with a Voice v8
+Hello. Identify opcode 0 included the main voice `session_id`, DAVE maximum 1,
+`video:true`, and video RIDs (`100`/`50` for calls, `100` screen RID for a
+stream). Ready opcode 2 offered AES-GCM and XChaCha20-Poly1305 RTP-size modes and
+the `fixed_keyframe_interval` experiment. Select Protocol opcode 1 advertised
+Opus plus AV1 decode-only, H.265, H.264, and VP8 in the official client; the
+official broadcaster negotiated H.265, while interoperability with SakuraCord's
+advertised H.264 negotiated H.264. Session Description opcode 4 selected
+`secure_frames_version:1` and `dave_protocol_version:1` in every captured media
+session. A 2560×1440 60 FPS screen was advertised by Voice opcode 12 with
+`max_bitrate:9000000`. Viewer demand used opcode 15 quality 100 with a
+`pixelCounts` hint; hidden/unwatched content used zero demand.
+
+A sanitized authenticated 23 August source-quality follow-up confirmed that
+the stream Voice Identify keeps `streams[0].type:"screen"`, while its later
+opcode-12 media advertisement uses `streams[0].type:"video"`. Source quality
+advertises `max_resolution` as `type:"source"`, `width:0`, and `height:0`, while
+retaining the captured pixel dimensions in the encoder itself. Explicit
+resolution qualities use `type:"fixed"` with their actual encoded width and
+height. The observed Source/60 advertisement also retained RID and quality 100,
+`max_framerate:60`, and `max_bitrate:9000000`.
+
+SakuraCord applies that advertised maximum to VideoToolbox's one-second
+data-rate window. The RTP sender derives its wire pacing rate from the encoded
+payload plus the actual RTP/encryption overhead and ten percent drain headroom;
+the headroom empties transport work between frames without increasing encoder
+output or the sustained media rate. It paces each encoded frame in approximately
+five-millisecond UDP batches rather than enqueueing a complete high-motion frame
+at once, with at most 100 milliseconds of accumulated pacing credit so a scene
+change or keyframe is not unnecessarily stretched across the receiver's frame
+assembly deadline. Screen capture admits at most two frames between VideoToolbox
+and completed UDP delivery. When transport is slower than capture, it skips new
+capture input before encoding instead of discarding encoded H.264 reference
+frames; an unexpected encoder/stream loss forces the next frame to be a keyframe,
+as does a receiver PLI. Call audio and stream video use Network.framework's
+interactive-voice and interactive-video service classes respectively. Captured
+Opus queues retain at most the newest three 20-millisecond frames and preserve
+the source sample offset in the RTP clock when an older frame is discarded, so
+transport backpressure cannot grow into delayed microphone or sound-share audio.
+
+- Stream keys are `guild:{guild_id}:{channel_id}:{owner_id}` or
+  `call:{channel_id}:{owner_id}`. Starting sends opcode 18 `STREAM_CREATE` with
+  `type`, nullable `guild_id`, `channel_id`, and nullable `preferred_region`.
+  Watching one stream sends opcode 20 `STREAM_WATCH`; leaving that stream or
+  ending a local broadcast sends opcode 19 `STREAM_DELETE`. Opcode 21
+  `STREAM_PING` retains an interrupted allocation during reconnect, and opcode
+  22 `STREAM_SET_PAUSED` carries `stream_key` plus `paused`. These explicit
+  watch/leave operations never leave the surrounding voice channel. A connected
+  one-to-one DM call automatically watches a discovered remote `call:` stream
+  initially; the viewer may subsequently stop watching or rejoin it. Group DMs
+  and guild voice channels retain explicit per-stream watch and leave controls
+  without the one-to-one call's automatic initial watch.
+- `STREAM_CREATE` carries the stable key plus optional region, viewer IDs, RTC
+  server/channel IDs, and pause state. `STREAM_UPDATE` changes region, viewers,
+  or pause state without replacing absent fields. `STREAM_SERVER_UPDATE`
+  supplies the key, nullable endpoint, and token; a null endpoint means wait for
+  replacement allocation rather than deleting the stream. `STREAM_DELETE`
+  carries the key plus optional unavailable/reason state and tears down only
+  that stream's media and decode resources. When `unavailable` is true, the
+  stream remains reconnecting: SakuraCord retains the local capture or explicit
+  viewer intent, sends `STREAM_PING`, and attaches the replacement stream RTC
+  allocation instead of treating the event as a terminal stop.
+- The stream Voice Identify uses the current user's main voice `session_id`,
+  `server_id = rtc_server_id`, `channel_id = rtc_channel_id` (the current client
+  also tolerates Discord's numeric `rtc_server_id - 1` fallback), DAVE maximum,
+  `video:true`, and a `screen` RID. A broadcaster advertises the media stream as
+  `video` with Voice opcode 12; Source quality uses the semantic zero-dimension
+  `source` resolution above rather than exposing its captured height as a fixed
+  quality label. A viewer requests the chosen SSRC at quality 100 with Voice
+  opcode 15, includes the rendered tile's `pixelCounts` hint, and sends zero
+  demand when the share is hidden or unwatched. Incoming sink-wants payloads
+  may include that nested `pixelCounts` map; the broadcaster ignores it for
+  aggregate on/off demand without rejecting the opcode.
+- Optional stream audio uses the stream Voice connection's negotiated audio
+  SSRC and normal DAVE-protected Opus RTP. Before sending it, the broadcaster
+  announces Voice opcode 5 with the Soundshare flag (`1 << 1`), which carries
+  contextual video audio without a microphone speaking indicator. It sends
+  five Opus silence frames before becoming inactive. A viewer decrypts this
+  audio in the stream session and routes it into the existing call playback
+  engine rather than opening a second microphone or output graph.
+- `GET /streams/{stream_key}/preview?version={milliseconds}` returns a nullable
+  CDN URL used only as lightweight pre-join presentation. It is a retry-safe
+  read under the shared scheduler. A first-party broadcaster may additionally
+  post a bounded JPEG data-URL thumbnail to the same preview family; SakuraCord
+  does not need that mutation for media delivery and does not invent or retry
+  it.
+- Main-Gateway opcode 4 now carries guild/channel, mute/deafen, and
+  `self_video`; the current first-party client does not send the older fixed
+  `self_stream:false` field. Remote/local active-share presence is instead
+  projected from pushed voice-state `self_stream` and the stream event store.
+
+Screen source selection is an Apple framework boundary, not a Discord
+protocol. SakuraCord prepares `SCContentSharingPicker` when the preview opens
+but creates no capture stream until the user explicitly chooses a source. A
+picker cancellation returns to the source-less preview; dismissing the preview
+releases the picker observer. Once selected, SakuraCord owns one `SCStream`,
+updates its content filter/configuration in place for source or quality changes,
+accepts only complete IOSurface-backed screen frames, and optionally captures
+48 kHz stereo source audio while excluding SakuraCord's own process audio. It
+keeps preview delivery enabled while the preview overlay is presented, including
+while the system picker temporarily owns key-window focus. It
+releases picker, stream, preview, audio/video encoders, decoder, and transport
+resources on popup dismissal, stop, failure, source removal, or disconnect.
+
 ### Private calls
 
-The private-call contract was statically rechecked on 29 July 2026 against
-Discord's clean public web build `585344` (version hash
-`8b1d591342d4b0a3c7f82d388cbba1dab56b17a9`), the pinned Paicord and Swiftcord
-revisions above, and Discord's public Gateway and voice-connection
-documentation. No authenticated call was started, answered, declined, or
-captured. Paicord exposes opcode 13 and the `CALL_*` event family but its pinned
-call handler is incomplete and predates the current `ongoing_rings` field.
-Swiftcord v1 and DiscordKit supply only the historical guild-optional voice
-state path.
+The private-call contract was authenticated and dynamically rechecked on 22
+August 2026 as described above, superseding the static-only 29 July evidence.
+The earlier web-build, Paicord, Swiftcord, DiscordKit, public Gateway, and public
+voice-connection checks remain corroborating sources. Paicord exposes opcode
+13 and the `CALL_*` event family but its pinned call handler is incomplete and
+predates the current `ongoing_rings` field. Swiftcord v1 and DiscordKit supply
+only the historical guild-optional voice-state path.
 
 - Private-call discovery is event driven and app wide. `CALL_CREATE` and
   `CALL_UPDATE` carry `channel_id`, `message_id`, region, `ongoing_rings`, and
@@ -1446,8 +1624,11 @@ state path.
   and otherwise uses the same single ring mutation. A false one-to-one
   `ringable` value still permits a non-ringing joined call.
 - Joining an existing or incoming DM/group-DM call sends no readiness read and
-  no ring mutation. It subscribes with opcode 13 and joins with opcode 4.
-  Accepting an incoming call is the same join path. Declining sends exactly one
+  no ring mutation. A complete call snapshot with neither participants nor
+  ongoing rings is not considered an existing call and therefore follows the
+  start path instead of silently joining. The join path subscribes with opcode
+  13 and joins with opcode 4. Accepting an incoming call is the same join path.
+  Declining sends exactly one
   `POST /channels/{channel_id}/call/stop-ringing` with the current user in the
   `recipients` array and does not join.
 - Both private-call POSTs use the shared authenticated scheduler and have one
