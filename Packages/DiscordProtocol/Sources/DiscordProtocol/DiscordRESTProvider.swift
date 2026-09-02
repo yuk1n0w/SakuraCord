@@ -57,6 +57,7 @@ public actor DiscordRESTProvider: PendingCredentialChatProvider {
     static let reactionReactorFetchLimit = 5
     static let maximumReactionReactorCacheEntries = 256
     static let maximumConcurrentReactionReactorReads = 4
+    static let maximumCachedMessageCount = 2_048
 
     var credentialSource: DiscordCredentialSource
     var accountID: String?
@@ -78,7 +79,9 @@ public actor DiscordRESTProvider: PendingCredentialChatProvider {
     var currentUser: User?
     var authorizationValue: String?
     var installationResolutionAttempted = false
-    var cachedMessages: [MessageID: Message] = [:]
+    var cachedMessages = BoundedCache<MessageID, Message>(
+        maximumCount: maximumCachedMessageCount
+    )
     var cachedChannels: [GuildID?: [Channel]] = [:]
     // Discord's global channel search iterates ChannelStore insertion order,
     // which is independent of the category/position order used by the sidebar.

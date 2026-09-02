@@ -224,6 +224,45 @@ import Testing
     #expect(LyricsModel.identity(for: MusicPlaybackState()) == nil)
 }
 
+@Test func `a lyric lookup waits for complete track metadata and retries corrections`() {
+    let incomplete = MusicPlaybackState(
+        videoID: "new-video",
+        title: "New Song",
+        artist: "Old Artist",
+        duration: 0
+    )
+    #expect(LyricsLookupRequest(state: incomplete) == nil)
+
+    let stale = MusicPlaybackState(
+        videoID: "new-video",
+        title: "Old Song",
+        artist: "Old Artist",
+        duration: 180
+    )
+    let corrected = MusicPlaybackState(
+        videoID: "new-video",
+        title: "New Song",
+        artist: "New Artist",
+        duration: 223
+    )
+    #expect(LyricsLookupRequest(state: stale) != LyricsLookupRequest(state: corrected))
+
+    var progressed = corrected
+    progressed.progress = 90
+    #expect(LyricsLookupRequest(state: corrected) == LyricsLookupRequest(state: progressed))
+}
+
+@Test func `youtube music plain lyrics decode from its description shelf`() {
+    let response = Data(
+        #"{"contents":{"sectionListRenderer":{"contents":[{"musicDescriptionShelfRenderer":{"description":{"runs":[{"text":"alpha\nbeta"}]}}}]}}}"#.utf8
+    )
+    let lyrics = YouTubeMusicLyricsResponse.lyrics(from: response)
+
+    #expect(lyrics.synchronisation == .none)
+    #expect(lyrics.lines.map(\.text) == ["alpha", "beta"])
+    #expect(YouTubeMusicLyricsResponse.lyrics(from: Data("{}".utf8)).isEmpty)
+}
+
 @Test @MainActor func `lyric language choices persist independently`() {
     let suite = "LyricsLanguageChoices-\(UUID().uuidString)"
     let defaults = try! #require(UserDefaults(suiteName: suite))

@@ -258,12 +258,14 @@ path, because InnerTube reshapes between builds. Playing a result clicks a
 link so the page's own router swaps the track, which a document reload would
 otherwise interrupt.
 
-Lyrics are fetched natively and are independent of the page. Unison and
-BiniLyrics provide the first rich word/syllable tier; Unison and Bini line
+Community lyrics are fetched natively and do not depend on the page. Unison
+and BiniLyrics provide the first rich word/syllable tier; Unison and Bini line
 timings follow, then LRCLib and Better Lyrics Legato. An unsynced answer is
 retained only when every timed alternate misses. Independent sources start
 together so their fallback latency overlaps, but the result is resolved in
 that quality order rather than by whichever network request finishes first.
+If all community sources miss, the signed-in page's own Lyrics tab supplies
+YouTube Music's plain copy as a final readable fallback.
 The aggregator Better Lyrics clients prefer sits behind a browser challenge
 and is not used from the native client. A recording is matched on duration,
 because a lyric timed against a different cut drifts further out of step the

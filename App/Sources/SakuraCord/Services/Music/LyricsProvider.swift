@@ -53,6 +53,92 @@ nonisolated enum UnisonLyricsRequest {
     }
 }
 
+/// Reads the plain lyric copy returned by YouTube Music's own Lyrics tab.
+///
+/// This is deliberately a last resort: the page's copy carries no timing,
+/// but it is still preferable to an empty panel when every richer community
+/// source misses a track that YouTube itself knows.
+nonisolated enum YouTubeMusicLyricsResponse {
+    static func lyrics(from body: Data) -> TimedLyrics {
+        guard let response = try? JSONDecoder().decode(
+            YouTubeLyricsRoot.self,
+            from: body
+        ),
+              let runs = response.contents?
+                  .sectionListRenderer?
+                  .contents?
+                  .first?
+                  .musicDescriptionShelfRenderer?
+                  .description?
+                  .runs
+        else { return .empty }
+
+        let text = runs.map(\.text).joined()
+        return LyricsParser.parse(text, format: "plain")
+    }
+}
+
+nonisolated private struct YouTubeLyricsRoot: Decodable {
+    var contents: YouTubeLyricsContents?
+}
+
+nonisolated private struct YouTubeLyricsContents: Decodable {
+    var sectionListRenderer: YouTubeLyricsSectionList?
+}
+
+nonisolated private struct YouTubeLyricsSectionList: Decodable {
+    var contents: [YouTubeLyricsSection]?
+}
+
+nonisolated private struct YouTubeLyricsSection: Decodable {
+    var musicDescriptionShelfRenderer: YouTubeLyricsDescriptionShelf?
+}
+
+nonisolated private struct YouTubeLyricsDescriptionShelf: Decodable {
+    var description: YouTubeLyricsDescription?
+}
+
+nonisolated private struct YouTubeLyricsDescription: Decodable {
+    var runs: [YouTubeLyricsRun]?
+}
+
+nonisolated private struct YouTubeLyricsRun: Decodable {
+    var text: String
+}
+
+typealias YouTubeLyricsPageFetch = @Sendable (String) async -> Data?
+
+/// The metadata that determines one lyric lookup.
+///
+/// The page publishes the new video id before every other field settles.
+/// Keying only by that id made the first, half-old snapshot permanent: later
+/// corrected metadata looked like the same request and never got another try.
+nonisolated struct LyricsLookupRequest: Equatable, Sendable {
+    var identity: String
+    var title: String
+    var artist: String
+    var duration: Int
+
+    init?(state: MusicPlaybackState) {
+        guard state.hasTrack,
+              let identity = LyricsModel.identity(for: state)
+        else { return nil }
+
+        let title = state.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let artist = state.artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty,
+              !artist.isEmpty,
+              state.duration.isFinite,
+              state.duration > 0
+        else { return nil }
+
+        self.identity = identity
+        self.title = title
+        self.artist = artist
+        duration = Int(state.duration.rounded())
+    }
+}
+
 /// Holds the words for whatever is playing.
 ///
 /// Sources are ranked by the timing they actually return, then by Better
@@ -81,6 +167,7 @@ final class LyricsModel {
     /// track that has already been skipped past is discarded rather than
     /// shown against the wrong song.
     @ObservationIgnored private var loadedTrack: String?
+    @ObservationIgnored private var loadedRequest: LyricsLookupRequest?
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var decorationTask: Task<Void, Never>?
     @ObservationIgnored private let session: URLSession = .shared
@@ -90,6 +177,7 @@ final class LyricsModel {
     /// public translation endpoint to a native client, so the player hands
     /// the panel its own page to ask from.
     @ObservationIgnored var pageFetch: LyricsPageFetch?
+    @ObservationIgnored var youtubeLyricsFetch: YouTubeLyricsPageFetch?
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let logger = Logger(
         subsystem: "dev.sakuracord.SakuraCord",
@@ -164,28 +252,45 @@ final class LyricsModel {
             clear()
             return
         }
-        guard identity != loadedTrack else { return }
 
-        loadedTrack = identity
+        if identity != loadedTrack {
+            loadedTrack = identity
+            loadedRequest = nil
+            lyrics = .empty
+            task?.cancel()
+            decorationTask?.cancel()
+            status = .searching
+        }
+
+        // A track transition reports the id first, then fixes title, artist
+        // and duration over the next few page mutations. Wait for a complete
+        // match instead of firing a lookup against mixed old/new metadata.
+        guard let request = LyricsLookupRequest(state: state),
+              request != loadedRequest
+        else { return }
+
+        loadedRequest = request
         lyrics = .empty
         task?.cancel()
         decorationTask?.cancel()
-
         status = .searching
         logger.info(
             "lyric lookup: \(state.title, privacy: .public) / \(state.artist, privacy: .public) [\(identity, privacy: .public)] duration \(Int(state.duration))"
         )
         task = Task { [weak self] in
-            await self?.load(for: state, identity: identity)
+            await self?.load(for: state, request: request)
         }
     }
 
-    private func load(for state: MusicPlaybackState, identity: String) async {
+    private func load(
+        for state: MusicPlaybackState,
+        request: LyricsLookupRequest
+    ) async {
         let found = await lookUp(state)
-        guard !Task.isCancelled, loadedTrack == identity else { return }
+        guard !Task.isCancelled, loadedRequest == request else { return }
         if found.isEmpty {
             status = .unavailable
-            logger.info("lyric lookup: nothing for \(identity, privacy: .public)")
+            logger.info("lyric lookup: nothing for \(request.identity, privacy: .public)")
         } else {
             lyrics = found
             status = .found
@@ -200,6 +305,7 @@ final class LyricsModel {
         decorationTask?.cancel()
         guard status == .found,
               let identity = loadedTrack,
+              let request = loadedRequest,
               showsRomanization || showsTranslation
         else { return }
 
@@ -219,7 +325,8 @@ final class LyricsModel {
             )
             guard !Task.isCancelled,
                   let self,
-                  self.loadedTrack == identity
+                  self.loadedTrack == identity,
+                  self.loadedRequest == request
             else { return }
             self.lyrics = decorated
         }
@@ -234,6 +341,7 @@ final class LyricsModel {
         async let biniTask = lookUpBini(state)
         async let lrcLibTask = lookUpLRCLib(state)
         async let legatoTask = lookUpLegato(state)
+        async let youtubeTask = lookUpYouTubeMusic(state)
 
         let unison = await unisonTask
         let bini = await biniTask
@@ -261,10 +369,14 @@ final class LyricsModel {
             return selected(legato, source: "Legato", quality: "line-timed")
         }
 
-        // Better Lyrics puts Unison's plain copy before LRCLib's. Bini and
-        // Legato normally return timed formats, but retaining a readable copy
-        // is still better than claiming there are no lyrics if one degrades.
+        let youtube = await youtubeTask
+
+        // YouTube's own unsynced copy is Better Lyrics' final page-native
+        // fallback. Bini and Legato normally return timed formats, but
+        // retaining a readable copy is still better than claiming there are
+        // no lyrics if one degrades.
         for (source, found) in [
+            ("YouTube Music", youtube),
             ("Unison", unison),
             ("BiniLyrics", bini),
             ("LRCLib", lrcLib),
@@ -307,6 +419,16 @@ final class LyricsModel {
             if fallback.isEmpty { fallback = found }
         }
         return fallback
+    }
+
+    private func lookUpYouTubeMusic(
+        _ state: MusicPlaybackState
+    ) async -> TimedLyrics {
+        guard !state.videoID.isEmpty,
+              let youtubeLyricsFetch,
+              let body = await youtubeLyricsFetch(state.videoID)
+        else { return .empty }
+        return YouTubeMusicLyricsResponse.lyrics(from: body)
     }
 
     private func lookUpLRCLib(_ state: MusicPlaybackState) async -> TimedLyrics {
@@ -374,6 +496,7 @@ final class LyricsModel {
         task?.cancel()
         decorationTask?.cancel()
         loadedTrack = nil
+        loadedRequest = nil
         lyrics = .empty
         status = .idle
     }

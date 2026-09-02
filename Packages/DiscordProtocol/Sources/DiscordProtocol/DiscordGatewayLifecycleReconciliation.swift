@@ -53,7 +53,7 @@ extension DiscordRESTProvider {
         for channelID in channelIDs {
             forumReadStates[channelID] = nil
         }
-        cachedMessages = cachedMessages.filter { !channelIDs.contains($0.value.channelID) }
+        cachedMessages.removeAll { channelIDs.contains($0.channelID) }
         cancelPendingMemberRequests(guildID: guildID, error: CancellationError())
         publishGuildLayout()
     }
@@ -154,10 +154,10 @@ extension DiscordRESTProvider {
             continuation?.yield(.privateMembersChanged(privateMembersInChannelOrder()))
         }
 
-        let affectedMessageIDs = cachedMessages.compactMap {
-            $0.value.author.id == user.id
-                || $0.value.mentionedUsers.contains(where: { $0.id == user.id })
-                ? $0.key : nil
+        let affectedMessageIDs = cachedMessages.values.compactMap {
+            $0.author.id == user.id
+                || $0.mentionedUsers.contains(where: { $0.id == user.id })
+                ? $0.id : nil
         }
         for messageID in affectedMessageIDs {
             guard var message = cachedMessages[messageID] else { continue }

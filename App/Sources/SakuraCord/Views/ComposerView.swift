@@ -194,7 +194,7 @@ struct ComposerView: View {
                         }
                     }
                     .padding(.horizontal, 11)
-                    .padding(.vertical, usesDirectMessageChrome ? 10 : 6)
+                    .padding(.vertical, usesDirectMessageChrome ? 8 : 6)
                     .frame(minHeight: ChatChromeMetrics.controlHeight)
             }
                 .background {
@@ -943,11 +943,11 @@ struct ComposerView: View {
     }
 
     private var composerInputMinimumHeight: CGFloat {
-        usesDirectMessageChrome ? 84 : 36
+        36
     }
 
     private var composerInputAlignment: Alignment {
-        usesDirectMessageChrome ? .topLeading : .center
+        .center
     }
 
     private var usesConversationChrome: Bool {

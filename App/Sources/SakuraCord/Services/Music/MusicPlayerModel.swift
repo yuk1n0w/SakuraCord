@@ -27,6 +27,9 @@ final class MusicPlayerModel {
         lyrics.pageFetch = { [weak self] url in
             await self?.pageResponse(for: url)
         }
+        lyrics.youtubeLyricsFetch = { [weak self] videoID in
+            await self?.youtubeLyricsResponse(for: videoID)
+        }
     }
 
     /// What the last search turned up, and what was asked.
@@ -204,6 +207,80 @@ final class MusicPlayerModel {
                 return await response.text();
                 """,
                 arguments: ["url": url.absoluteString],
+                contentWorld: .page
+            )
+            guard let text = value as? String else { return nil }
+            return Data(text.utf8)
+        } catch {
+            return nil
+        }
+    }
+
+    /// Asks the signed-in page for its own Lyrics tab.
+    ///
+    /// Community providers remain preferable because they can carry line or
+    /// word timing. This response is only consumed after those miss, but its
+    /// request starts beside them so the fallback does not add another long
+    /// wait to an already unsuccessful lookup.
+    func youtubeLyricsResponse(for videoID: String) async -> Data? {
+        guard let webView, isReady, !videoID.isEmpty else { return nil }
+        do {
+            let value = try await webView.callAsyncJavaScript(
+                """
+                const config = (window.ytcfg && window.ytcfg.data_) || {};
+                const key = config.INNERTUBE_API_KEY;
+                const context = config.INNERTUBE_CONTEXT;
+                if (!key || !context) { return null; }
+
+                async function request(path, body) {
+                    const controller = new AbortController();
+                    const timeout = setTimeout(function () {
+                        controller.abort();
+                    }, 8000);
+                    try {
+                        const response = await fetch(
+                            path + '?key=' + encodeURIComponent(key),
+                            {
+                                method: 'POST',
+                                credentials: 'include',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(Object.assign(
+                                    { context: context },
+                                    body
+                                )),
+                                signal: controller.signal
+                            }
+                        );
+                        if (!response.ok) { return null; }
+                        return await response.json();
+                    } finally {
+                        clearTimeout(timeout);
+                    }
+                }
+
+                const next = await request('/youtubei/v1/next', {
+                    videoId: videoID
+                });
+                const tabs = next && next.contents
+                    && next.contents.singleColumnMusicWatchNextResultsRenderer
+                    && next.contents.singleColumnMusicWatchNextResultsRenderer.tabbedRenderer
+                    && next.contents.singleColumnMusicWatchNextResultsRenderer.tabbedRenderer
+                        .watchNextTabbedResultsRenderer
+                    && next.contents.singleColumnMusicWatchNextResultsRenderer.tabbedRenderer
+                        .watchNextTabbedResultsRenderer.tabs;
+                const lyricsTab = tabs && tabs[1] && tabs[1].tabRenderer;
+                const browseId = lyricsTab && !lyricsTab.unselectable
+                    && lyricsTab.endpoint
+                    && lyricsTab.endpoint.browseEndpoint
+                    && lyricsTab.endpoint.browseEndpoint.browseId;
+                if (!browseId) { return null; }
+
+                const browse = await request('/youtubei/v1/browse', {
+                    browseId: browseId
+                });
+                return browse ? JSON.stringify(browse) : null;
+                """,
+                arguments: ["videoID": videoID],
                 contentWorld: .page
             )
             guard let text = value as? String else { return nil }
