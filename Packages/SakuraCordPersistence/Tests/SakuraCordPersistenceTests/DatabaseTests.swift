@@ -4,15 +4,32 @@ import SakuraCordModels
 @testable import SakuraCordPersistence
 import Testing
 
-@Test func `drafts round trip and clear with account data`() async throws {
+@Test func `drafts round trip and clear with scoped draft action`() async throws {
     let database = try SakuraCordDatabase(inMemory: true)
     let channelID = ChannelID(rawValue: 12)
 
     try await database.saveDraft("hello", channelID: channelID)
     #expect(try await database.draft(channelID: channelID) == "hello")
 
-    try await database.clearAccountData()
+    try await database.clearDrafts()
     #expect(try await database.draft(channelID: channelID).isEmpty)
+}
+
+@Test func `draft storage summary counts local drafts and UTF-8 content bytes`() async throws {
+    let database = try SakuraCordDatabase(inMemory: true)
+    try await database.saveDraft("hello", channelID: ChannelID(rawValue: 21))
+    try await database.saveDraft("🌸", channelID: ChannelID(rawValue: 22))
+
+    #expect(
+        try await database.draftStorageSummary()
+            == DraftStorageSummary(draftCount: 2, approximateByteCount: 9)
+    )
+
+    try await database.clearDrafts()
+    #expect(
+        try await database.draftStorageSummary()
+            == DraftStorageSummary(draftCount: 0, approximateByteCount: 0)
+    )
 }
 
 @Test func `legacy Discord caches are dropped while drafts survive migration`() async throws {

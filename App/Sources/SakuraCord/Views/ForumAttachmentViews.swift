@@ -109,7 +109,7 @@ struct ForumComposerAttachmentControl: View {
             .foregroundStyle(.white)
             .frame(width: 22, height: 22)
             .background {
-                Circle().fill(Color.accentColor)
+                Circle().fill(SakuraCordAccentColor.color)
             }
             .overlay {
                 Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5)
@@ -438,6 +438,7 @@ struct ForumAttachmentEditor: View {
                     VStack(alignment: .leading, spacing: 7) {
                         Text("Filename").font(.headline)
                         TextField("Filename", text: $filename)
+                            .tint(SakuraCordAccentColor.color)
                             .textFieldStyle(.roundedBorder)
                     }
 
@@ -450,6 +451,7 @@ struct ForumAttachmentEditor: View {
                                 .foregroundStyle(.secondary)
                         }
                         TextEditor(text: $description)
+                            .tint(SakuraCordAccentColor.color)
                             .font(.body)
                             .scrollContentBackground(.hidden)
                             .padding(7)
@@ -467,6 +469,7 @@ struct ForumAttachmentEditor: View {
                     }
 
                     Toggle("Mark as spoiler", isOn: $isSpoiler)
+                        .tint(SakuraCordAccentColor.color)
                         .toggleStyle(.checkbox)
                 }
                 .frame(maxWidth: .infinity)
@@ -486,6 +489,7 @@ struct ForumAttachmentEditor: View {
                     save(updated)
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(SakuraCordAccentColor.color)
                 .keyboardShortcut(.defaultAction)
                 .disabled(filename.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }

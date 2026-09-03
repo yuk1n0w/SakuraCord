@@ -22,6 +22,7 @@ struct NativeTimelineTextAccessibilityInput {
     let framesetter: CTFramesetter
     let drawingFrame: CGRect
     let accessibilityFrame: CGRect
+    let sourceMessage: Message?
     let itemIdentifier: NativeMessageTimelineItem.Identifier
     let region: NativeTimelineTextRegion
     let revealedLocations: Set<Int>
@@ -70,7 +71,11 @@ extension NativeTimelineCanvasView {
                NativeTimelineAccessibilityPolicy
                    .editingOverlayInsertionIndex(
                        in: accessibilityProxies.order,
-                       editingMessageID: editingMessageID
+                       editingItemIdentifier: editingMessageID.flatMap { messageID in
+                           items.first(where: {
+                               $0.messageID == messageID
+                           })?.identifier
+                       }
                    )
         {
             let editingChild = additionalChildren.remove(at: hostIndex)
@@ -304,22 +309,31 @@ extension NativeTimelineCanvasView {
         { [self] row, isUnreadBoundary, layout, rowFrame, rowIndex in
         let message = row.message
         let itemIdentifier =
-            NativeMessageTimelineItem.Identifier.message(message.id)
+            NativeMessageTimelineItem.Identifier.message(row.identity)
         let revealedTextSpoilerState =
             textSpoilerRevealState(for: itemIdentifier)
         let author =
             model?.authorPresentation(for: message).user
             ?? message.author
         let timestamp = NativeTimelineTimestamp.text(
-            for: message.timestamp
+            for: message.timestamp,
+            settings: model?.interfaceSettings ?? .defaults
         )
         let generatedLabel = SystemMessagePresentation.label(
             for: message,
             currentUserID: model?.snapshot?.currentUser.id
         )
-        let rowLabel = message.type.hasGeneratedContent
+        let accessibilitySettings =
+            model?.accessibilitySettings ?? .defaults
+        let metadata = AccessibilityMessageMetadataPolicy.summary(
+            for: message,
+            timestamp: timestamp,
+            settings: accessibilitySettings
+        )
+        let baseRowLabel = message.type.hasGeneratedContent
             ? "System message, \(generatedLabel)"
-            : "Message from \(author.displayName), \(timestamp)"
+            : "Message from \(author.displayName)"
+        let rowLabel = ([baseRowLabel] + metadata).joined(separator: ", ")
         let rowPress: (@MainActor @Sendable () -> Bool)? =
             if actions?.openMessage != nil {
                 { [weak self] in
@@ -338,7 +352,7 @@ extension NativeTimelineCanvasView {
             value: MessageOutboxPresentation.accessibilityStatus(
                 for: message.outboxState
             ),
-            help: row.searchContext == nil ? nil : "Jump to message",
+            help: actions?.openMessage == nil ? nil : "Jump to message",
             identifier: "timeline-message-\(message.id)",
             frame: rowFrame,
             parent: self,
@@ -425,7 +439,9 @@ extension NativeTimelineCanvasView {
                 return true
             })
         }
-        if row.startsGroup, !message.type.hasGeneratedContent {
+        if !message.type.hasGeneratedContent,
+           layout.avatarFrame != nil || layout.authorFrame != nil
+        {
             let help = "View \(author.displayName)'s profile"
             let frames =
                 NativeTimelineAuthorProfileGeometry.hitFrames(
@@ -456,7 +472,9 @@ extension NativeTimelineCanvasView {
                     return true
                 })
             }
-            if let frame = layout.timestampFrame {
+            if accessibilitySettings.announcesTimestamps,
+               let frame = layout.timestampFrame
+            {
                 children.append(accessibilityElement(
                     role: .staticText,
                     label: timestamp,
@@ -493,6 +511,7 @@ extension NativeTimelineCanvasView {
                 drawingFrame: NativeTimelineTextGeometry
                     .messageContentDrawingFrame(frame),
                 accessibilityFrame: frame,
+                sourceMessage: message,
                 itemIdentifier: itemIdentifier,
                 region: .content,
                 revealedLocations: revealedTextSpoilerState.locations(
@@ -614,6 +633,12 @@ extension NativeTimelineCanvasView {
             layout: layout,
             itemIdentifier: itemIdentifier,
             revealedTextSpoilerState: revealedTextSpoilerState,
+            rowIndex: rowIndex,
+            parent: element
+        )
+        appendSakuraCordDeepLinkAccessibility(
+            to: &children,
+            layout: layout,
             rowIndex: rowIndex,
             parent: element
         )
@@ -750,6 +775,7 @@ extension NativeTimelineCanvasView {
             let framesetter = input.framesetter
             let drawingFrame = input.drawingFrame
             let accessibilityFrame = input.accessibilityFrame
+            let sourceMessage = input.sourceMessage
             let itemIdentifier = input.itemIdentifier
             let region = input.region
             let revealedLocations = input.revealedLocations
@@ -769,6 +795,52 @@ extension NativeTimelineCanvasView {
                 ),
                 parent: parent
             ))
+        }
+        if let sourceMessage {
+            value.enumerateAttribute(
+                .link,
+                in: NSRange(location: 0, length: value.length)
+            ) { rawLink, range, _ in
+                let url = (rawLink as? URL)
+                    ?? (rawLink as? String).flatMap(URL.init(string:))
+                guard let url,
+                      let localFrame = NativeTimelineTextHitTester.rangeFrame(
+                          value: value,
+                          framesetter: framesetter,
+                          frame: drawingFrame,
+                          range: range
+                      )
+                else { return }
+                let linkLabel = value.attributedSubstring(from: range).string
+                let anchor = accessibilityChildFrame(
+                    localFrame,
+                    rowIndex: rowIndex
+                )
+                children.append(accessibilityElement(
+                    role: .link,
+                    label: linkLabel,
+                    help: MessageLinkActivator.accessibilityHelp(
+                        for: url,
+                        label: linkLabel
+                    ),
+                    frame: anchor,
+                    parent: parent
+                ) { [weak self] in
+                    guard let self else { return false }
+                    return MessageLinkActivator.activate(
+                        url,
+                        model: self.model,
+                        sourceMessage: sourceMessage,
+                        displayedText: linkLabel,
+                        presentSystemProfile: { [weak self] user in
+                            self?.showMessageProfile(
+                                for: user,
+                                anchor: anchor
+                            )
+                        }
+                    )
+                })
+            }
         }
         for codeBlock in NativeTimelineCodeBlockGeometry.regions(
             value: value,
@@ -867,6 +939,7 @@ extension NativeTimelineCanvasView {
                     framesetter: textRegion.text.framesetter,
                     drawingFrame: drawingFrame,
                     accessibilityFrame: textRegion.frame,
+                    sourceMessage: nil,
                     itemIdentifier: itemIdentifier,
                     region: textRegionID,
                     revealedLocations:
@@ -900,6 +973,46 @@ extension NativeTimelineCanvasView {
                     ) ?? false
                 })
             }
+        }
+    }
+
+    func appendSakuraCordDeepLinkAccessibility(
+        to children: inout [Any],
+        layout: NativeTimelineRowLayout,
+        rowIndex: Int,
+        parent: NSAccessibilityElement
+    ) {
+        for region in layout.sakuraCordDeepLinkRegions {
+            let group = accessibilityElement(
+                role: .group,
+                label: "SakuraCord deeplink, \(region.action.title)",
+                frame: accessibilityChildFrame(
+                    region.cardFrame,
+                    rowIndex: rowIndex
+                ),
+                parent: parent
+            )
+            let button = accessibilityElement(
+                role: .button,
+                label: region.action.buttonTitle,
+                help: region.action.accessibilityHelp,
+                frame: accessibilityChildFrame(
+                    region.buttonFrame,
+                    rowIndex: rowIndex
+                ),
+                parent: group
+            ) { [weak self] in
+                guard let actions = self?.actions else { return false }
+                switch region.action {
+                case .checkForUpdates, .updateToApplyTheme:
+                    actions.checkForUpdates()
+                case let .applyTheme(theme):
+                    actions.applyTheme(theme)
+                }
+                return true
+            }
+            group.setAccessibilityChildren([button])
+            children.append(group)
         }
     }
 
@@ -971,6 +1084,7 @@ extension NativeTimelineCanvasView {
                     framesetter: textRegion.text.framesetter,
                     drawingFrame: drawingFrame,
                     accessibilityFrame: textRegion.frame,
+                    sourceMessage: nil,
                     itemIdentifier: itemIdentifier,
                     region: textRegionID,
                     revealedLocations:
@@ -1004,7 +1118,7 @@ extension NativeTimelineCanvasView {
                 children.append(accessibilityElement(
                     role: .popUpButton,
                     label: region.placeholder,
-                    value: region.options.filter(\.isDefault)
+                    value: region.selectedOptions
                         .map(\.label)
                         .joined(separator: ", "),
                     frame: accessibilityChildFrame(
@@ -1017,10 +1131,9 @@ extension NativeTimelineCanvasView {
                     guard let self, !region.isDisabled else {
                         return false
                     }
-                    self.showMenu(
+                    self.showComponentChoicePicker(
                         for: region,
-                        message: message,
-                        rowIndex: rowIndex
+                        message: message
                     )
                     return true
                 })
@@ -1200,40 +1313,39 @@ extension NativeTimelineCanvasView {
         rowIndex: Int
     ) -> [NSAccessibilityCustomAction] {
         let message = row.message
-        let canEdit =
-            message.author.id == model?.snapshot?.currentUser.id
-        if messageInteractionContext == .searchResult {
+        let canEdit = message.author.id == model?.snapshot?.currentUser.id
+            && MessageReplyPresentationPolicy.allowsReplyAction(for: message)
+        let canDelete = model?.canDeleteMessage(message) == true
+        if messageInteractionContext == .searchResult || messageInteractionContext == .pinnedResult {
             return accessibilitySearchResultActions(
                 for: message,
-                canDelete: canEdit
+                canDelete: canDelete,
+                includesMarkUnread: messageInteractionContext == .searchResult
             )
         }
         var result: [NSAccessibilityCustomAction] = []
         if message.outboxState == .failed {
             result.append(NSAccessibilityCustomAction(
-                name: "Retry Sending"
+                name: "Retry Send"
             ) { [weak self] in
                 self?.actions?.retry(message)
                 return self != nil
             })
+            result.append(NSAccessibilityCustomAction(
+                name: "Copy Text"
+            ) {
+                Self.copyText(message.content)
+                return true
+            })
+            return result
         }
-        result.append(NSAccessibilityCustomAction(
-            name: "Add Reaction"
-        ) { [weak self] in
-            guard let self else { return false }
-            self.showReactionPicker(
-                for: message,
-                anchor: CGRect(
-                    x: rowFrame.maxX - 32,
-                    y: rowFrame.minY,
-                    width: 28,
-                    height: 28
-                ),
-                preferredEdge: .minY
-            )
-            return true
-        })
-        if let reply = actions?.reply {
+        result.append(accessibilityReactionAction(
+            for: message,
+            rowFrame: rowFrame
+        ))
+        if MessageReplyPresentationPolicy.allowsReplyAction(for: message),
+           let reply = actions?.reply
+        {
             result.append(NSAccessibilityCustomAction(name: "Reply") {
                 reply(message)
                 return true
@@ -1260,6 +1372,9 @@ extension NativeTimelineCanvasView {
                 return true
             })
         }
+        if let pinAction = pinAccessibilityAction(for: message) {
+            result.append(pinAction)
+        }
         result.append(NSAccessibilityCustomAction(
             name: "Copy Text"
         ) {
@@ -1279,7 +1394,7 @@ extension NativeTimelineCanvasView {
             Self.copyText(message.id.description)
             return true
         })
-        if canEdit {
+        if canDelete {
             result.append(NSAccessibilityCustomAction(
                 name: "Delete Message"
             ) { [weak self] in
@@ -1290,9 +1405,30 @@ extension NativeTimelineCanvasView {
         return result
     }
 
+    private func accessibilityReactionAction(
+        for message: Message,
+        rowFrame: CGRect
+    ) -> NSAccessibilityCustomAction {
+        NSAccessibilityCustomAction(name: "Add Reaction") { [weak self] in
+            guard let self else { return false }
+            self.showReactionPicker(
+                for: message,
+                anchor: CGRect(
+                    x: rowFrame.maxX - 32,
+                    y: rowFrame.minY,
+                    width: 28,
+                    height: 28
+                ),
+                preferredEdge: .minY
+            )
+            return true
+        }
+    }
+
     private func accessibilitySearchResultActions(
         for message: Message,
-        canDelete: Bool
+        canDelete: Bool,
+        includesMarkUnread: Bool
     ) -> [NSAccessibilityCustomAction] {
         var result = [
             NSAccessibilityCustomAction(name: "Jump to Message") { [weak self] in
@@ -1301,10 +1437,6 @@ extension NativeTimelineCanvasView {
                 }
                 openMessage(message)
                 return true
-            },
-            NSAccessibilityCustomAction(name: "Mark Unread") { [weak self] in
-                self?.actions?.markUnread(message)
-                return self != nil
             },
             NSAccessibilityCustomAction(name: "Copy Text") {
                 Self.copyText(message.content)
@@ -1316,6 +1448,15 @@ extension NativeTimelineCanvasView {
                 return true
             },
         ]
+        if includesMarkUnread {
+            result.insert(NSAccessibilityCustomAction(name: "Mark Unread") { [weak self] in
+                self?.actions?.markUnread(message)
+                return self != nil
+            }, at: 1)
+        }
+        if let pinAction = pinAccessibilityAction(for: message) {
+            result.insert(pinAction, at: min(2, result.count))
+        }
         result.append(contentsOf: [
             NSAccessibilityCustomAction(name: "Copy Message ID") {
                 Self.copyText(message.id.description)
@@ -1335,6 +1476,18 @@ extension NativeTimelineCanvasView {
             })
         }
         return result
+    }
+
+    private func pinAccessibilityAction(
+        for message: Message
+    ) -> NSAccessibilityCustomAction? {
+        guard model?.canManagePins(for: message) == true else { return nil }
+        return NSAccessibilityCustomAction(
+            name: message.isPinned ? "Unpin Message" : "Pin Message"
+        ) { [weak self] in
+            self?.actions?.togglePin(message)
+            return self != nil
+        }
     }
 
     func accessibilityMessageText(_ message: Message) -> String {
@@ -1503,8 +1656,7 @@ extension NativeTimelineCanvasView {
     ) -> Bool {
         guard !region.isDisabled else { return false }
         if let url = region.url {
-            NSWorkspace.shared.open(url)
-            return true
+            return MessageLinkActivator.activate(url, model: model)
         }
         guard let customID = region.customID else { return false }
         actions?.submitComponent(message, customID, .button, [])

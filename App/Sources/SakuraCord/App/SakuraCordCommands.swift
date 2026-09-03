@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct SakuraCordCommands: Commands {
@@ -5,20 +6,38 @@ struct SakuraCordCommands: Commands {
     let updateController: AppUpdateController
 
     var body: some Commands {
-        CommandGroup(after: .appInfo) {
+        CommandGroup(replacing: .appInfo) {
+            Button("About SakuraCord") {
+                NSApp.orderFrontStandardAboutPanel(options: [
+                    .applicationVersion:
+                        AboutVersionInformation().semanticVersionDisplay,
+                    .version: "",
+                ])
+            }
+
+            Divider()
+
             CheckForUpdatesCommand(updateController: updateController)
         }
 
-        CommandMenu("Navigate") {
-            Button("Quick Switch…") {
-                model.presentQuickSwitcher()
-            }
-            .keyboardShortcut("k")
+        CommandGroup(replacing: .sidebar) {
+            ShortcutCommandButton(
+                action: .toggleChannelSidebar,
+                model: model
+            )
+        }
 
-            Button("Search Messages…") {
-                model.presentMessageSearchFromCommand()
-            }
-            .keyboardShortcut("f")
+        CommandMenu("Navigate") {
+            ShortcutCommandButton(action: .quickSwitch, model: model)
+            ShortcutCommandButton(action: .messageSearch, model: model)
+
+            Divider()
+
+            ShortcutCommandButton(action: .previousConversation, model: model)
+            ShortcutCommandButton(action: .nextConversation, model: model)
+            ShortcutCommandButton(action: .previousUnread, model: model)
+            ShortcutCommandButton(action: .nextUnread, model: model)
+            ShortcutCommandButton(action: .currentCall, model: model)
 
             Divider()
 
@@ -50,11 +69,7 @@ struct SakuraCordCommands: Commands {
 
             Divider()
 
-            Button("Toggle Member Inspector") { NotificationCenter.default.post(name: .sakuracordToggleInspector, object: nil) }
-                .keyboardShortcut("i", modifiers: [.command, .option])
-            Button("Focus Composer") { NotificationCenter.default.post(name: .sakuracordFocusComposer, object: nil) }
-                .keyboardShortcut("l", modifiers: [.command, .shift])
-
+            ShortcutCommandButton(action: .toggleMemberList, model: model)
         }
 
         CommandMenu("Music") {
@@ -124,6 +139,50 @@ struct SakuraCordCommands: Commands {
                 .keyboardShortcut("[", modifiers: [.command, .shift])
                 .disabled(!model.music.state.hasTrack)
         }
+
+        CommandMenu("Message") {
+            ShortcutCommandButton(action: .focusComposer, model: model)
+            ShortcutCommandButton(action: .editLastMessage, model: model)
+            ShortcutCommandButton(action: .reply, model: model)
+            ShortcutCommandButton(action: .upload, model: model)
+
+            Divider()
+
+            ShortcutCommandButton(
+                action: .searchCurrentConversation,
+                model: model
+            )
+            ShortcutCommandButton(action: .markRead, model: model)
+        }
+
+        CommandMenu("Voice") {
+            ShortcutCommandButton(action: .toggleMute, model: model)
+            ShortcutCommandButton(action: .toggleDeafen, model: model)
+            ShortcutCommandButton(action: .toggleCamera, model: model)
+            ShortcutCommandButton(action: .toggleScreenShare, model: model)
+
+            Divider()
+
+            ShortcutCommandButton(action: .leaveCall, model: model)
+        }
+    }
+}
+
+private struct ShortcutCommandButton: View {
+    let action: KeyboardShortcutAction
+    let model: AppModel
+    private let shortcuts = KeyboardShortcutSettingsStore.shared
+
+    var body: some View {
+        Button(action.title) {
+            model.performKeyboardShortcutAction(action)
+        }
+        .disabled(!model.keyboardShortcutActionIsEnabled(action))
+        .keyboardShortcut(
+            action.registersMenuShortcut
+                ? shortcuts.shortcut(for: action)?.swiftUIShortcut
+                : nil
+        )
     }
 }
 

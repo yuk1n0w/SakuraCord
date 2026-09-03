@@ -73,9 +73,22 @@ struct NativeTimelineMediaKey: Hashable {
         }
     }
 
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        // A fallback changes how the same primary resource can be loaded, not
+        // its decoded-image identity. Keeping it out of equality lets an
+        // optimistic local attachment acquire a CDN fallback without losing
+        // the image already retained by the timeline.
+        lhs.url == rhs.url
+            && lhs.maximumPixelDimension == rhs.maximumPixelDimension
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(url)
+        hasher.combine(maximumPixelDimension)
+    }
+
     var cacheKey: NSString {
-        let fallback = fallbackURL?.absoluteString ?? ""
-        return "\(url.absoluteString)#fallback=\(fallback)#native-timeline-pixel-max=\(maximumPixelDimension)"
+        "\(url.absoluteString)#native-timeline-pixel-max=\(maximumPixelDimension)"
             as NSString
     }
 
@@ -94,6 +107,25 @@ nonisolated final class SharedDecodedImageBox: NSObject, @unchecked Sendable {
     init(_ image: CGImage) {
         self.image = image
         cost = max(1, image.bytesPerRow * image.height)
+    }
+}
+
+nonisolated final class SharedDecodedImageCache: @unchecked Sendable {
+    private let storage: NSCache<NSString, SharedDecodedImageBox> = {
+        let cache = NSCache<NSString, SharedDecodedImageBox>()
+        cache.totalCostLimit =
+            NativeTimelineMediaMemoryPolicy.sharedStaticImageBytes
+        cache.countLimit = 256
+        return cache
+    }()
+
+    func image(for key: NSString) -> CGImage? {
+        storage.object(forKey: key)?.image
+    }
+
+    func insert(_ image: CGImage, for key: NSString) {
+        let box = SharedDecodedImageBox(image)
+        storage.setObject(box, forKey: key, cost: box.cost)
     }
 }
 
@@ -117,13 +149,7 @@ actor SharedDecodedImageLoader {
         }
     }
 
-    private let cache: NSCache<NSString, SharedDecodedImageBox> = {
-        let cache = NSCache<NSString, SharedDecodedImageBox>()
-        cache.totalCostLimit =
-            NativeTimelineMediaMemoryPolicy.sharedStaticImageBytes
-        cache.countLimit = 256
-        return cache
-    }()
+    nonisolated private let cache = SharedDecodedImageCache()
     private var inFlight: [RequestKey: InFlightRequest] = [:]
     private let dataLoader: SharedMediaDataLoader
     private let decodeScheduler: NativeTimelineMediaDecodeScheduler
@@ -136,6 +162,17 @@ actor SharedDecodedImageLoader {
         self.decodeScheduler = decodeScheduler
     }
 
+    nonisolated func cachedImage(
+        for url: URL,
+        maximumPixelDimension: Int
+    ) -> CGImage? {
+        let key = RequestKey(
+            url: url,
+            maximumPixelDimension: max(1, maximumPixelDimension)
+        )
+        return cache.image(for: key.cacheKey)
+    }
+
     func image(
         for url: URL,
         maximumPixelDimension: Int,
@@ -145,8 +182,11 @@ actor SharedDecodedImageLoader {
             url: url,
             maximumPixelDimension: max(1, maximumPixelDimension)
         )
-        if let cached = cache.object(forKey: key.cacheKey) {
-            return cached.image
+        if let cached = cachedImage(
+            for: key.url,
+            maximumPixelDimension: key.maximumPixelDimension
+        ) {
+            return cached
         }
 
         let waiterID = UUID()
@@ -283,8 +323,7 @@ actor SharedDecodedImageLoader {
             inFlight[key] = request
         }
         if let image {
-            let box = SharedDecodedImageBox(image)
-            cache.setObject(box, forKey: key.cacheKey, cost: box.cost)
+            cache.insert(image, for: key.cacheKey)
         }
         return image
     }
@@ -1266,11 +1305,11 @@ nonisolated enum NativeTimelineAccessibilityPolicy {
 
     static func editingOverlayInsertionIndex(
         in rowIdentifiers: [NativeMessageTimelineItem.Identifier],
-        editingMessageID: MessageID?
+        editingItemIdentifier: NativeMessageTimelineItem.Identifier?
     ) -> Int? {
-        guard let editingMessageID,
+        guard let editingItemIdentifier,
               let rowIndex = rowIdentifiers.firstIndex(
-                  of: .message(editingMessageID)
+                  of: editingItemIdentifier
               )
         else { return nil }
         return rowIndex + 1
@@ -1394,8 +1433,10 @@ struct NativeTimelineActionCapsuleOverlay: View {
     let model: AppModel
     let message: Message
     let canEdit: Bool
+    let canDelete: Bool
     @ObservedObject var state: NativeTimelineActionCapsuleState
     let jumpToMessage: (() -> Void)?
+    let unpinMessage: (() -> Void)?
     let retry: (() -> Void)?
     let edit: () -> Void
     let reply: (() -> Void)?
@@ -1416,12 +1457,20 @@ struct NativeTimelineActionCapsuleOverlay: View {
                         help: "Jump to Message",
                         action: jumpToMessage
                     )
+                    if let unpinMessage {
+                        HoverActionButton(
+                            systemImage: "pin.slash",
+                            help: "Unpin Message",
+                            action: unpinMessage
+                        )
+                    }
                 }
             } else {
                 MessageActionCapsule(
                     model: model,
                     message: message,
                     canEdit: canEdit,
+                    canDelete: canDelete,
                     isReactionPickerPresented: $state.isReactionPickerPresented,
                     isDeleteConfirmationPresented:
                         $state.isDeleteConfirmationPresented,
@@ -1517,6 +1566,37 @@ struct NativeTimelineMediaViewerPresentation: Identifiable {
 }
 
 enum NativeTimelineMediaViewerPlan {
+    static func composerAttachments(
+        _ attachments: [ForumPostAttachment],
+        selectedAttachmentID: UUID,
+        author: User
+    ) -> NativeTimelineMediaViewerPresentation? {
+        let items = attachments.enumerated().compactMap { index, attachment -> RichMediaItem? in
+            var optimistic = OptimisticAttachmentPresentation.attachment(
+                for: attachment.url,
+                index: index,
+                id: attachment.id.uuidString
+            )
+            optimistic.filename = attachment.filename
+            optimistic.description = attachment.description
+            optimistic.isSpoiler = attachment.isSpoiler
+            guard optimistic.mediaKind == .image
+                    || optimistic.mediaKind == .animatedImage
+            else { return nil }
+            return RichMediaItem(optimistic)
+        }
+        guard let selection = items.firstIndex(where: {
+            $0.id == selectedAttachmentID.uuidString
+        }) else { return nil }
+        return NativeTimelineMediaViewerPresentation(
+            items: items,
+            selection: selection,
+            authorName: author.displayName,
+            authorAvatarURL: author.avatarURL,
+            timestamp: .now
+        )
+    }
+
     static func attachments(
         in message: Message,
         selectedAttachmentID: String,

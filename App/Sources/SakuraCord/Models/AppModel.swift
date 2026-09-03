@@ -49,40 +49,46 @@ struct MentionMemberSearchCacheEntry {
     var storedAt: Date
 }
 
+struct ComponentInteractionPresentationState {
+    var pendingControls: Set<ComponentControlKey> = []
+    var errors: [ComponentControlKey: String] = [:]
+    var selections: [ComponentControlKey: [ComponentSelectOption]] = [:]
+}
+
+enum ThreadErrorScope {
+    case initialPage
+    case earlierPage
+    case action
+}
+
+struct MemberListViewportRequest: Equatable {
+    var guildID: GuildID
+    var channelID: ChannelID
+    var visibleRange: ClosedRange<Int>
+}
+
+struct ReactionReactorLoadKey: Hashable {
+    var channelID: ChannelID
+    var messageID: MessageID
+    var reactionID: String
+}
+
+struct ReactionMutationKey: Hashable {
+    var channelID: ChannelID
+    var messageID: MessageID
+    var reactionID: String
+}
+
+struct ReactionMutationState {
+    var emoji: String
+    var confirmedReacted: Bool
+    var desiredReacted: Bool
+    var generation: UInt64
+    var isSending: Bool
+}
+
 @Observable
 final class AppModel {
-    enum ThreadErrorScope {
-        case initialPage
-        case earlierPage
-        case action
-    }
-
-    struct MemberListViewportRequest: Equatable {
-        var guildID: GuildID
-        var channelID: ChannelID
-        var visibleRange: ClosedRange<Int>
-    }
-
-    struct ReactionReactorLoadKey: Hashable {
-        var channelID: ChannelID
-        var messageID: MessageID
-        var reactionID: String
-    }
-
-    struct ReactionMutationKey: Hashable {
-        var channelID: ChannelID
-        var messageID: MessageID
-        var reactionID: String
-    }
-
-    struct ReactionMutationState {
-        var emoji: String
-        var confirmedReacted: Bool
-        var desiredReacted: Bool
-        var generation: UInt64
-        var isSending: Bool
-    }
-
     static let messageSendLogger = Logger(
         subsystem: "dev.sakuracord.SakuraCord",
         category: "MessageSend"
@@ -181,22 +187,24 @@ final class AppModel {
     var selectedChannel: Channel?
     var workspaceNavigationOverlay: WorkspaceNavigationOverlay?
     let messageSearch = MessageSearchState()
+    let pinnedMessages = PinnedMessagesState()
     @ObservationIgnored var lastOpenedChannelIDsByGuild: [GuildID: ChannelID] = [:]
     @ObservationIgnored var messages: [Message] = []
     @ObservationIgnored var messageRows: [MessageRowPresentation] = []
     @ObservationIgnored var messageRowsRevision: UInt64 = 0
     var timelinePresentationRevision: UInt64 = 0
-    @ObservationIgnored var messageRowsUpdateHint:
-        MessageRowsUpdateHint?
-    @ObservationIgnored let messageRowsUpdateJournal =
-        MessageRowsUpdateJournal()
+    var appearanceSettings: AppearanceSettingsSnapshot
+    var interfaceSettings: InterfaceSettingsSnapshot
+    var chatSettings: ChatSettingsSnapshot
+    var accessibilitySettings: AccessibilitySettingsSnapshot
+    @ObservationIgnored var messageRowsUpdateHint: MessageRowsUpdateHint?
+    @ObservationIgnored let messageRowsUpdateJournal = MessageRowsUpdateJournal()
     @ObservationIgnored let timelineSpoilerRevealStore =
         NativeTimelineSpoilerRevealStore()
     @ObservationIgnored var latestMessageRowsRevision: UInt64 = 0
     @ObservationIgnored var messageRowsNonAppendRevision: UInt64 = 0
     @ObservationIgnored var selectedMessageIDs: Set<MessageID> = []
-    @ObservationIgnored var selectedMessageStoredIndexByID:
-        [MessageID: Int] = [:]
+    @ObservationIgnored var selectedMessageStoredIndexByID: [MessageID: Int] = [:]
     /// Stored indexes use a movable origin so prepending a history page does
     /// not rewrite every existing message's dictionary value. A logical array
     /// index is `stored - selectedMessageIndexOrigin`.
@@ -305,6 +313,8 @@ final class AppModel {
     let commandComposer = ApplicationCommandComposerModel()
     let readState = AccountReadStateModel()
     let notificationPreferences: NotificationPreferences
+    let voiceVideoPreferences: VoiceVideoPreferences
+    @ObservationIgnored let accessibilityMessageAnnouncer: AccessibilityMessageAnnouncer
     @ObservationIgnored let notificationService: any NativeNotificationService
     @ObservationIgnored let soundPlayer: any AppSoundPlaying
     var isLoading = false
@@ -361,7 +371,8 @@ final class AppModel {
             let newRows = MessageGrouping.updating(
                 existing: threadMessageRows,
                 oldMessages: oldValue,
-                newMessages: threadMessages
+                newMessages: threadMessages,
+                continuationInterval: interfaceSettings.groupingInterval
             )
             let nextRevision = threadMessageRowsRevision &+ 1
             let record = MessageRowsUpdateRecordBuilder.make(
@@ -401,7 +412,7 @@ final class AppModel {
         threadErrorScope == .initialPage
             || threadErrorScope == .earlierPage
     }
-    var outgoingDraftsByNonce: [String: SendMessageDraft] = [:]
+    @ObservationIgnored var outgoingMessages = OutgoingMessageState()
     var gifResults: [GIFSearchResult] = []
     var gifCategories: [GIFPickerCategory] = []
     var gifTrendingPreviewURL: URL?
@@ -412,8 +423,8 @@ final class AppModel {
     var gifFavoriteMutationURL: URL?
     var stickersByGuild: [GuildID: [MessageSticker]] = [:]
     var supportedCapabilities: Set<ChatCapability> = []
-    var pendingComponentControls: Set<ComponentControlKey> = []
-    var componentErrors: [ComponentControlKey: String] = [:]
+    var componentInteractionPresentation =
+        ComponentInteractionPresentationState()
     var inspectorProfilePresentation:
         ProfilePresentationState?
     var contextualProfilePresentation:
@@ -461,6 +472,7 @@ final class AppModel {
             music.resumeAfterVoiceCall()
         }
     }
+    var voiceConnectedAt: Date?
     var voiceParticipants: [VoiceRemoteParticipant] = []
     var isLocallySpeaking = false
     var voiceVideoFrames: [String: VoiceVideoFrame] = [:]
@@ -481,6 +493,7 @@ final class AppModel {
     var isScreenShareCaptureAvailable = false
     var isLocalScreenSharePreviewPaused = false
     var voiceDeviceStatusMessage: String?
+    var selectedCameraUID: String?
     var voiceStates: [UserID: VoiceParticipantState] = [:] {
         didSet {
             guard oldValue != voiceStates else { return }
@@ -495,8 +508,8 @@ final class AppModel {
     }
     var loadingEmojiGuildIDs: Set<GuildID> = []
     var emojiLoadErrorsByGuild: [GuildID: String] = [:]
-    var favoriteEmojiKeys: Set<String>
     var emojiUsageCounts: [String: Int]
+    var emojiRecentKeys: [String]
     var discordFavoriteEmojiKeys: [String] = []
     var discordFrequentlyUsedEmojiKeys: [String] = []
     var discordEmojiUsageScores: [String: Int] = [:]
@@ -519,13 +532,13 @@ final class AppModel {
     @ObservationIgnored var orderedCustomEmojiUpdateTask: Task<Void, Never>?
     @ObservationIgnored var orderedCustomEmojiUpdateGeneration: UInt64 = 0
 
-    var isVoiceMuted = UserDefaults.standard.bool(forKey: "voiceMuted") {
+    var isVoiceMuted = false {
         didSet {
             guard oldValue != isVoiceMuted else { return }
             refreshVoiceSidebarPresentation()
         }
     }
-    var isVoiceDeafened = UserDefaults.standard.bool(forKey: "voiceDeafened") {
+    var isVoiceDeafened = false {
         didSet {
             guard oldValue != isVoiceDeafened else { return }
             refreshVoiceSidebarPresentation()
@@ -537,36 +550,10 @@ final class AppModel {
             refreshVoiceSidebarPresentation()
         }
     }
-    var inputVolume = Float(
-        UserDefaults.standard.object(forKey: "voiceInputVolume") as? Double ?? 1)
-    var outputVolume = Float(
-        UserDefaults.standard.object(forKey: "voiceOutputVolume") as? Double ?? 1
-    )
     var selectedGuildID: GuildID? {
         didSet {
             serverRailPresentation.updateSelection(selectedGuildID)
         }
-    }
-    var incomingPrivateCalls: [PrivateCall] {
-        guard let currentUserID = snapshot?.currentUser.id else { return [] }
-        return privateCallsByChannel.values
-            .filter {
-                !$0.isUnavailable
-                    && $0.isRinging(currentUserID)
-                    && activeVoiceChannel?.id != $0.channelID
-            }
-            .sorted { $0.channelID.rawValue < $1.channelID.rawValue }
-    }
-
-    func privateCall(in channelID: ChannelID) -> PrivateCall? {
-        guard let call = privateCallsByChannel[channelID], !call.isUnavailable else {
-            return nil
-        }
-        return call
-    }
-
-    func isPrivateCallActionInFlight(in channelID: ChannelID) -> Bool {
-        privateCallActionChannelIDs.contains(channelID)
     }
     func currentUserRoleIDs(for guildID: GuildID?) -> Set<RoleID> {
         guard let guildID else { return [] }
@@ -1055,8 +1042,8 @@ final class AppModel {
         Task<Void, Never>?
     @ObservationIgnored var contextualProfileTask:
         Task<Void, Never>?
-    @ObservationIgnored var profileCache:
-        [ProfileCacheKey: UserProfile] = [:]
+    @ObservationIgnored var currentUserProfilePrefetch: CurrentUserProfilePrefetch?
+    @ObservationIgnored var profileCache: [ProfileCacheKey: UserProfile] = [:]
     @ObservationIgnored var channelLoadTask: Task<Void, Never>?
     @ObservationIgnored var bootstrapHistoryPrefetch: BootstrapHistoryPrefetch?
     @ObservationIgnored var conversationRefreshJournals:
@@ -1147,8 +1134,7 @@ final class AppModel {
     @ObservationIgnored let persistsEmojiPreferences: Bool
     @ObservationIgnored var didAttemptSessionRestore = false
     @ObservationIgnored var credentialHandle: CredentialHandle?
-    @ObservationIgnored var credentialHandlesByAccountID:
-        [String: CredentialHandle] = [:]
+    @ObservationIgnored var credentialHandlesByAccountID: [String: CredentialHandle] = [:]
     @ObservationIgnored var didAttemptDiscordEmojiSettings = false
     @ObservationIgnored var acknowledgementTasks: [ChannelID: Task<Void, Never>] = [:]
     @ObservationIgnored var queuedAcknowledgements: [ChannelID: ReadStateMutation] = [:]
@@ -1159,12 +1145,9 @@ final class AppModel {
         [GuildID: Task<Void, Never>] = [:]
     @ObservationIgnored var categoryAcknowledgementTasks:
         [ChannelID: Task<Void, Never>] = [:]
-    @ObservationIgnored var guildNotificationMutationTasks:
-        [GuildID: Task<Void, Never>] = [:]
-    @ObservationIgnored var channelNotificationMutationTasks:
-        [ChannelID: Task<Void, Never>] = [:]
-    @ObservationIgnored var categoryCollapseMutationTasks:
-        [ChannelID: Task<Void, Never>] = [:]
+    @ObservationIgnored var guildNotificationMutationTasks: [GuildID: Task<Void, Never>] = [:]
+    @ObservationIgnored var channelNotificationMutationTasks: [ChannelID: Task<Void, Never>] = [:]
+    @ObservationIgnored var categoryCollapseMutationTasks: [ChannelID: Task<Void, Never>] = [:]
     @ObservationIgnored var categoryCollapseMutationStates:
         [ChannelID: CategoryCollapseMutationState] = [:]
     var optimisticCategoryCollapsedByID: [ChannelID: Bool] = [:]
@@ -1177,6 +1160,7 @@ final class AppModel {
     @ObservationIgnored var currentUserRoleIDsByGuild: [GuildID: Set<RoleID>] = [:]
     @ObservationIgnored let readAcknowledgementTiming: ReadAcknowledgementTiming
     @ObservationIgnored let externalAttachmentUploader: any ExternalAttachmentUploading
+    @ObservationIgnored let privacySafetySettingsStore: PrivacySafetySettingsStore
     @ObservationIgnored var queuedOversizedAttachmentPrompts: [OversizedAttachmentPrompt] = []
     @ObservationIgnored var externalAttachmentUploadTask: Task<Void, Never>?
     @ObservationIgnored var externalAttachmentUploadGeneration: UInt64 = 0
@@ -1199,18 +1183,30 @@ final class AppModel {
         notificationService: (any NativeNotificationService)? = nil,
         soundPlayer: (any AppSoundPlaying)? = nil,
         notificationPreferences: NotificationPreferences? = nil,
+        voiceVideoPreferences: VoiceVideoPreferences? = nil,
+        accessibilityMessageAnnouncer: AccessibilityMessageAnnouncer? = nil,
         typingExpiry: Duration = .seconds(10),
         localTypingTiming: LocalTypingTiming = LocalTypingTiming(),
         reactionMutationTiming: ReactionMutationTiming = ReactionMutationTiming(),
         readAcknowledgementTiming: ReadAcknowledgementTiming = ReadAcknowledgementTiming(),
         runsChatPerformanceBenchmarkOverride: Bool? = nil,
-        externalAttachmentUploader: (any ExternalAttachmentUploading)? = nil
+        externalAttachmentUploader: (any ExternalAttachmentUploading)? = nil,
+        privacySafetySettingsStore: PrivacySafetySettingsStore? = nil
     ) {
         self.launchMode = launchMode
+        appearanceSettings = AppearanceSettingsStore.shared.load()
+        interfaceSettings = InterfaceSettingsStore.shared.load()
+        chatSettings = ChatSettingsStore.shared.load()
+        accessibilitySettings = AccessibilitySettingsStore.shared.load()
         self.notificationService =
             notificationService ?? NoopNativeNotificationService()
         self.soundPlayer = soundPlayer ?? NoopAppSoundPlayer()
         self.notificationPreferences = notificationPreferences ?? NotificationPreferences()
+        let resolvedVoicePreferences = voiceVideoPreferences ?? VoiceVideoPreferences()
+        self.voiceVideoPreferences = resolvedVoicePreferences
+        self.accessibilityMessageAnnouncer = accessibilityMessageAnnouncer ?? AccessibilityMessageAnnouncer()
+        selectedCameraUID = resolvedVoicePreferences.remembersCamera && !resolvedVoicePreferences.cameraUID.isEmpty ? resolvedVoicePreferences.cameraUID : nil
+        screenShareSettings = resolvedVoicePreferences.screenShareDefaults
         self.provider =
             provider
                 ?? (launchMode == .offlineTesting ? MockChatProvider() : SignedOutChatProvider())
@@ -1220,6 +1216,7 @@ final class AppModel {
         self.reactionMutationTiming = reactionMutationTiming
         self.readAcknowledgementTiming = readAcknowledgementTiming
         self.externalAttachmentUploader = externalAttachmentUploader ?? CatboxAttachmentUploader()
+        self.privacySafetySettingsStore = privacySafetySettingsStore ?? .shared
         runsChatPerformanceBenchmark =
             runsChatPerformanceBenchmarkOverride
                 ?? AppLaunchConfiguration(
@@ -1266,16 +1263,20 @@ final class AppModel {
             try? SakuraCordDatabase(accountID: accountID)
         }
         persistsEmojiPreferences = launchMode == .normal
-        favoriteEmojiKeys =
-            launchMode == .normal
-                ? Set(UserDefaults.standard.stringArray(forKey: "dev.sakuracord.favorite-emojis") ?? [])
-                : []
-        emojiUsageCounts =
+        let initialEmojiUsageCounts =
             launchMode == .normal
                 ? UserDefaults.standard.dictionary(forKey: "dev.sakuracord.emoji-usage")
                 as? [String: Int]
                 ?? [:]
                 : [:]
+        emojiUsageCounts = initialEmojiUsageCounts
+        if launchMode == .normal {
+            emojiRecentKeys = Self.loadEmojiRecents(
+                usageCounts: initialEmojiUsageCounts
+            )
+        } else {
+            emojiRecentKeys = []
+        }
         // A normal launch does not know the account yet. Opening the historical
         // account-1 fallback here only to replace it during credential restore
         // duplicates filesystem and SQLite work on every startup.
@@ -1291,5 +1292,29 @@ final class AppModel {
                 await self?.installMediaDeviceSnapshot(snapshot)
             }
         }
+    }
+}
+
+extension AppModel {
+    var incomingPrivateCalls: [PrivateCall] {
+        guard let currentUserID = snapshot?.currentUser.id else { return [] }
+        return privateCallsByChannel.values
+            .filter {
+                !$0.isUnavailable
+                    && $0.isRinging(currentUserID)
+                    && activeVoiceChannel?.id != $0.channelID
+            }
+            .sorted { $0.channelID.rawValue < $1.channelID.rawValue }
+    }
+
+    func privateCall(in channelID: ChannelID) -> PrivateCall? {
+        guard let call = privateCallsByChannel[channelID], !call.isUnavailable else {
+            return nil
+        }
+        return call
+    }
+
+    func isPrivateCallActionInFlight(in channelID: ChannelID) -> Bool {
+        privateCallActionChannelIDs.contains(channelID)
     }
 }

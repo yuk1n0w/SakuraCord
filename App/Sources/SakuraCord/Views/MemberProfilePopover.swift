@@ -7,9 +7,26 @@ enum ProfilePresentationLayout {
     case inspector
 }
 
-struct ProfilePresentationContent: View {
+struct ProfilePresentationContent<Footer: View>: View {
     let presentation: ProfilePresentationState
     var layout: ProfilePresentationLayout = .popover
+    var maximumPopoverHeight: CGFloat = 560
+    var showsRoles = true
+    let footer: Footer
+
+    init(
+        presentation: ProfilePresentationState,
+        layout: ProfilePresentationLayout = .popover,
+        maximumPopoverHeight: CGFloat = 560,
+        showsRoles: Bool = true,
+        @ViewBuilder footer: () -> Footer
+    ) {
+        self.presentation = presentation
+        self.layout = layout
+        self.maximumPopoverHeight = maximumPopoverHeight
+        self.showsRoles = showsRoles
+        self.footer = footer()
+    }
 
     var body: some View {
         MemberProfilePopover(
@@ -17,25 +34,48 @@ struct ProfilePresentationContent: View {
             profile: presentation.profile,
             isLoading: presentation.isLoading,
             errorMessage: presentation.errorMessage,
-            layout: layout
+            layout: layout,
+            maximumPopoverHeight: maximumPopoverHeight,
+            showsRoles: showsRoles,
+            footer: footer
         )
     }
 }
 
-struct MemberProfilePopover: View {
-    static let preferredWidth: CGFloat = 330
+extension ProfilePresentationContent where Footer == EmptyView {
+    init(
+        presentation: ProfilePresentationState,
+        layout: ProfilePresentationLayout = .popover,
+        maximumPopoverHeight: CGFloat = 560,
+        showsRoles: Bool = true
+    ) {
+        self.init(
+            presentation: presentation,
+            layout: layout,
+            maximumPopoverHeight: maximumPopoverHeight,
+            showsRoles: showsRoles
+        ) {
+            EmptyView()
+        }
+    }
+}
+
+struct MemberProfilePopover<Footer: View>: View {
+    static var preferredWidth: CGFloat { 330 }
 
     let member: Member
     let profile: UserProfile?
     let isLoading: Bool
     let errorMessage: String?
     var layout: ProfilePresentationLayout = .popover
+    var maximumPopoverHeight: CGFloat = 560
+    var showsRoles = true
+    let footer: Footer
 
     @Environment(\.stablePopoverPresentationContext)
     private var popoverPresentationContext
+    @Environment(\.colorScheme) private var colorScheme
     @State private var contentHeight: CGFloat = 320
-
-    private let maximumHeight: CGFloat = 560
 
     var body: some View {
         Group {
@@ -46,7 +86,7 @@ struct MemberProfilePopover: View {
                         width: width,
                         height: min(
                             contentHeight + surfaceInset * 2,
-                            maximumHeight
+                            maximumPopoverHeight
                         )
                     )
                     .background { popoverBackground }
@@ -73,7 +113,7 @@ struct MemberProfilePopover: View {
                     cornerRadius: innerCornerRadius,
                     style: .continuous
                 )
-                    .fill(.black.opacity(0.64))
+                    .fill(ProfilePalette.innerSurfaceOverlay(for: colorScheme))
                     .padding(surfaceInset)
             }
 
@@ -83,7 +123,10 @@ struct MemberProfilePopover: View {
                         member: member,
                         profile: profile,
                         themeHexes: profileThemeHexes,
-                        avatarCutoutColor: ProfilePalette.innerSurfaceColor(themeHexes: profileThemeHexes),
+                        avatarCutoutColor: ProfilePalette.innerSurfaceColor(
+                            themeHexes: profileThemeHexes,
+                            colorScheme: colorScheme
+                        ),
                         topCornerRadius: layout == .popover ? 16 : 0,
                         statusBubbleWidth: statusBubbleWidth,
                         animatesRemoteMedia: animatesRemoteMedia
@@ -115,7 +158,7 @@ struct MemberProfilePopover: View {
                         if let bio = profile.bio, !bio.isEmpty {
                             ProfileAboutSection(bio: bio)
                         }
-                        if !profile.roles.isEmpty {
+                        if showsRoles, !profile.roles.isEmpty {
                             ProfileRolesSection(roles: profile.roles)
                                 .id(profile.id)
                         }
@@ -123,6 +166,8 @@ struct MemberProfilePopover: View {
                             ProfileConnectionsSection(accounts: profile.connectedAccounts)
                         }
                     }
+
+                    footer
                 }
                 .padding(.bottom, 14)
                 .background {
@@ -131,7 +176,7 @@ struct MemberProfilePopover: View {
                     }
                 }
             }
-            .scrollIndicators(contentHeight > maximumHeight ? .visible : .hidden)
+            .scrollIndicators(contentHeight > maximumPopoverHeight ? .visible : .hidden)
             .padding(surfaceInset)
 
             if let effect = profile?.effect {
@@ -240,18 +285,19 @@ private struct ProfileHeroSection: View {
                 .compositingGroup()
 
             HStack(alignment: .bottom, spacing: 6) {
-                DecoratedAvatarView(
-                    name: profile?.displayName ?? member.user.displayName,
-                    avatarURL: profile?.avatarURL ?? member.guildAvatarURL ?? member.user.avatarURL,
-                    decorationURL: profile?.user.avatarDecorationURL ?? member.user.avatarDecorationURL,
-                    size: 70,
-                    animatesDecoration: animatesRemoteMedia
-                )
-                .padding(3)
-                .overlay(alignment: .bottomTrailing) {
-                    PresenceIndicator(status: profile?.status ?? member.status, size: 15)
-                        .overlay(Circle().stroke(avatarCutoutColor, lineWidth: 2.5))
-                        .offset(x: -2, y: -2)
+                AvatarPresenceView(
+                    status: profile?.status ?? member.status,
+                    avatarSize: 70,
+                    indicatorSize: 15
+                ) {
+                    DecoratedAvatarView(
+                        name: profile?.displayName ?? member.user.displayName,
+                        avatarURL: profile?.avatarURL ?? member.guildAvatarURL ?? member.user.avatarURL,
+                        decorationURL: profile?.user.avatarDecorationURL ?? member.user.avatarDecorationURL,
+                        size: 70,
+                        animatesDecoration: animatesRemoteMedia
+                    )
+                    .padding(3)
                 }
                 .offset(y: -34)
 
@@ -372,7 +418,8 @@ private struct ProfileBanner: View {
                         url: url,
                         animates: animates,
                         maximumPixelDimension: 600,
-                        contentMode: .fill
+                        contentMode: .fill,
+                        accessibilityCategory: .decoration
                     )
                     .frame(width: width, height: ProfileBannerLayout.height)
                     .clipped()
@@ -427,6 +474,7 @@ private struct ProfileIdentitySection: View {
                     .font(.title2.weight(.bold))
                     .foregroundStyle(nameGradient)
                     .textSelection(.enabled)
+                    .tint(SakuraCordAccentColor.color)
                 if isBot {
                     Text("APP")
                         .font(.caption.weight(.bold))
@@ -765,9 +813,7 @@ private struct RoleChip: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Circle()
-                .fill(item.role.colorHex.map(Color.init(hex:)) ?? .secondary)
-                .frame(width: 10, height: 10)
+            RoleColorIndicator(colorHex: item.role.colorHex, size: 10)
             Text(item.name)
                 .font(.callout.weight(.medium))
                 .lineLimit(1)
@@ -1114,7 +1160,8 @@ private struct ProfileEffectOverlay: View {
                         AnimatedRemoteImage(
                             url: animation.sourceURL,
                             animates: animates,
-                            isLooping: animation.isLooping
+                            isLooping: animation.isLooping,
+                            accessibilityCategory: .decoration
                         )
                             .frame(
                                 width: frame.width,
@@ -1130,7 +1177,11 @@ private struct ProfileEffectOverlay: View {
                 .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
                 .clipped()
             } else if let url = effect.reducedMotionURL {
-                AnimatedRemoteImage(url: url, animates: animates)
+                AnimatedRemoteImage(
+                    url: url,
+                    animates: animates,
+                    accessibilityCategory: .decoration
+                )
                     .frame(width: proxy.size.width, height: proxy.size.height)
             } else if let url = effect.staticURL {
                 AsyncImage(url: url) { image in
@@ -1171,6 +1222,8 @@ private struct ProfileGuildIdentity: View {
 }
 
 private enum ProfilePalette {
+    private static let innerSurfaceThemeAmount = 0.36
+
     static func colors(themeHexes: [UInt32], accentHex: UInt32?) -> [Color] {
         if themeHexes.count >= 2 {
             return themeHexes.prefix(2).map(Color.init(hex:))
@@ -1188,11 +1241,17 @@ private enum ProfilePalette {
         return colors(themeHexes: themeHexes, accentHex: accentHex).reversed()
     }
 
-    static func innerSurfaceColor(themeHexes: [UInt32]) -> Color {
+    static func innerSurfaceOverlay(for colorScheme: ColorScheme) -> Color {
+        let base = colorScheme == .dark ? Color.black : Color.white
+        return base.opacity(1 - innerSurfaceThemeAmount)
+    }
+
+    static func innerSurfaceColor(themeHexes: [UInt32], colorScheme: ColorScheme) -> Color {
         guard let first = themeHexes.first else {
             return Color(nsColor: .windowBackgroundColor)
         }
-        return Color(hex: blend(first, with: 0x000000, colorAmount: 0.36))
+        let base: UInt32 = colorScheme == .dark ? 0x000000 : 0xFFFFFF
+        return Color(hex: blend(first, with: base, colorAmount: innerSurfaceThemeAmount))
     }
 
     private static func blend(_ color: UInt32, with base: UInt32, colorAmount: Double) -> UInt32 {

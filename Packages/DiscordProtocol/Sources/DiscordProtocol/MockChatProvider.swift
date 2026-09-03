@@ -8,13 +8,43 @@ public actor MockChatProvider: ChatProvider {
     private var membersByGuild: [GuildID: [Member]]
     private var emojisByGuild: [GuildID: [DiscordEmoji]]
     private var messagesByChannel: [ChannelID: [Message]]
+    private var pinnedAtByMessageID: [MessageID: Date]
+    private let pinMutationFailureStatus: Int?
     private var forumPostsByChannel: [ChannelID: [ForumPost]]
     private var profilesByUser: [UserID: UserProfile]
     private var privateCallsByChannel: [ChannelID: PrivateCall] = [:]
     private var favoriteGIFValues: [GIFSearchResult] = []
+    private var favoriteEmojiKeys: [String]?
     private var continuation: AsyncStream<ClientEvent>.Continuation?
     private var nextMessageID: UInt64
     public private(set) var typingRequests: [ChannelID] = []
+    public struct PinMutationRequest: Equatable, Sendable {
+        public var channelID: ChannelID
+        public var messageID: MessageID
+        public var isPinned: Bool
+    }
+
+    public private(set) var pinMutationRequests: [PinMutationRequest] = []
+    public struct VoiceJoinRequest: Equatable, Sendable {
+        public var channelID: ChannelID
+        public var guildID: GuildID?
+        public var selfMute: Bool
+        public var selfDeaf: Bool
+
+        public init(
+            channelID: ChannelID,
+            guildID: GuildID?,
+            selfMute: Bool,
+            selfDeaf: Bool
+        ) {
+            self.channelID = channelID
+            self.guildID = guildID
+            self.selfMute = selfMute
+            self.selfDeaf = selfDeaf
+        }
+    }
+
+    public private(set) var voiceJoinRequests: [VoiceJoinRequest] = []
     public struct AcknowledgementRequest: Equatable, Sendable {
         public var channelID: ChannelID
         public var messageID: MessageID
@@ -74,6 +104,8 @@ public actor MockChatProvider: ChatProvider {
         includesLongServerList: Bool = false,
         forumPostCount: Int? = nil,
         timelineMessageCount: Int? = nil,
+        pinnedMessageCount: Int? = nil,
+        pinMutationFailureStatus: Int? = nil,
         timelineIncludesAnimatedMedia: Bool = false,
         includesIncomingPrivateCall: Bool = false
     ) {
@@ -83,11 +115,25 @@ public actor MockChatProvider: ChatProvider {
             timelineIncludesAnimatedMedia: timelineIncludesAnimatedMedia
         )
         currentUser = fixture.currentUser
+        self.pinMutationFailureStatus = pinMutationFailureStatus
         nextMessageID = UInt64(ClientNonce.make()) ?? 9000
         snapshot = fixture.snapshot
         membersByGuild = fixture.membersByGuild
         emojisByGuild = fixture.emojisByGuild
         messagesByChannel = fixture.messagesByChannel
+        if let pinnedMessageCount,
+           var messages = messagesByChannel[ChannelID(rawValue: 210)]
+        {
+            for index in messages.indices.suffix(max(0, pinnedMessageCount)) {
+                messages[index].isPinned = true
+            }
+            messagesByChannel[ChannelID(rawValue: 210)] = messages
+        }
+        pinnedAtByMessageID = Dictionary(
+            uniqueKeysWithValues: messagesByChannel.values.flatMap { messages in
+                messages.filter(\.isPinned).map { ($0.id, $0.timestamp) }
+            }
+        )
         let forumFixture = Self.makeForumPosts(
             channelID: ChannelID(rawValue: 220),
             authors: fixture.membersByGuild[GuildID(rawValue: 100)]?.map(\.user) ?? [
@@ -182,7 +228,7 @@ public actor MockChatProvider: ChatProvider {
 
     public func emojiUserSettings() async throws -> EmojiUserSettings {
         EmojiUserSettings(
-            favoriteKeys: [
+            favoriteKeys: favoriteEmojiKeys ?? [
                 "custom:900000000000000201", "white_check_mark", "x", "neutral_face",
                 "broken_heart", "hot_face",
                 "smiling_face_with_3_hearts", "cry", "fire", "thumbsup", "sob",
@@ -200,6 +246,19 @@ public actor MockChatProvider: ChatProvider {
                 }
             )
         )
+    }
+
+    public func setEmojiFavorite(
+        _ key: String,
+        isFavorite: Bool
+    ) async throws -> EmojiUserSettings {
+        var settings = try await emojiUserSettings()
+        settings.favoriteKeys.removeAll { $0 == key }
+        if isFavorite {
+            settings.favoriteKeys.append(key)
+        }
+        favoriteEmojiKeys = settings.favoriteKeys
+        return settings
     }
 
     public func acknowledge(
@@ -1023,7 +1082,9 @@ public actor MockChatProvider: ChatProvider {
             choices = try await channels(in: guildID).map {
                 ComponentSelectOption(
                     label: "#\($0.name)",
-                    value: String($0.id.rawValue)
+                    value: String($0.id.rawValue),
+                    imageURL: $0.iconURL,
+                    imageShape: .roundedRectangle
                 )
             }
         }
@@ -1058,7 +1119,8 @@ public actor MockChatProvider: ChatProvider {
         ComponentSelectOption(
             label: member.user.displayName,
             value: String(member.id.rawValue),
-            description: "@\(member.user.username)"
+            description: "@\(member.user.username)",
+            imageURL: member.user.avatarURL
         )
     }
 
@@ -1067,7 +1129,9 @@ public actor MockChatProvider: ChatProvider {
     ) -> ComponentSelectOption {
         ComponentSelectOption(
             label: "@\(role.name)",
-            value: String(role.id.rawValue)
+            value: String(role.id.rawValue),
+            imageURL: role.iconURL,
+            imageShape: .roundedRectangle
         )
     }
 
@@ -1604,6 +1668,12 @@ public extension MockChatProvider {
         }) else {
             throw ChatProviderError.invalidRequest("That demo voice channel is unavailable.")
         }
+        voiceJoinRequests.append(VoiceJoinRequest(
+            channelID: channelID,
+            guildID: guildID,
+            selfMute: selfMute,
+            selfDeaf: selfDeaf
+        ))
         let state = VoiceParticipantState(
             userID: currentUser.id,
             channelID: channelID,
@@ -1743,5 +1813,62 @@ public extension MockChatProvider {
         continuation?.yield(.connectionChanged(.disconnected))
         continuation?.finish()
         continuation = nil
+    }
+}
+
+public extension MockChatProvider {
+    func pinnedMessages(
+        in channelID: ChannelID,
+        before: Date?,
+        limit: Int
+    ) async throws -> PinnedMessagePage {
+        guard snapshot.channels.contains(where: { $0.id == channelID })
+                || messagesByChannel[channelID] != nil
+        else { throw ChatProviderError.channelNotFound }
+        let boundedLimit = min(max(limit, 1), 50)
+        let values = (messagesByChannel[channelID] ?? []).compactMap { message -> PinnedMessage? in
+            guard let pinnedAt = pinnedAtByMessageID[message.id],
+                  before.map({ pinnedAt < $0 }) ?? true
+            else { return nil }
+            var pinned = message
+            pinned.isPinned = true
+            return PinnedMessage(pinnedAt: pinnedAt, message: pinned)
+        }.sorted {
+            if $0.pinnedAt != $1.pinnedAt { return $0.pinnedAt > $1.pinnedAt }
+            return $0.message.id > $1.message.id
+        }
+        return PinnedMessagePage(
+            items: Array(values.prefix(boundedLimit)),
+            hasMore: values.count > boundedLimit
+        )
+    }
+
+    func setMessagePinned(
+        _ isPinned: Bool,
+        messageID: MessageID,
+        channelID: ChannelID
+    ) async throws {
+        guard var messages = messagesByChannel[channelID],
+              let index = messages.firstIndex(where: { $0.id == messageID })
+        else { throw ChatProviderError.messageNotFound }
+        pinMutationRequests.append(.init(
+            channelID: channelID,
+            messageID: messageID,
+            isPinned: isPinned
+        ))
+        if let pinMutationFailureStatus {
+            throw ChatProviderError.transport(
+                status: pinMutationFailureStatus,
+                requestID: nil
+            )
+        }
+        messages[index].isPinned = isPinned
+        messagesByChannel[channelID] = messages
+        if isPinned {
+            pinnedAtByMessageID[messageID] = .now
+        } else {
+            pinnedAtByMessageID[messageID] = nil
+        }
+        continuation?.yield(.messageUpdated(messages[index]))
     }
 }

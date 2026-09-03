@@ -5,6 +5,7 @@ import SwiftUI
 struct VoiceControlBar<SettingsControl: View>: View {
     let model: AppModel
     let settingsControl: SettingsControl
+    @Environment(\.openSettings) private var openSettings
     @State private var showConnectionDetails = false
     @State private var showInputControls = false
     @State private var showOutputControls = false
@@ -135,13 +136,13 @@ struct VoiceControlBar<SettingsControl: View>: View {
     }
 
     @ViewBuilder private var cameraMenu: some View {
-        Button("System Default") { Task { await model.selectCamera(nil) } }
+        Button("System Default") { Task { _ = await model.selectCamera(nil) } }
         Divider()
         ForEach(model.mediaDevices.cameras) { camera in
             Button {
-                Task { await model.selectCamera(camera) }
+                Task { _ = await model.selectCamera(camera) }
             } label: {
-                if camera.uniqueID == UserDefaults.standard.string(forKey: "voiceCameraUID") {
+                if camera.uniqueID == model.selectedCameraUID {
                     Label(camera.name, systemImage: "checkmark")
                 } else {
                     Text(camera.name)
@@ -149,7 +150,12 @@ struct VoiceControlBar<SettingsControl: View>: View {
             }
         }
         Divider()
-        SettingsLink { Label("Voice & Video Settings…", systemImage: "gearshape") }
+        Button {
+            SettingsNavigationRouter.shared.open(page: .voiceVideo)
+            openSettings()
+        } label: {
+            Label("Voice & Video Settings…", systemImage: "gearshape")
+        }
     }
 
     private var connectionSubtitle: String {
@@ -193,6 +199,9 @@ struct VoiceControlBar<SettingsControl: View>: View {
     }
 }
 
+/// The compact sidebar voice status used beside the custom account and music
+/// controls. The full upstream control deck belongs in the call itself; the
+/// always-visible sidebar only needs state, destination and disconnect.
 struct VoiceSidebarStatus: View {
     let model: AppModel
 
@@ -235,9 +244,7 @@ struct VoiceSidebarStatus: View {
         let channel = model.activeVoiceChannel?.name ?? "Voice"
         guard let guildID = model.activeVoiceChannel?.guildID,
               let guild = model.snapshot?.guilds.first(where: { $0.id == guildID })
-        else {
-            return channel
-        }
+        else { return channel }
         return "\(channel) / \(guild.name)"
     }
 
@@ -275,8 +282,273 @@ struct VoiceSidebarStatus: View {
     }
 }
 
+struct VoiceSidebarControlPanel: View {
+    let model: AppModel
+    let navigateToChannel: () -> Void
+    @State private var isHeaderHovering = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Button(action: navigateToChannel) {
+                HStack(spacing: 9) {
+                    Image(systemName: statusSymbol)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(statusColor)
+                        .frame(width: 24)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(statusLabel)
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(statusColor)
+                            .lineLimit(1)
+                        Text(connectionSubtitle)
+                            .font(.caption)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        connectionDuration
+                    }
+
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
+                .contentShape(Rectangle())
+                .background(
+                    Color.primary.opacity(isHeaderHovering ? 0.09 : 0)
+                )
+            }
+            .buttonStyle(.plain)
+            .onHover { hovering in
+                withAnimation(.snappy(duration: 0.14)) {
+                    isHeaderHovering = hovering
+                }
+            }
+            .help("Open \(connectionSubtitle)")
+
+            GeometryReader { proxy in
+                let spacing = Self.controlSpacing(for: proxy.size.width)
+                let diameter = Self.controlDiameter(
+                    for: proxy.size.width,
+                    spacing: spacing
+                )
+
+                HStack(spacing: spacing) {
+                    SidebarVoiceGlassButton(
+                        systemImage: model.localApplicationStreamKey == nil
+                            ? "rectangle.on.rectangle" : "rectangle.on.rectangle.slash",
+                        help: model.localApplicationStreamKey == nil
+                            ? "Share Screen" : "Screen Share Options",
+                        diameter: diameter,
+                        tintColor: model.localApplicationStreamKey != nil
+                            ? Color(hex: 0x5865F2) : nil,
+                        isDisabled: model.voiceSessionState != .connected
+                            && model.localApplicationStreamKey == nil
+                    ) {
+                        Task { await model.presentScreenSharePreview() }
+                    }
+
+                    SidebarVoiceGlassButton(
+                        systemImage: model.isCameraEnabled
+                            ? "video.fill" : "video.slash.fill",
+                        help: model.isCameraEnabled
+                            ? "Turn Off Camera" : "Turn On Camera",
+                        diameter: diameter,
+                        tintColor: model.isCameraEnabled
+                            ? Color(hex: 0x23A55A) : nil,
+                        isDisabled: model.voiceSessionState != .connected
+                            && !model.isCameraEnabled
+                    ) {
+                        Task { await model.toggleCamera() }
+                    }
+
+                    SidebarVoiceGlassButton(
+                        systemImage: model.isVoiceMuted ? "mic.slash.fill" : "mic.fill",
+                        help: model.isVoiceMuted ? "Unmute" : "Mute",
+                        diameter: diameter,
+                        isAlert: model.isVoiceMuted
+                    ) {
+                        Task { await model.toggleVoiceMute() }
+                    }
+
+                    SidebarVoiceGlassButton(
+                        systemImage: model.isVoiceDeafened
+                            ? "headphones.slash" : "headphones",
+                        help: model.isVoiceDeafened ? "Undeafen" : "Deafen",
+                        diameter: diameter,
+                        isAlert: model.isVoiceDeafened
+                    ) {
+                        Task { await model.toggleVoiceDeafen() }
+                    }
+
+                    SidebarVoiceGlassButton(
+                        systemImage: "phone.down.fill",
+                        help: "Disconnect",
+                        diameter: diameter,
+                        role: .destructive
+                    ) {
+                        Task { await model.leaveVoice() }
+                    }
+                }
+                .padding(.horizontal, Self.controlHorizontalPadding)
+                .frame(
+                    width: proxy.size.width,
+                    height: proxy.size.height
+                )
+            }
+            .frame(height: 46)
+        }
+        .clipShape(panelShape)
+        .glassEffect(
+            .regular,
+            in: panelShape
+        )
+    }
+
+    @ViewBuilder
+    private var connectionDuration: some View {
+        if let connectedAt = model.voiceConnectedAt {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text(Self.durationLabel(from: connectedAt, to: context.date))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        }
+    }
+
+    private var connectionSubtitle: String {
+        let channel = model.activeVoiceChannel?.name ?? "Voice"
+        guard let guildID = model.activeVoiceChannel?.guildID,
+              let guild = model.snapshot?.guilds.first(where: { $0.id == guildID })
+        else {
+            return channel
+        }
+        return "\(channel) / \(guild.name)"
+    }
+
+    private var statusLabel: String {
+        switch model.voiceSessionState {
+        case .connecting: "Connecting…"
+        case .reconnecting: "Reconnecting…"
+        case .failed: "Connection Failed"
+        case .disconnected: "Disconnected"
+        default: "Voice Connected"
+        }
+    }
+
+    private var statusColor: Color {
+        switch model.voiceSessionState {
+        case .connecting, .reconnecting: Color(hex: 0xF0B232)
+        case .failed, .disconnected: Color(hex: 0xDA373C)
+        default: Color(hex: 0x23A55A)
+        }
+    }
+
+    private var statusSymbol: String {
+        switch model.voiceSessionState {
+        case .connecting, .reconnecting: "arrow.triangle.2.circlepath.circle.fill"
+        case .failed, .disconnected: "wifi.exclamationmark"
+        default: "wifi"
+        }
+    }
+
+    private var panelShape: ConcentricRectangle {
+        ConcentricRectangle(
+            cornerRadius: SidebarAccountControlMetrics.cornerRadius,
+            style: .continuous
+        )
+    }
+
+    private static let controlCount: CGFloat = 5
+    private static let controlHorizontalPadding: CGFloat = 6
+    private static let preferredControlDiameter: CGFloat = 36
+    private static let preferredControlSpacing: CGFloat = 7
+    private static let minimumControlSpacing: CGFloat = 2
+
+    private static func controlSpacing(for width: CGFloat) -> CGFloat {
+        let contentWidth = max(0, width - (controlHorizontalPadding * 2))
+        return min(
+            preferredControlSpacing,
+            max(minimumControlSpacing, contentWidth * 0.025)
+        )
+    }
+
+    private static func controlDiameter(
+        for width: CGFloat,
+        spacing: CGFloat
+    ) -> CGFloat {
+        let contentWidth = max(0, width - (controlHorizontalPadding * 2))
+        let totalSpacing = spacing * (controlCount - 1)
+        return min(
+            preferredControlDiameter,
+            max(0, (contentWidth - totalSpacing) / controlCount)
+        )
+    }
+
+    private static func durationLabel(from start: Date, to end: Date) -> String {
+        let elapsed = max(0, Int(end.timeIntervalSince(start)))
+        let hours = elapsed / 3_600
+        let minutes = (elapsed % 3_600) / 60
+        let seconds = elapsed % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        }
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+}
+
+private struct SidebarVoiceGlassButton: View {
+    let systemImage: String
+    let help: String
+    let diameter: CGFloat
+    var role: ButtonRole?
+    var isAlert = false
+    var tintColor: Color?
+    var isDisabled = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(role: role, action: action) {
+            Image(systemName: systemImage)
+                .symbolVariant(.none)
+                .font(.callout.weight(.semibold))
+                .frame(width: diameter, height: diameter)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(foregroundColor)
+        .glassEffect(
+            glass,
+            in: Circle()
+        )
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.42 : 1)
+        .help(help)
+        .accessibilityLabel(help)
+    }
+
+    private var effectiveTint: Color? {
+        tintColor ?? (isAlert ? Color(hex: 0xF23F43) : nil)
+    }
+
+    private var foregroundColor: Color {
+        role == .destructive ? .white : (effectiveTint ?? .primary)
+    }
+
+    private var glass: Glass {
+        if role == .destructive {
+            return .regular.tint(Color(hex: 0xDA373C)).interactive()
+        }
+        if let effectiveTint {
+            return .regular.tint(effectiveTint.opacity(0.18)).interactive()
+        }
+        return .regular.interactive()
+    }
+}
+
 struct VoiceCallControlDock: View {
     let model: AppModel
+    @Environment(\.openSettings) private var openSettings
     @State private var showInputControls = false
     @State private var showOutputControls = false
     @State private var showCameraControls = false
@@ -284,11 +556,23 @@ struct VoiceCallControlDock: View {
 
     var body: some View {
         GlassEffectContainer(spacing: 8) {
-            HStack(spacing: 8) {
+            ViewThatFits(in: .horizontal) {
+                controlRow(showsTitles: true)
+                    .fixedSize(horizontal: true, vertical: false)
+                controlRow(showsTitles: false)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func controlRow(showsTitles: Bool) -> some View {
+        HStack(spacing: 8) {
                 if model.localApplicationStreamKey == nil {
                     CallDockButton(
                         title: "Share Screen",
-                        systemImage: "rectangle.on.rectangle"
+                        systemImage: "rectangle.on.rectangle",
+                        showsTitle: showsTitles
                     ) {
                         Task { await model.presentScreenSharePreview() }
                     }
@@ -300,6 +584,7 @@ struct VoiceCallControlDock: View {
                         isAlert: false,
                         tintColor: Color(hex: 0x5865F2),
                         isDisabled: false,
+                        showsTitle: showsTitles,
                         primaryAction: { Task { await model.stopScreenSharing() } },
                         secondaryAction: { showScreenShareControls.toggle() }
                     )
@@ -315,6 +600,7 @@ struct VoiceCallControlDock: View {
                     tintColor: model.isCameraEnabled ? Color(hex: 0x23A55A) : nil,
                     isDisabled: model.voiceSessionState != .connected
                         && !model.isCameraEnabled,
+                    showsTitle: showsTitles,
                     primaryAction: { Task { await model.toggleCamera() } },
                     secondaryAction: { showCameraControls.toggle() }
                 )
@@ -328,6 +614,7 @@ struct VoiceCallControlDock: View {
                     systemImage: model.isVoiceMuted ? "mic.slash.fill" : "mic.fill",
                     isAlert: model.isVoiceMuted,
                     tintColor: nil,
+                    showsTitle: showsTitles,
                     primaryAction: { Task { await model.toggleVoiceMute() } },
                     secondaryAction: { showInputControls.toggle() }
                 )
@@ -340,6 +627,7 @@ struct VoiceCallControlDock: View {
                     systemImage: model.isVoiceDeafened ? "headphones.slash" : "headphones",
                     isAlert: model.isVoiceDeafened,
                     tintColor: nil,
+                    showsTitle: showsTitles,
                     primaryAction: { Task { await model.toggleVoiceDeafen() } },
                     secondaryAction: { showOutputControls.toggle() }
                 )
@@ -347,36 +635,20 @@ struct VoiceCallControlDock: View {
                     VoiceOutputControls(model: model)
                 }
 
-                Button(role: .destructive) {
+                CallDockLeaveButton(showsTitle: showsTitles) {
                     Task { await model.leaveVoice() }
-                } label: {
-                    Label("Leave", systemImage: "phone.down.fill")
-                        .font(.callout.weight(.semibold))
-                        .padding(.horizontal, 15)
-                        .frame(height: 40)
-                        .contentShape(Capsule())
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.white)
-                .glassEffect(
-                    .regular.tint(Color(hex: 0xDA373C)).interactive(),
-                    in: Capsule()
-                )
-                .help("Disconnect")
             }
-        }
-        .fixedSize(horizontal: true, vertical: false)
-        .frame(maxWidth: .infinity)
     }
 
     @ViewBuilder private var cameraMenu: some View {
-        Button("System Default") { Task { await model.selectCamera(nil) } }
+        Button("System Default") { Task { _ = await model.selectCamera(nil) } }
         Divider()
         ForEach(model.mediaDevices.cameras) { camera in
             Button {
-                Task { await model.selectCamera(camera) }
+                Task { _ = await model.selectCamera(camera) }
             } label: {
-                if camera.uniqueID == UserDefaults.standard.string(forKey: "voiceCameraUID") {
+                if camera.uniqueID == model.selectedCameraUID {
                     Label(camera.name, systemImage: "checkmark")
                 } else {
                     Text(camera.name)
@@ -384,7 +656,12 @@ struct VoiceCallControlDock: View {
             }
         }
         Divider()
-        SettingsLink { Label("Voice & Video Settings…", systemImage: "gearshape") }
+        Button {
+            SettingsNavigationRouter.shared.open(page: .voiceVideo)
+            openSettings()
+        } label: {
+            Label("Voice & Video Settings…", systemImage: "gearshape")
+        }
     }
 }
 
@@ -465,7 +742,7 @@ private struct ScreenShareControlsPopover: View {
                     Image(systemName: model.screenShareSettings.includesAudio
                         ? "checkmark.square.fill" : "square")
                         .foregroundStyle(model.screenShareSettings.includesAudio
-                            ? Color.accentColor : Color.secondary)
+                            ? SakuraCordAccentColor.color : Color.secondary)
                 }
                 .padding(.horizontal, 8)
                 .frame(maxWidth: .infinity)
@@ -520,7 +797,7 @@ struct ScreenShareQualityPopover: View {
                         Spacer()
                         if model.screenShareSettings.quality == quality {
                             Image(systemName: "checkmark")
-                                .foregroundStyle(Color.accentColor)
+                                .foregroundStyle(SakuraCordAccentColor.color)
                         }
                     }
                     .padding(.horizontal, 8)
@@ -564,13 +841,21 @@ extension View {
 private struct CallDockButton: View {
     let title: String
     let systemImage: String
+    var showsTitle = true
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Label(title, systemImage: systemImage)
+            Group {
+                if showsTitle {
+                    Label(title, systemImage: systemImage)
+                } else {
+                    Label(title, systemImage: systemImage)
+                        .labelStyle(.iconOnly)
+                }
+            }
                 .font(.callout.weight(.medium))
-                .padding(.horizontal, 14)
+                .padding(.horizontal, showsTitle ? 14 : 13)
                 .frame(height: 40)
                 .contentShape(Capsule())
         }
@@ -586,16 +871,24 @@ private struct CallDockSplitButton: View {
     let isAlert: Bool
     var tintColor: Color?
     var isDisabled = false
+    var showsTitle = true
     let primaryAction: () -> Void
     let secondaryAction: () -> Void
 
     var body: some View {
         HStack(spacing: 0) {
             Button(action: primaryAction) {
-                Label(title, systemImage: systemImage)
+                Group {
+                    if showsTitle {
+                        Label(title, systemImage: systemImage)
+                    } else {
+                        Label(title, systemImage: systemImage)
+                            .labelStyle(.iconOnly)
+                    }
+                }
                     .font(.callout.weight(.medium))
-                    .padding(.leading, 14)
-                    .padding(.trailing, 10)
+                    .padding(.leading, showsTitle ? 14 : 13)
+                    .padding(.trailing, showsTitle ? 10 : 12)
                     .frame(height: 40)
                     .contentShape(Rectangle())
             }
@@ -625,6 +918,35 @@ private struct CallDockSplitButton: View {
 
     private var effectiveTint: Color? {
         tintColor ?? (isAlert ? Color(hex: 0xF23F43) : nil)
+    }
+}
+
+private struct CallDockLeaveButton: View {
+    let showsTitle: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(role: .destructive, action: action) {
+            Group {
+                if showsTitle {
+                    Label("Leave", systemImage: "phone.down.fill")
+                } else {
+                    Label("Leave", systemImage: "phone.down.fill")
+                        .labelStyle(.iconOnly)
+                }
+            }
+            .font(.callout.weight(.semibold))
+            .padding(.horizontal, showsTitle ? 15 : 14)
+            .frame(height: 40)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white)
+        .glassEffect(
+            .regular.tint(Color(hex: 0xDA373C)).interactive(),
+            in: Capsule()
+        )
+        .help("Disconnect")
     }
 }
 
@@ -747,7 +1069,7 @@ private struct VoiceInputControls: View {
                 title: "Input Device",
                 systemImage: "mic",
                 devices: model.mediaDevices.audioInputs,
-                selectedUID: UserDefaults.standard.string(forKey: "voiceInputDeviceUID"),
+                selectedUID: model.voiceVideoPreferences.inputDeviceUID,
                 select: { device in await model.selectInputDevice(device) }
             )
             VolumeControl(
@@ -781,7 +1103,7 @@ private struct VoiceOutputControls: View {
                 title: "Output Device",
                 systemImage: "speaker.wave.2",
                 devices: model.mediaDevices.audioOutputs,
-                selectedUID: UserDefaults.standard.string(forKey: "voiceOutputDeviceUID"),
+                selectedUID: model.voiceVideoPreferences.outputDeviceUID,
                 select: { device in await model.selectOutputDevice(device) }
             )
             VolumeControl(
@@ -813,8 +1135,8 @@ private struct VoiceCameraControls: View {
             Text("Camera").font(.headline)
             CameraDevicePicker(
                 devices: model.mediaDevices.cameras,
-                selectedUID: UserDefaults.standard.string(forKey: "voiceCameraUID"),
-                select: { camera in Task { await model.selectCamera(camera) } }
+                selectedUID: model.selectedCameraUID,
+                select: { camera in Task { _ = await model.selectCamera(camera) } }
             )
         }
         .padding(16)
@@ -839,6 +1161,7 @@ private struct VolumeControl: View {
             }
             .font(.caption)
             Slider(value: $value, in: 0 ... 2)
+                .tint(SakuraCordAccentColor.color)
         }
     }
 }

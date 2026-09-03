@@ -42,26 +42,43 @@ private final class ToolbarSearchFieldSkeletonOverlay: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.09).cgColor
         layer?.cornerRadius = 10
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = true
 
-        shimmerLayer.colors = [
-            NSColor.clear.cgColor,
-            NSColor.white.withAlphaComponent(0.04).cgColor,
-            NSColor.white.withAlphaComponent(0.2).cgColor,
-            NSColor.white.withAlphaComponent(0.04).cgColor,
-            NSColor.clear.cgColor,
-        ]
         shimmerLayer.startPoint = CGPoint(x: 0, y: 0.5)
         shimmerLayer.endPoint = CGPoint(x: 1, y: 0.5)
         layer?.addSublayer(shimmerLayer)
+        updateColorsForEffectiveAppearance()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateColorsForEffectiveAppearance()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateColorsForEffectiveAppearance()
+    }
+
+    private func updateColorsForEffectiveAppearance() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = NSColor.labelColor
+                .withAlphaComponent(0.09).cgColor
+            shimmerLayer.colors = [
+                NSColor.clear.cgColor,
+                NSColor.labelColor.withAlphaComponent(0.04).cgColor,
+                NSColor.labelColor.withAlphaComponent(0.2).cgColor,
+                NSColor.labelColor.withAlphaComponent(0.04).cgColor,
+                NSColor.clear.cgColor,
+            ]
+        }
     }
 
     override func layout() {
@@ -259,10 +276,6 @@ struct ToolbarSearchFieldMetrics: Equatable {
     let fieldWidth: CGFloat
     let trailingInset: CGFloat
 
-    var panelWidth: CGFloat {
-        fieldWidth + trailingInset
-    }
-
     var isValid: Bool {
         fieldWidth.isFinite
             && trailingInset.isFinite
@@ -346,6 +359,11 @@ struct ToolbarSearchFieldGeometryReader: NSViewRepresentable {
         private weak var searchToolbarItem: NSSearchToolbarItem?
         private var originalSearchToolbarItemIsHidden: Bool?
         private var appliedSearchToolbarItemIsHidden: Bool?
+        private weak var sizedSearchToolbarItem: NSSearchToolbarItem?
+        private weak var sizedSearchField: NSSearchField?
+        private var originalPreferredSearchFieldWidth: CGFloat?
+        private var appliedPreferredSearchFieldWidth: CGFloat?
+        private var searchFieldWidthConstraint: NSLayoutConstraint?
         private var observers: [NSObjectProtocol] = []
         private var searchFieldDelegateProxy: ToolbarSearchFieldDelegateProxy?
         private var retryTask: Task<Void, Never>?
@@ -416,6 +434,7 @@ struct ToolbarSearchFieldGeometryReader: NSViewRepresentable {
             observers.removeAll()
             restoreSearchFieldDelegate()
             restoreSearchToolbarItemVisibility()
+            restoreSearchToolbarItemSizing()
             restoreMenuPatches(&mainMenuPatches)
             restoreMenuPatches(&trackingMenuPatches)
             searchField = nil
@@ -573,6 +592,14 @@ struct ToolbarSearchFieldGeometryReader: NSViewRepresentable {
                 searchToolbarItem = item
                 originalSearchToolbarItemIsHidden = item.isHidden
             }
+            if sizedSearchToolbarItem !== item
+                || sizedSearchField !== item.searchField
+            {
+                _ = updateSearchToolbarItemSizing(
+                    item,
+                    width: ChatChromeMetrics.toolbarSearchMaximumFieldWidth
+                )
+            }
             let isHidden = isToolbarItemVisible
                 ? (originalSearchToolbarItemIsHidden ?? false)
                 : true
@@ -601,6 +628,40 @@ struct ToolbarSearchFieldGeometryReader: NSViewRepresentable {
             return true
         }
 
+        private func updateSearchToolbarItemSizing(
+            _ item: NSSearchToolbarItem,
+            width: CGFloat
+        ) -> Bool {
+            if sizedSearchToolbarItem !== item {
+                restoreSearchToolbarItemSizing()
+                sizedSearchToolbarItem = item
+                originalPreferredSearchFieldWidth =
+                    item.preferredWidthForSearchField
+            }
+
+            let field = item.searchField
+            if sizedSearchField !== field {
+                searchFieldWidthConstraint?.isActive = false
+                sizedSearchField = field
+                let constraint = field.widthAnchor.constraint(
+                    equalToConstant: width
+                )
+                constraint.identifier = "SakuraCord.ToolbarSearchFieldWidth"
+                constraint.isActive = true
+                searchFieldWidthConstraint = constraint
+            } else if let searchFieldWidthConstraint,
+                      abs(searchFieldWidthConstraint.constant - width) > 0.5
+            {
+                searchFieldWidthConstraint.constant = width
+            } else {
+                return false
+            }
+
+            item.preferredWidthForSearchField = width
+            appliedPreferredSearchFieldWidth = width
+            return true
+        }
+
         private func restoreSearchToolbarItemVisibility() {
             if let searchToolbarItem,
                let originalSearchToolbarItemIsHidden,
@@ -612,6 +673,24 @@ struct ToolbarSearchFieldGeometryReader: NSViewRepresentable {
             searchToolbarItem = nil
             originalSearchToolbarItemIsHidden = nil
             appliedSearchToolbarItemIsHidden = nil
+        }
+
+        private func restoreSearchToolbarItemSizing() {
+            searchFieldWidthConstraint?.isActive = false
+            searchFieldWidthConstraint = nil
+            sizedSearchField = nil
+            if let sizedSearchToolbarItem,
+               let originalPreferredSearchFieldWidth,
+               let appliedPreferredSearchFieldWidth,
+               sizedSearchToolbarItem.preferredWidthForSearchField
+                == appliedPreferredSearchFieldWidth
+            {
+                sizedSearchToolbarItem.preferredWidthForSearchField =
+                    originalPreferredSearchFieldWidth
+            }
+            sizedSearchToolbarItem = nil
+            originalPreferredSearchFieldWidth = nil
+            appliedPreferredSearchFieldWidth = nil
         }
 
         private func updateMetrics(_ metrics: ToolbarSearchFieldMetrics) {

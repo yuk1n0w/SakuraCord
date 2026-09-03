@@ -21,6 +21,18 @@ extension NativeTimelineCanvasView {
         }
     }
 
+    func setHoveredAuthorMessageID(_ value: MessageID?) {
+        guard hoveredAuthorMessageID != value else { return }
+        let old = hoveredAuthorMessageID
+        hoveredAuthorMessageID = value
+        for messageID in [old, value].compactMap({ $0 }) {
+            guard let index = items.firstIndex(where: {
+                $0.messageID == messageID
+            }) else { continue }
+            setNeedsDisplay(rowFrame(at: index))
+        }
+    }
+
     func setHoveredMention(
         _ value: NativeTimelineMentionHover?
     ) {
@@ -185,7 +197,11 @@ extension NativeTimelineCanvasView {
                   let messageID = actionCapsuleMessageID,
                   let index = items.firstIndex(where: {
                       $0.messageID == messageID
-                  })
+                  }),
+                  case let .message(row, _, _) = items[index],
+                  MessageOutboxPresentation.interactionMode(
+                    for: row.message.outboxState
+                  ).allowsHoverActions
             else {
                 removeActionCapsule()
                 return
@@ -199,9 +215,13 @@ extension NativeTimelineCanvasView {
                     items.firstIndex(where: {
                         $0.messageID == messageID
                     })
-                }),
+                })
+                ?? persistentActionCapsuleRow(),
               items.indices.contains(index),
               case let .message(row, _, _) = items[index],
+              MessageOutboxPresentation.interactionMode(
+                for: row.message.outboxState
+              ).allowsHoverActions,
               let model,
               let actions
         else {
@@ -223,6 +243,24 @@ extension NativeTimelineCanvasView {
             model: model,
             actions: actions
         )
+    }
+
+    private func persistentActionCapsuleRow() -> Int? {
+        guard model?.interfaceSettings.messageActionVisibility == .always,
+              !items.isEmpty
+        else { return nil }
+        let viewport = enclosingScrollView?.documentVisibleRect ?? visibleRect
+        guard var index = rowIndex(at: max(0, viewport.maxY - 1)) else {
+            return nil
+        }
+        while items.indices.contains(index) {
+            if case .message = items[index] {
+                return index
+            }
+            guard index > items.startIndex else { break }
+            index -= 1
+        }
+        return nil
     }
 
     private func installActionCapsule(
@@ -247,15 +285,28 @@ extension NativeTimelineCanvasView {
             }
         }
         let canEdit = row.message.author.id == model.snapshot?.currentUser.id
+            && MessageReplyPresentationPolicy.allowsReplyAction(
+                for: row.message
+            )
+        let canDelete = model.canDeleteMessage(row.message)
         let jumpToMessage = actions.openMessage.map { openMessage in
             { openMessage(row.message) }
+        }
+        let unpinMessage: (() -> Void)? = if messageInteractionContext == .pinnedResult,
+                                            model.canManagePins(for: row.message)
+        {
+            { actions.togglePin(row.message) }
+        } else {
+            nil
         }
         let retry = row.message.outboxState == .failed
             ? { actions.retry(row.message) }
             : nil
-        let reply = actions.reply.map { reply in
+        let reply = MessageReplyPresentationPolicy.allowsReplyAction(
+            for: row.message
+        ) ? actions.reply.map { reply in
             { reply(row.message) }
-        }
+        } : nil
         let forward = model.canForward(row.message)
             ? actions.forward.map { forward in
                 { forward(row.message) }
@@ -268,8 +319,10 @@ extension NativeTimelineCanvasView {
             model: model,
             message: row.message,
             canEdit: canEdit,
+            canDelete: canDelete,
             state: state,
             jumpToMessage: jumpToMessage,
+            unpinMessage: unpinMessage,
             retry: retry,
             edit: { [weak self] in
                 self?.beginEditing(row: row, at: index)
@@ -299,15 +352,19 @@ extension NativeTimelineCanvasView {
         actionCapsuleHost = host
         actionCapsuleMessageID = row.id
         let controlCount = jumpToMessage == nil
-            ? 3
+            ? (row.message.outboxState == .failed
+                ? 2
+                : 3
                 + (retry == nil ? 0 : 1)
                 + (reply == nil ? 0 : 1)
                 + (forward == nil ? 0 : 1)
-                + (canEdit ? 2 : 0)
-                + (openThread == nil ? 0 : 1)
-            : 1
+                + (canEdit ? 1 : 0)
+                + (canDelete ? 1 : 0)
+                + (openThread == nil ? 0 : 1))
+            : 1 + (unpinMessage == nil ? 0 : 1)
         actionCapsuleSize = HoverActionPillMetrics.size(
-            controlCount: controlCount
+            controlCount: controlCount,
+            enlarged: model.accessibilitySettings.enlargesMessageActionTargets
         )
         positionActionCapsule(at: index)
     }
@@ -347,14 +404,28 @@ extension NativeTimelineCanvasView {
                 ? bubble.minX - 8 - size.width
                 : bubble.maxX + 8
             originX = min(max(0, preferred), max(0, bounds.width - size.width))
+        } else if let bubble = layout.bubbleRegion {
+            originX = min(
+                max(8, bubble.frame.maxX - size.width),
+                max(8, bounds.width - 8 - size.width)
+            )
         } else {
             originX = max(0, bounds.width - 14 - size.width)
         }
+        let originY: CGFloat
+        if layout.messageBubbleFrame == nil, let bubble = layout.bubbleRegion {
+            originY = max(
+                0,
+                displayedRowOrigin(at: index) + bubble.frame.minY - size.height + 7
+            )
+        } else {
+            originY = displayedRowOrigin(at: index)
+                + (layout.highlightFrame?.minY ?? 0)
+                - 13
+        }
         host.frame = CGRect(
             x: originX,
-            y: displayedRowOrigin(at: index)
-                + (layout.highlightFrame?.minY ?? 0)
-                - 13,
+            y: originY,
             width: size.width,
             height: size.height
         )
@@ -1212,11 +1283,32 @@ extension NativeTimelineCanvasView {
 
     func requestDelete(_ message: Message) {
         guard let window, let actions else { return }
+        requestDelete(
+            message,
+            in: window,
+            perform: actions.delete
+        )
+    }
+
+    func requestDiscardFailed(_ message: Message) {
+        guard let window, let actions else { return }
+        requestDelete(
+            message,
+            in: window,
+            perform: actions.discardFailed
+        )
+    }
+
+    private func requestDelete(
+        _ message: Message,
+        in window: NSWindow,
+        perform delete: @escaping (Message) -> Void
+    ) {
         removeActionCapsule()
         if MessageDeleteConfirmationPolicy.isBypassed(
             by: NSEvent.modifierFlags
         ) {
-            actions.delete(message)
+            delete(message)
             return
         }
         let alert = NSAlert()
@@ -1236,7 +1328,7 @@ extension NativeTimelineCanvasView {
             else { return }
             alert.beginSheetModal(for: window) { response in
                 guard response == .alertFirstButtonReturn else { return }
-                actions.delete(message)
+                delete(message)
             }
         }
     }

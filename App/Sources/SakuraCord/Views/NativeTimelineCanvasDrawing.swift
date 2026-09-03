@@ -209,6 +209,7 @@ extension NativeTimelineCanvasView {
         reconcileLoadingIndicators()
         positionSpoilerOverlays()
         reconcileGlassBubbles()
+        componentChoiceOverlay?.repositionWithAnchor()
         needsDisplay = true
         redrawMovedShortContentSynchronously(
             from: oldOriginY,
@@ -269,6 +270,7 @@ extension NativeTimelineCanvasView {
         mentionPointerRegionCache.removeAll(keepingCapacity: true)
         codeBlockPointerRegionCache.removeAll(keepingCapacity: true)
         invalidateVisibleMediaProjection(keepingCapacity: true)
+        removeAccessibilityProxies()
         presentationCacheInvalidationCount += 1
         needsDisplay = true
     }
@@ -332,11 +334,8 @@ extension NativeTimelineCanvasView {
         for overlay in animatedMediaOverlays.values {
             overlay.setPlaybackSuppressed(true)
         }
-        // Setting the flag only prevents future installation. Existing
-        // in-visible-rect areas otherwise remain registered, so AppKit walks
-        // and hit-tests the moving timeline under a stationary pointer on
-        // every scroll transaction even though no hover can be presented.
-        // Tear them and their cursor regions down immediately.
+        // Remove existing tracking areas too so AppKit does not hit-test the
+        // moving timeline under a stationary pointer during scrolling.
         updateTrackingAreas()
         window?.invalidateCursorRects(for: self)
         cancelReactionCountAnimations()
@@ -447,7 +446,7 @@ extension NativeTimelineCanvasView {
             reactionHoverCoordinator.close()
             closeMessageProfilePopover()
             closeMentionPopover()
-            closeComponentChoicePopover()
+            closeComponentChoiceOverlay()
         }
         if isBlocked, mediaViewerHighlightedMessageID == nil {
             removeActionCapsule()
@@ -549,7 +548,7 @@ extension NativeTimelineCanvasView {
             reactionPickerCoordinator.close(notifyBinding: false)
             reactionHoverCoordinator.close()
             closeMessageProfilePopover()
-            closeComponentChoicePopover()
+            closeComponentChoiceOverlay()
             closeMentionPopover()
             reactionPickerSource.frame = .zero
             pointer.clearHoverAndPressTargets()
@@ -560,10 +559,9 @@ extension NativeTimelineCanvasView {
         super.viewWillMove(toWindow: newWindow)
     }
 
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        if window != nil {
-            installReactionMouseMonitor()
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        if superview != nil {
             Task { @MainActor [weak self] in
                 await Task.yield()
                 self?.reconcileAccessibilityProxiesIfActive()
@@ -571,9 +569,10 @@ extension NativeTimelineCanvasView {
         }
     }
 
-    override func viewDidMoveToSuperview() {
-        super.viewDidMoveToSuperview()
-        if superview != nil {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil {
+            installReactionMouseMonitor()
             Task { @MainActor [weak self] in
                 await Task.yield()
                 self?.reconcileAccessibilityProxiesIfActive()
@@ -703,28 +702,6 @@ extension NativeTimelineCanvasView {
         )
     }
 
-    func drawMessageJumpHighlight(at index: Int) {
-        guard let presentation = messageJumpHighlightPresentation(at: index)
-        else { return }
-        NSColor.controlAccentColor.withAlphaComponent(
-            0.12 * presentation.opacity
-        ).setFill()
-        // Follows the bubble's shape for the same reason the hover and
-        // mention highlights do: a square fill behind a rounded bubble reads
-        // as a box around it.
-        let radius = layouts.indices.contains(index)
-            ? layouts[index].highlightBackgroundCornerRadius
-            : 0
-        guard radius > 0 else {
-            presentation.frame.fill()
-            return
-        }
-        NSBezierPath(
-            concentricRoundedRect: presentation.frame,
-            cornerRadius: radius
-        ).fill()
-    }
-
     func firstVisibleMessage(
         in rect: CGRect,
         preferringVisibleOrigin: Bool = false
@@ -829,6 +806,7 @@ extension NativeTimelineCanvasView {
                 if hoveredRow == index
                     || presentsMediaViewerHighlight
                     || hoveredCompactTimestampRow == index
+                    || hoveredAuthorMessageID == item.messageID
                     || hoveredMention?.itemIdentifier
                         == item.identifier
                     || hoveredTextLink?.itemIdentifier
@@ -836,6 +814,8 @@ extension NativeTimelineCanvasView {
                     || hoveredTextSpoiler?.itemIdentifier
                         == item.identifier
                     || hoveredComponentButton?.messageID
+                        == item.messageID
+                    || activeComponentChoiceTarget?.messageID
                         == item.messageID
                     || visualPressedComponentButton?.messageID
                         == item.messageID
@@ -856,6 +836,7 @@ extension NativeTimelineCanvasView {
                                 || presentsMediaViewerHighlight,
                         showsCompactTimestamp:
                             hoveredCompactTimestampRow == index,
+                        isAuthorHovered: hoveredAuthorMessageID == item.messageID,
                         hoveredMention:
                             hoveredMention?.itemIdentifier
                                 == item.identifier
@@ -875,6 +856,11 @@ extension NativeTimelineCanvasView {
                             hoveredComponentButton?.messageID
                                 == item.messageID
                             ? hoveredComponentButton
+                            : nil,
+                        activeComponentChoiceTarget:
+                            activeComponentChoiceTarget?.messageID
+                                == item.messageID
+                            ? activeComponentChoiceTarget
                             : nil,
                         pressedComponentButton:
                             visualPressedComponentButton?.messageID
@@ -1056,7 +1042,7 @@ extension NativeTimelineCanvasView {
             for location in spoilerRevealStore.revealedTextLocations(
                 messageID: messageID,
                 contentID: contentID,
-                contentHash: selectable.value.string.hashValue
+                value: selectable.value
             ) {
                 result.reveal(
                     region: selectable.region,
@@ -1723,7 +1709,13 @@ extension NativeTimelineCanvasView {
         else { return [] }
         let message = row.message
         let visibleEmbedCount =
-            MessageEmbedPresentation.visibleEmbeds(for: message).count
+            (model?.chatSettings.expandsEmbedsByDefault == false)
+                ? 0
+                : MessageEmbedPresentation.visibleEmbeds(
+                    for: message,
+                    showsAutomaticLinkPreviews:
+                        model?.chatSettings.showsAutomaticLinkPreviews ?? true
+                ).count
         var keys: [NativeTimelineMediaKey] = []
         keys.reserveCapacity(
             1 + message.attachments.count + visibleEmbedCount
@@ -1764,7 +1756,7 @@ extension NativeTimelineCanvasView {
                 model: model,
                 message: message
             )
-            for token in row.textPlan.preparedText?.tokens ?? [] {
+            for token in presentedTextPlan(for: row).preparedText?.tokens ?? [] {
                 switch token {
                 case let .customEmoji(emoji):
                     let reference = EmojiReference(rawToken: emoji.rawToken)
@@ -1904,6 +1896,7 @@ extension NativeTimelineCanvasView {
                 else { continue }
                 keys.append(.media(url, maximumPixelDimension: 64))
             }
+            keys += componentLayout.selectMediaKeys(hiddenContainerFrames)
             for textRegion in componentLayout.textRegions {
                 guard !NativeTimelineSpoilerConcealmentPolicy
                     .isInsideHiddenContainer(

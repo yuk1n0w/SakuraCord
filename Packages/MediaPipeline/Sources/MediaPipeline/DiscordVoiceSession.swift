@@ -136,6 +136,7 @@ public actor DiscordVoiceSession: DaveSessionDelegate {
     private let kind: VoiceSessionKind
     private let eventContinuation: AsyncStream<VoiceSessionEvent>.Continuation
     private let gateway: VoiceGatewayConnection
+    private let gatewayDiagnostics: VoiceGatewayDiagnostics
     private let remoteAudioHandler: (@Sendable (Data, String) async throws -> Void)?
     private var configuration: VoiceSessionConfiguration
     private var state: VoiceSessionState = .idle
@@ -234,6 +235,7 @@ public actor DiscordVoiceSession: DaveSessionDelegate {
         self.kind = kind
         self.configuration = configuration
         self.remoteAudioHandler = remoteAudioHandler
+        self.gatewayDiagnostics = gatewayDiagnostics
         remoteVideoDemandEnabled = kind == .voice
         gateway = VoiceGatewayConnection(
             info: info,
@@ -684,8 +686,8 @@ public actor DiscordVoiceSession: DaveSessionDelegate {
         switch event {
         case .resumed:
             completeReconnect()
-        case .connectionClosed:
-            scheduleGatewayReconnect(resuming: true)
+        case let .connectionClosed(closeCode):
+            await handleGatewayClosure(closeCode: closeCode)
         case let .heartbeatAcknowledged(nonce):
             let now = UInt64(max(0, Date.now.timeIntervalSince1970 * 1000))
             let latency = Int(clamping: now >= nonce ? now - nonce : 0)
@@ -707,8 +709,7 @@ public actor DiscordVoiceSession: DaveSessionDelegate {
             port: ready.port,
             serviceClass: kind.carriesVoiceAudio ? .interactiveVoice : .interactiveVideo
         )
-        try await udp.start()
-        let discovered = try await udp.discoverExternalAddress(ssrc: ready.ssrc)
+        let discovered = try await discoverExternalAddress(using: udp, ssrc: ready.ssrc)
         await self.udp?.close()
         self.udp = udp
         audioSSRC = ready.ssrc
@@ -847,7 +848,7 @@ public actor DiscordVoiceSession: DaveSessionDelegate {
 
     private func handleCapturedFrame(_ frame: CapturedOpusFrame) async {
         guard state == .connected, audioSSRC != nil else { return }
-        updateLocalVoiceActivity(frame.containsVoice && !configuration.isMuted)
+        updateLocalVoiceActivity(frame.containsVoice)
         if !didLogCapturedAudio {
             didLogCapturedAudio = true
             voiceMediaLogger.info(
@@ -855,7 +856,7 @@ public actor DiscordVoiceSession: DaveSessionDelegate {
             )
         }
         advanceAudioTimestamp(for: frame)
-        if frame.containsVoice, !configuration.isMuted {
+        if frame.containsVoice {
             trailingSilenceFrames = 0
             if !locallySpeaking, let audioSSRC {
                 try? await gateway.sendSpeaking(flags: 1, ssrc: audioSSRC)
@@ -1558,6 +1559,9 @@ extension DiscordVoiceSession {
     private func transition(to state: VoiceSessionState) {
         guard self.state != state else { return }
         self.state = state
+        gatewayDiagnostics.record(VoiceGatewayDiagnosticEvent(
+            operation: "session_state_\(state.rawValue)"
+        ))
         eventContinuation.yield(.stateChanged(state))
     }
 
@@ -1685,6 +1689,59 @@ public extension DiscordVoiceSession {
 }
 
 private extension DiscordVoiceSession {
+    func discoverExternalAddress(
+        using udp: VoiceUDPConnection,
+        ssrc: UInt32
+    ) async throws -> VoiceDiscoveredAddress {
+        gatewayDiagnostics.record(VoiceGatewayDiagnosticEvent(
+            operation: "udp_setup_started"
+        ))
+        do {
+            try await udp.start()
+            gatewayDiagnostics.record(VoiceGatewayDiagnosticEvent(
+                operation: "udp_discovery_started"
+            ))
+            let discovered = try await udp.discoverExternalAddress(ssrc: ssrc)
+            gatewayDiagnostics.record(VoiceGatewayDiagnosticEvent(
+                operation: "udp_discovery_completed"
+            ))
+            return discovered
+        } catch {
+            gatewayDiagnostics.record(VoiceGatewayDiagnosticEvent(
+                operation: "udp_setup_failed",
+                integers: ["error_code": (error as NSError).code]
+            ))
+            await udp.close()
+            throw error
+        }
+    }
+
+    func handleGatewayClosure(closeCode: Int) async {
+        switch VoiceGatewayCloseAction(closeCode: closeCode) {
+        case .resume:
+            gatewayDiagnostics.record(VoiceGatewayDiagnosticEvent(
+                operation: "close_action_resume",
+                integers: ["close_code": closeCode]
+            ))
+            scheduleGatewayReconnect(resuming: true)
+        case .reidentify:
+            gatewayDiagnostics.record(VoiceGatewayDiagnosticEvent(
+                operation: "close_action_reidentify",
+                integers: ["close_code": closeCode]
+            ))
+            scheduleGatewayReconnect(resuming: false)
+        case .disconnect:
+            gatewayDiagnostics.record(VoiceGatewayDiagnosticEvent(
+                operation: "close_action_disconnect",
+                integers: ["close_code": closeCode]
+            ))
+            voiceMediaLogger.info(
+                "Voice gateway closed without reconnect; closeCode=\(closeCode)"
+            )
+            await disconnect()
+        }
+    }
+
     func scheduleGatewayReconnect(resuming: Bool) {
         guard state == .connected || state == .reconnecting else { return }
         if !resuming {
@@ -1700,6 +1757,15 @@ private extension DiscordVoiceSession {
         let generation = reconnectGeneration
         let exponent = min(reconnectAttempts - 1, 5)
         let delay = Duration.seconds(pow(2, Double(exponent)))
+        gatewayDiagnostics.record(VoiceGatewayDiagnosticEvent(
+            operation: "reconnect_scheduled",
+            integers: [
+                "attempt": reconnectAttempts,
+                "delay_milliseconds": Int(pow(2, Double(exponent)) * 1_000),
+                "generation": Int(clamping: generation),
+            ],
+            flags: ["resuming": !reconnectRequiresFreshSession]
+        ))
         reconnectTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: delay)
@@ -1717,9 +1783,27 @@ private extension DiscordVoiceSession {
         reconnectTask = nil
         let resuming = !reconnectRequiresFreshSession
         reconnectRequiresFreshSession = false
+        gatewayDiagnostics.record(VoiceGatewayDiagnosticEvent(
+            operation: "reconnect_attempt_started",
+            integers: [
+                "attempt": reconnectAttempts,
+                "generation": Int(clamping: generation),
+            ],
+            flags: ["resuming": resuming]
+        ))
         do {
             try await gateway.connect(resuming: resuming)
         } catch {
+            let nsError = error as NSError
+            gatewayDiagnostics.record(VoiceGatewayDiagnosticEvent(
+                operation: "reconnect_attempt_failed",
+                integers: [
+                    "attempt": reconnectAttempts,
+                    "error_code": nsError.code,
+                    "generation": Int(clamping: generation),
+                ],
+                flags: ["resuming": resuming]
+            ))
             scheduleGatewayReconnect(resuming: resuming)
             return
         }
@@ -1741,10 +1825,21 @@ private extension DiscordVoiceSession {
               state == .reconnecting
         else { return }
         reconnectTimeoutTask = nil
+        gatewayDiagnostics.record(VoiceGatewayDiagnosticEvent(
+            operation: "reconnect_attempt_timed_out",
+            integers: [
+                "attempt": reconnectAttempts,
+                "generation": Int(clamping: generation),
+            ]
+        ))
         scheduleGatewayReconnect(resuming: true)
     }
 
     func completeReconnect() {
+        gatewayDiagnostics.record(VoiceGatewayDiagnosticEvent(
+            operation: "reconnect_completed",
+            integers: ["attempt_count": reconnectAttempts]
+        ))
         reconnectGeneration &+= 1
         reconnectAttempts = 0
         reconnectRequiresFreshSession = false

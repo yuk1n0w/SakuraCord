@@ -52,6 +52,25 @@ nonisolated enum PerformanceBenchmarkInitialGuildPolicy {
 }
 
 extension AppModel {
+    static func loadEmojiRecents(usageCounts: [String: Int]) -> [String] {
+        UserDefaults.standard.removeObject(
+            forKey: "dev.sakuracord.favorite-emojis"
+        )
+        if let stored = UserDefaults.standard.stringArray(
+            forKey: "dev.sakuracord.emoji-recents"
+        ) {
+            return stored
+        }
+        let migrated = usageCounts.sorted {
+            $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value
+        }.prefix(50).map(\.key)
+        UserDefaults.standard.set(
+            migrated,
+            forKey: "dev.sakuracord.emoji-recents"
+        )
+        return migrated
+    }
+
     var isOfflineTesting: Bool {
         launchMode == .offlineTesting
     }
@@ -239,8 +258,7 @@ extension AppModel {
         readState.reset(accountID: handle.accountID)
         currentUserRoleIDsByGuild = [:]
         supportedCapabilities = []
-        pendingComponentControls = []
-        componentErrors = [:]
+        componentInteractionPresentation = .init()
         componentKeyByNonce = [:]
         credentialHandle = handle
         activeAccountID = handle.accountID
@@ -300,6 +318,7 @@ extension AppModel {
         isLoadingLater = false
         hasMoreLaterMessages = false
         messageCache = [:]
+        pinnedMessages.clear(notifying: self)
         messageCacheOrder = []
         messageRowCache = [:]
         messageRowCacheOrder = []
@@ -406,8 +425,7 @@ extension AppModel {
         let signedOutProvider: any ChatProvider =
             launchMode == .offlineTesting ? MockChatProvider() : SignedOutChatProvider()
         supportedCapabilities = []
-        pendingComponentControls = []
-        componentErrors = [:]
+        componentInteractionPresentation = .init()
         componentKeyByNonce = [:]
         let signedOutDatabase = launchMode == .offlineTesting
             ? try? SakuraCordDatabase(inMemory: true)
@@ -636,17 +654,53 @@ extension AppModel {
                         "SAKURACORD_PERFORMANCE_ACCOUNT_ID"
                     ]
                     : nil
+            let launchDestination: SettingsLaunchDestination = if case let .string(value) =
+                SettingsPreferenceStore.shared.value(for: .launchDestination)
+            {
+                SettingsLaunchDestination(rawValue: value)
+                    ?? .preferredAccountLastLocation
+            } else {
+                .preferredAccountLastLocation
+            }
+            if SettingsLaunchAccountPolicy.presentsAccountPicker(
+                destination: launchDestination,
+                performanceAccountID: preferredPerformanceAccountID
+            ) {
+                isLoading = false
+                sessionState = .signedOut
+                return false
+            }
             let preferredStoredAccountID = await savedAccountStore
                 .preferredAccountID()
-            if let handles,
-               let handle = RestoredCredentialSelectionPolicy.handle(
-                   from: handles,
-                   preferredAccountID:
-                       preferredPerformanceAccountID
-                       ?? preferredStoredAccountID
-               )
+            let reopensLastActiveAccount = SettingsPreferenceStore.shared.value(
+                for: .reopenLastAccount
+            ) == .bool(true)
+            let preferredLaunchAccountID: String? = if case let .string(value) =
+                SettingsPreferenceStore.shared.value(for: .preferredLaunchAccount),
+                !value.isEmpty
             {
-                _ = await connectAuthenticatedAccount(handle)
+                value
+            } else {
+                nil
+            }
+            let restoredHandle = handles.flatMap { handles in
+                SettingsLaunchAccountPolicy.handle(
+                    from: handles,
+                    destination: launchDestination,
+                    performanceAccountID: preferredPerformanceAccountID,
+                    lastVisitedAccountID: SettingsConversationRestorationStore
+                        .shared.preferredAccountID(for: launchDestination),
+                    reopensLastActiveAccount: reopensLastActiveAccount,
+                    lastActiveAccountID: preferredStoredAccountID,
+                    preferredLaunchAccountID: preferredLaunchAccountID
+                )
+            }
+            if let restoredHandle {
+                SettingsConversationRestorationStore.shared.prepareLaunch(
+                    destination: launchDestination,
+                    selectedAccountID: restoredHandle.accountID
+                )
+                _ = await connectAuthenticatedAccount(restoredHandle)
                 return false
             }
         }
@@ -713,13 +767,21 @@ extension AppModel {
             reconcilePrivateCallSounds()
             readState.applyInitialState(initialReadState)
         }
+        let launchRestoration = SettingsConversationRestorationStore.shared
+            .consumeLaunchRestoration(accountID: credentialHandle?.accountID)
+        let restoredLaunchChannel = launchRestoration
+            .flatMap { ChannelID($0.channelID) }
+            .flatMap { restoredID in
+                value.channels.first { $0.id == restoredID }
+            }
         let retainedChannel = selectedChannelID.flatMap { selectedChannelID in
             value.channels.first { $0.id == selectedChannelID }
-        }
+        } ?? restoredLaunchChannel
         let initialGuildID = bootstrapInitialGuildID(
             in: value,
             retainedChannel: retainedChannel
         )
+        beginCurrentUserProfilePrefetch(in: initialGuildID, account: account)
         let initialHistoryChannelID = AppPerformanceSignposts.measureSync(
             "BootstrapNavigationProjection"
         ) { () -> ChannelID? in
@@ -752,7 +814,10 @@ extension AppModel {
                     .flatMap { rememberedID in
                         selectableInitialChannels.first { $0.id == rememberedID }
                     }
-                return retainedChannel
+                let retainedSelectableChannel = retainedChannel.flatMap { retained in
+                    selectableInitialChannels.first { $0.id == retained.id }
+                }
+                return retainedSelectableChannel
                     ?? rememberedInitialChannel
                     ?? Self.preferredInitialChannelID(
                         in: selectableInitialChannels
@@ -836,6 +901,7 @@ extension AppModel {
         guard canPublishBootstrap(for: account) else { return }
         if let retainedChannel,
            retainedChannel.guildID == initialGuildID,
+           conversationAccess(for: retainedChannel).isReadable,
            selectedChannelID != retainedChannel.id
         {
             selectedChannelID = retainedChannel.id
@@ -1390,11 +1456,18 @@ extension AppModel {
             }
             guard await connectAuthenticatedAccount(handle) else { return }
         }
-        navigate(
-            to: notification.guildID,
-            channelID: notification.channelID,
-            messageID: notification.messageID
-        )
+        if let messageID = notification.messageID {
+            navigate(
+                to: notification.guildID,
+                channelID: notification.channelID,
+                messageID: messageID
+            )
+        } else {
+            navigate(
+                to: notification.guildID,
+                linkedChannelID: notification.channelID
+            )
+        }
     }
 
     func completeMessageNavigation(requestID: UInt64) {
@@ -1432,6 +1505,7 @@ extension AppModel {
         let rememberedChannelID = guildID.flatMap { lastOpenedChannelIDsByGuild[$0] }
         dismissAllProfiles()
         selectedGuildID = guildID
+        beginCurrentUserProfilePrefetch(in: guildID, account: session)
         AppPerformanceSignposts.measureSync(
             "GuildActivationMemberPresentationRestore"
         ) {
@@ -1617,13 +1691,7 @@ extension AppModel {
         let settings = try? await session.provider.emojiUserSettings()
         guard isCurrentAccountSession(session) else { return }
         if let settings {
-            discordFavoriteEmojiKeys = settings.favoriteKeys
-            discordFrequentlyUsedEmojiKeys = settings.frequentlyUsedKeys
-            discordEmojiUsageScores = settings.usageScores
-            discordGuildAndChannelUsageScores = settings.guildAndChannelUsageScores
-            discordSyncedGuildAndChannelUsageScores = settings.guildAndChannelUsageScores
-            discordGuildAndChannelUsage = settings.guildAndChannelUsage
-            discordGuildAndChannelUsageOrder = settings.guildAndChannelUsageOrder
+            applyDiscordEmojiSettings(settings)
         }
         // Destination discovery is local once bootstrap state is available.
         // A failed or timed-out settings enrichment must not leave Forward on
@@ -1634,22 +1702,63 @@ extension AppModel {
         forwardSearchSourceRevision &+= 1
     }
 
+    func applyDiscordEmojiSettings(_ settings: EmojiUserSettings) {
+        discordFavoriteEmojiKeys = settings.favoriteKeys
+        discordFrequentlyUsedEmojiKeys = settings.frequentlyUsedKeys
+        discordEmojiUsageScores = settings.usageScores
+        discordGuildAndChannelUsageScores = settings.guildAndChannelUsageScores
+        discordSyncedGuildAndChannelUsageScores = settings.guildAndChannelUsageScores
+        discordGuildAndChannelUsage = settings.guildAndChannelUsage
+        discordGuildAndChannelUsageOrder = settings.guildAndChannelUsageOrder
+    }
+
     func recordEmojiUse(_ key: String) {
         emojiUsageCounts[key, default: 0] += 1
+        emojiRecentKeys.removeAll { $0 == key }
+        emojiRecentKeys.insert(key, at: 0)
+        if emojiRecentKeys.count > 50 {
+            emojiRecentKeys.removeLast(emojiRecentKeys.count - 50)
+        }
         if persistsEmojiPreferences {
             UserDefaults.standard.set(emojiUsageCounts, forKey: "dev.sakuracord.emoji-usage")
+            UserDefaults.standard.set(emojiRecentKeys, forKey: "dev.sakuracord.emoji-recents")
         }
     }
 
-    func toggleFavoriteEmoji(_ key: String) {
-        if favoriteEmojiKeys.contains(key) {
-            favoriteEmojiKeys.remove(key)
-        } else {
-            favoriteEmojiKeys.insert(key)
-        }
+    func clearLocalEmojiRecents() {
+        emojiRecentKeys.removeAll()
         if persistsEmojiPreferences {
-            UserDefaults.standard.set(
-                Array(favoriteEmojiKeys), forKey: "dev.sakuracord.favorite-emojis")
+            UserDefaults.standard.removeObject(forKey: "dev.sakuracord.emoji-recents")
+            UserDefaults.standard.set([String](), forKey: "dev.sakuracord.emoji-recents")
+        }
+    }
+
+    func resetLocalEmojiRanking() {
+        emojiUsageCounts.removeAll()
+        if persistsEmojiPreferences {
+            UserDefaults.standard.removeObject(forKey: "dev.sakuracord.emoji-usage")
+        }
+    }
+
+    @discardableResult
+    func setEmojiFavorite(
+        discordKey: String,
+        isFavorite: Bool
+    ) async -> Bool {
+        let session = accountSession()
+        do {
+            let settings = try await session.provider.setEmojiFavorite(
+                discordKey,
+                isFavorite: isFavorite
+            )
+            guard isCurrentAccountSession(session) else { return false }
+            applyDiscordEmojiSettings(settings)
+            didAttemptDiscordEmojiSettings = true
+            hasLoadedDiscordEmojiSettings = true
+            forwardSearchSourceRevision &+= 1
+            return true
+        } catch {
+            return false
         }
     }
 
@@ -1702,6 +1811,7 @@ extension AppModel {
         releaseAllOwnedPromisedFiles()
         channelComposerAttachments = []
         threadComposerAttachments = []
+        outgoingMessages.reset()
         oversizedAttachmentPrompt = nil
         queuedOversizedAttachmentPrompts.removeAll()
         commandLoadTask?.cancel()

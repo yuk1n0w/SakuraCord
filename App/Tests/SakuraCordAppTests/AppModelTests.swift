@@ -1407,7 +1407,7 @@ import UserNotifications
 }
 
 @MainActor
-@Test func `thread send commits one final timeline revision`() async throws {
+@Test func `thread send commits optimistic insertion and confirmation revisions`() async throws {
     let provider = MockChatProvider()
     let model = AppModel(launchMode: .offlineTesting, provider: provider)
     await model.start()
@@ -1443,24 +1443,40 @@ import UserNotifications
     )
     await Task.yield()
 
-    #expect(model.threadMessageRowsRevision == previousRevision + 1)
-    guard case let .insert(insertedIndexes) =
+    #expect(model.threadMessageRowsRevision == previousRevision + 2)
+    #expect(
         model.threadMessageRowsUpdateHint?.change
-    else {
-        Issue.record("Expected a bounded thread insertion hint")
-        return
-    }
-    #expect(insertedIndexes == IndexSet(integer: previousCount))
+            == .replace(IndexSet(integer: previousCount))
+    )
     let records = try #require(
         model.threadMessageRowsUpdateJournal.records(
             after: previousRevision,
             through: model.threadMessageRowsRevision
         )
     )
-    let record = try #require(records.first)
-    #expect(record.revision == model.threadMessageRowsRevision)
-    #expect(record.insertedMessageIDs == [model.threadMessages[previousCount].id])
-    #expect(!record.invalidatesAllRows)
+    #expect(records.count == 2)
+    let insertion = try #require(records.first)
+    guard case let .insert(insertedIndexes) = insertion.change else {
+        Issue.record("Expected a bounded optimistic thread insertion hint")
+        return
+    }
+    #expect(insertedIndexes == IndexSet(integer: previousCount))
+    #expect(insertion.insertedMessageIDs.count == 1)
+    #expect(!insertion.invalidatesAllRows)
+    let confirmation = try #require(records.last)
+    #expect(confirmation.revision == model.threadMessageRowsRevision)
+    #expect(confirmation.insertedMessageIDs.isEmpty)
+    let confirmed = try #require(
+        model.threadMessages.first {
+            $0.content == "one thread timeline mutation"
+        }
+    )
+    #expect(confirmation.changedMessageIDs == [confirmed.id])
+    #expect(
+        confirmation.change
+            == .replace(IndexSet(integer: previousCount))
+    )
+    #expect(!confirmation.invalidatesAllRows)
 }
 
 @MainActor
@@ -1620,6 +1636,13 @@ import UserNotifications
     #expect(chatMediaAutoScroll.includesChatMediaPerformanceFixture)
     #expect(chatMediaAutoScroll.runsChatPerformanceAutoScroll)
     #expect(!chatMediaAutoScroll.runsChatLiveArrivalStress)
+    let pinsAutoScroll = AppLaunchConfiguration(
+        arguments: ["SakuraCord", "--offline-pins-performance-autoscroll"]
+    )
+    #expect(pinsAutoScroll.mode == .offlineTesting)
+    #expect(pinsAutoScroll.includesPinsPerformanceFixture)
+    #expect(pinsAutoScroll.includesChatPerformanceFixture)
+    #expect(pinsAutoScroll.runsPinsPerformanceAutoScroll)
     let authenticatedAutoScroll = AppLaunchConfiguration(
         arguments: [
             "SakuraCord",
@@ -2873,13 +2896,17 @@ private actor FailingRemovalCredentialStore: CredentialStore {
 @MainActor
 @Test func `account transition cancels and drains stale native notification delivery`() async {
     let notifications = SuspendedAccountNotificationService()
+    let notificationPreferences = NotificationPreferences(defaults: InMemoryPreferences())
+    notificationPreferences.suppressesCurrentConversation = false
     let oldProvider = SuspendedAccountOperationTestProvider(suspendsOperations: false)
     let newProvider = SuspendedAccountOperationTestProvider(suspendsOperations: false)
     let model = AppModel(
         launchMode: .offlineTesting,
         provider: oldProvider,
-        notificationService: notifications
+        notificationService: notifications,
+        notificationPreferences: notificationPreferences
     )
+    await model.start()
     let author = oldProvider.editTarget.author
     let message = Message(
         id: MessageID(rawValue: 96_050),
@@ -3437,6 +3464,38 @@ private actor FailingRemovalCredentialStore: CredentialStore {
 }
 
 @MainActor
+@Test func `server disconnected voice session tears down locally without leaving the replacement client`() async throws {
+    let provider = SuspendedAccountOperationTestProvider(suspendsOperations: false)
+    let model = AppModel(launchMode: .offlineTesting, provider: provider)
+    let snapshot = try await provider.bootstrap()
+    model.snapshot = snapshot
+    model.activeVoiceChannel = Channel(
+        id: provider.channelID,
+        guildID: nil,
+        name: "Displaced call",
+        kind: .directMessage
+    )
+    model.voiceSessionState = .connected
+    let replacementState = VoiceParticipantState(
+        userID: snapshot.currentUser.id,
+        channelID: provider.channelID,
+        guildID: nil,
+        sessionID: "replacement-session"
+    )
+    model.voiceStates[snapshot.currentUser.id] = replacementState
+
+    model.consumeVoiceEvent(.stateChanged(.disconnected))
+    for task in Array(model.accountChildTasks.values) {
+        await task.value
+    }
+
+    #expect(model.activeVoiceChannel == nil)
+    #expect(model.voiceSessionState == .idle)
+    #expect(model.voiceStates[snapshot.currentUser.id] == replacementState)
+    #expect(await provider.voiceStateUpdateRequestCount == 0)
+}
+
+@MainActor
 @Test func `unchanged unread projection does not republish the account snapshot`() async throws {
     let snapshot = try await MockChatProvider().bootstrap()
     #expect(
@@ -3473,6 +3532,29 @@ private actor FailingRemovalCredentialStore: CredentialStore {
     #expect(!profile.badges.isEmpty)
     #expect(!profile.mutualGuilds.isEmpty)
     #expect(profile.status == member.status)
+}
+
+@MainActor
+@Test func `startup prefetches current user profile for initial guild`() async throws {
+    let model = AppModel(launchMode: .offlineTesting)
+    await model.start()
+
+    let currentUser = try #require(model.snapshot?.currentUser)
+    let cacheKey = SakuraCord.ProfileCacheKey(
+        userID: currentUser.id,
+        guildID: model.selectedGuildID
+    )
+    #expect(await eventuallyOnMain { model.profileCache[cacheKey] != nil })
+
+    let member = model.membersByID[currentUser.id]
+        ?? Member(user: currentUser, roleName: "You", status: model.currentStatus)
+    let requestID = model.presentProfile(
+        for: member,
+        destination: .contextual
+    )
+    #expect(model.contextualProfilePresentation?.requestID == requestID)
+    #expect(model.contextualProfilePresentation?.profile != nil)
+    #expect(model.contextualProfilePresentation?.isLoading == false)
 }
 
 @MainActor

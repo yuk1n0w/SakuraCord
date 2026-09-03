@@ -91,55 +91,6 @@ extension AppModel {
         forumNotificationMutationTasks.removeAll()
     }
 
-    func deliverNativeNotification(for message: Message) {
-        // The offline timeline benchmark measures event ingestion, layout,
-        // drawing, and scroll scheduling. Enqueuing thousands of synthetic
-        // UNUserNotificationCenter requests measures an unrelated XPC queue
-        // and eventually starves the main run loop in periodic bursts.
-        guard !runsChatPerformanceBenchmark else { return }
-        guard !readState.isActivelyPresentedAtNewest(message.channelID) else { return }
-        let channel =
-            snapshot?.channels.first { $0.id == message.channelID }
-                ?? visibleChannels.first { $0.id == message.channelID }
-        let guildID = message.guildID ?? channel?.guildID
-        let guild = guildID.flatMap { serverRailGuildsByID[$0] }
-        let accountID = readState.accountID ?? "offline"
-        if notificationPreferences.isEnabled,
-           notificationPreferences.playsSound,
-           !notificationPreferences.isQuiet()
-        {
-            // Apple's notification sound facility does not support MP3. Play
-            // Discord's exact message asset through the same retained audio
-            // path as the voice sounds, and let Notification Center own only
-            // the banner/list presentation.
-            soundPlayer.play(.message)
-        }
-        let account = accountSession()
-        startAccountChildTask(account: account) { model, account in
-            guard model.isCurrentAccountSession(account), !Task.isCancelled else { return }
-            await model.notificationService.deliver(
-                message: message,
-                channel: channel,
-                guild: guild,
-                accountID: accountID,
-                preferences: model.notificationPreferences
-            )
-        }
-    }
-
-    func cancelNativeNotifications(channelID: ChannelID) {
-        guard !runsChatPerformanceBenchmark else { return }
-        let accountID = readState.accountID ?? "offline"
-        let account = accountSession()
-        startAccountChildTask(account: account) { model, account in
-            guard model.isCurrentAccountSession(account), !Task.isCancelled else { return }
-            await model.notificationService.cancel(
-                accountID: accountID,
-                channelID: channelID
-            )
-        }
-    }
-
     func consume(_ event: ClientEvent) async {
         if case let .messageCreated(message) = event {
             let preparedTextPlan: NativeTimelineTextPlan? =
@@ -266,6 +217,7 @@ extension AppModel {
     }
 
     func resetPendingCreatedMessages() {
+        accessibilityMessageAnnouncer.cancel()
         createdMessageFlushTask?.cancel()
         createdMessageFlushTask = nil
         pendingCreatedMessages.removeAll(keepingCapacity: false)
@@ -304,11 +256,16 @@ extension AppModel {
         case .messageCreated(var message):
             consumeMessageCreated(&message, preparedTextPlan: preparedTextPlan)
         case .messageUpdated(let incoming):
-            consumeMessageUpdated(incoming, preparedTextPlan: preparedTextPlan)
+            let reconciled = applyingPendingPinIntent(to: incoming)
+            consumeMessageUpdated(reconciled, preparedTextPlan: preparedTextPlan)
+            reconcilePinnedMessage(reconciled)
         case .messageReactionUpdated(let update):
             applyReactionUpdate(update)
         case .messageDeleted(let channelID, let messageID):
             consumeMessageDeleted(channelID: channelID, messageID: messageID)
+            removeDeletedPinnedMessage(channelID: channelID, messageID: messageID)
+        case .channelPinsInvalidated(let channelID):
+            invalidatePinnedMessages(in: channelID)
         case .readStateSnapshot(let states, let version):
             consumeReadStateSnapshot(states, version: version)
         case .readStateChanged(let state):
@@ -338,6 +295,11 @@ extension AppModel {
         case .notificationSettingsChanged(let settings):
             applyNotificationSettings(settings)
             refreshUnreadPresentation()
+        case .emojiUserSettingsChanged(let settings):
+            applyDiscordEmojiSettings(settings)
+            didAttemptDiscordEmojiSettings = true
+            hasLoadedDiscordEmojiSettings = true
+            forwardSearchSourceRevision &+= 1
         case .typing(let channelID, let user):
             typingState.receive(
                 channelID: channelID,
@@ -377,12 +339,14 @@ extension AppModel {
         case .currentUserRolesChanged, .currentUserRolesSnapshot:
             consumeCurrentUserRoleEvent(event)
         case .voiceStateChanged(let state):
+            recordVoiceStateUpdateReceived(state)
             consumeVoiceStateChanged(state)
         case .privateCallChanged(var call):
             consumePrivateCallChanged(&call)
         case .privateCallDeleted(let channelID, let unavailable):
             consumePrivateCallDeleted(channelID: channelID, unavailable: unavailable)
         case .voiceServerChanged(let info):
+            recordVoiceServerUpdateReceived(info)
             scheduleVoiceServerMigration(to: info)
         case .snapshotChanged(let value):
             consumeSnapshotChanged(value)
@@ -512,12 +476,15 @@ extension AppModel {
         _ message: inout Message,
         preparedTextPlan: NativeTimelineTextPlan?
     ) {
+        message = outgoingAttachmentPresentationPreserving(message)
         typingState.clear(userID: message.author.id, in: message.channelID)
         if let nonce = message.nonce {
             commandComposer.enrichInteractionResponse(
                 &message, currentUser: snapshot?.currentUser
             )
             commandComposer.interactionSucceeded(nonce: nonce)
+            outgoingMessages.draftsByNonce[nonce] = nil
+            pruneOwnedPromisedAttachmentFiles()
         }
         recordAuthoritativeMessageUpsert(message)
         if message.channelID == openThread?.id {
@@ -536,6 +503,11 @@ extension AppModel {
         guard let currentUserID = snapshot?.currentUser.id else { return }
         let disposition = readState.receive(message, currentUserID: currentUserID)
         guard disposition.accepted else { return }
+        if message.author.id != currentUserID,
+           accessibilitySettings.announcesNewMessages
+        {
+            accessibilityMessageAnnouncer.enqueue()
+        }
         if message.channelID == selectedChannelID || message.channelID == openThread?.id {
             preserveUnreadDividerIfNeeded(channelID: message.channelID)
         }
@@ -545,7 +517,11 @@ extension AppModel {
             refreshUnreadPresentation()
         }
         if disposition.shouldNotify {
-            deliverNativeNotification(for: message)
+            deliverNativeNotification(
+                for: message,
+                isMention: disposition.mentionKind != .none
+                    && disposition.mentionKind != .directMessage
+            )
         }
         if isFlushingCreatedMessageBatch {
             batchedAcknowledgementChannelIDs.insert(message.channelID)
@@ -558,7 +534,9 @@ extension AppModel {
         _ incoming: Message,
         preparedTextPlan: NativeTimelineTextPlan?
     ) {
-        let message = reactionPresentationPreserving(incoming)
+        let message = reactionPresentationPreserving(
+            outgoingAttachmentPresentationPreserving(incoming)
+        )
         recordAuthoritativeMessageUpsert(message)
         if message.channelID == openThread?.id {
             reconcileThreadUpdate(message)
@@ -775,33 +753,17 @@ extension AppModel {
         snapshot = value
     }
 
-    func consumeVoiceStateChanged(_ state: VoiceParticipantState) {
-        let effects = VoiceStateSoundPolicy.effects(
-            previous: voiceStates[state.userID],
-            current: state,
-            activeChannelID: activeVoiceChannel?.id,
-            currentUserID: snapshot?.currentUser.id
-        )
-        voiceStates[state.userID] = state.channelID == nil ? nil : state
-        reconcileApplicationStreamWatchSuppression(for: state)
-        watchAvailableDirectMessageStreamsAutomatically()
-        if !state.isVideoEnabled {
-            voiceVideoFrames[String(state.userID.rawValue)] = nil
-        }
-        if state.guildID == nil {
-            reconcilePrivateCallVoiceState(state)
-        }
-        for effect in effects {
-            soundPlayer.play(effect)
-        }
-    }
-
     func consumePrivateCallChanged(_ call: inout PrivateCall) {
+        let previousCall = privateCallsByChannel[call.channelID]
+        let currentUserID = snapshot?.currentUser.id
+        let wasRingingCurrentUser = currentUserID.map {
+            previousCall?.isRinging($0) == true
+        } ?? false
         if call.voiceStates == nil {
             call.voiceStates = privateCallsByChannel[call.channelID]?.voiceStates
         }
         privateCallsByChannel[call.channelID] = call
-        if let currentUserID = snapshot?.currentUser.id,
+        if let currentUserID,
            call.ongoingRings.contains(where: {
                $0.senderID == currentUserID && $0.recipientID != currentUserID
            })
@@ -809,6 +771,12 @@ extension AppModel {
             endLocalOutgoingPrivateCallRing(channelID: call.channelID)
         } else {
             reconcilePrivateCallSounds()
+        }
+        let isRingingCurrentUser = currentUserID.map(call.isRinging) ?? false
+        if !wasRingingCurrentUser, isRingingCurrentUser {
+            deliverIncomingCallNotification(call)
+        } else if wasRingingCurrentUser, !isRingingCurrentUser {
+            cancelIncomingCallNotification(channelID: call.channelID)
         }
     }
 
@@ -831,6 +799,7 @@ extension AppModel {
             }
         }
         endLocalOutgoingPrivateCallRing(channelID: channelID)
+        cancelIncomingCallNotification(channelID: channelID)
     }
 
     func consumeSnapshotChanged(_ value: BootstrapSnapshot) {
@@ -974,22 +943,22 @@ extension AppModel {
         case .succeeded(let nonce):
             commandComposer.interactionSucceeded(nonce: nonce)
             if let key = componentKeyByNonce.removeValue(forKey: nonce) {
-                pendingComponentControls.remove(key)
-                componentErrors[key] = nil
+                componentInteractionPresentation.pendingControls.remove(key)
+                componentInteractionPresentation.errors[key] = nil
             }
             interactionErrorMessage = nil
         case .failed(let nonce, let message):
             let commandHandled = commandComposer.interactionFailed(nonce: nonce, message: message)
             if let key = componentKeyByNonce.removeValue(forKey: nonce) {
-                pendingComponentControls.remove(key)
-                componentErrors[key] = message
+                componentInteractionPresentation.pendingControls.remove(key)
+                componentInteractionPresentation.errors[key] = message
             } else if !commandHandled {
                 interactionErrorMessage = message
             }
         case .presentModal(let nonce, let modal):
             interactionModalNonce = nonce
             if let key = componentKeyByNonce.removeValue(forKey: nonce) {
-                pendingComponentControls.remove(key)
+                componentInteractionPresentation.pendingControls.remove(key)
             }
             presentedInteractionModal = modal
             interactionErrorMessage = nil
@@ -1117,7 +1086,8 @@ extension AppModel {
             messageIndex: selectedMessageIndex(for:),
             replyingMessageIDs:
                 selectedReplyMessageIDsByTarget[resolved.id] ?? [],
-            replacementTextPlan: preparedTextPlan
+            replacementTextPlan: preparedTextPlan,
+            continuationInterval: interfaceSettings.groupingInterval
         )
         publishMessageRowsUpdate(
             change: .replace(changedIndexes),
@@ -1160,7 +1130,8 @@ extension AppModel {
             neighborIndex: index,
             messageIndex: selectedMessageIndex(for:),
             replyingMessageIDs:
-                selectedReplyMessageIDsByTarget[id] ?? []
+                selectedReplyMessageIDsByTarget[id] ?? [],
+            continuationInterval: interfaceSettings.groupingInterval
         )
         publishMessageRowsUpdate(
             change: .remove(
@@ -1308,6 +1279,7 @@ extension AppModel {
             messageRows[index] = MessageRowPresentation(
                 message: hydratedMessage,
                 startsGroup: previousRow.startsGroup,
+                endsGroup: previousRow.endsGroup,
                 startsDay: previousRow.startsDay,
                 replyPreview:
                     hydratedMessage.replyPreview
@@ -1457,7 +1429,8 @@ extension AppModel {
             messageRows = MessageGrouping.updating(
                 existing: messageRows,
                 oldMessages: oldMessages,
-                newMessages: newMessages
+                newMessages: newMessages,
+                continuationInterval: interfaceSettings.groupingInterval
             )
         }
         AppPerformanceSignposts.signposter.endInterval(
@@ -1477,7 +1450,8 @@ extension AppModel {
         messageRows = MessageGrouping.updating(
             existing: messageRows,
             oldMessages: oldMessages,
-            newMessages: messages
+            newMessages: messages,
+            continuationInterval: interfaceSettings.groupingInterval
         )
         publishMessageRowsUpdate(invalidatesAllRows: true)
         messageRowsNonAppendRevision &+= 1
@@ -1543,7 +1517,8 @@ extension AppModel {
             preparedInsertedRows: preparedInsertedRows,
             existingMessageIndex: selectedMessageIndex(for:),
             replyingMessageIDsByTarget:
-                selectedReplyMessageIDsByTarget
+                selectedReplyMessageIDsByTarget,
+            continuationInterval: interfaceSettings.groupingInterval
         )
         let changedMessageIDs = Set(
             potentiallyChangedMessageIDs.filter { id in
@@ -1608,11 +1583,13 @@ extension AppModel {
     ) {
         guard !appendedMessages.isEmpty else { return }
         let insertionStart = messageRows.count
+        let previousBoundaryRow = messageRows.last
         let preparedRows = preparedRows?.map { row in
             guard let textPlan = preparedTextPlans[row.id] else { return row }
             return MessageRowPresentation(
                 message: row.message,
                 startsGroup: row.startsGroup,
+                endsGroup: row.endsGroup,
                 startsDay: row.startsDay,
                 replyPreview: row.replyPreview,
                 isReplyAvailable: row.isReplyAvailable,
@@ -1626,7 +1603,8 @@ extension AppModel {
             preparedInsertedRows: preparedRows,
             existingMessage: { [self] id in
                 selectedMessageIndex(for: id).map { messages[$0] }
-            }
+            },
+            continuationInterval: interfaceSettings.groupingInterval
         )
         if preparedRows == nil, !preparedTextPlans.isEmpty {
             for index in insertionStart ..< messageRows.count {
@@ -1635,12 +1613,19 @@ extension AppModel {
                 messageRows[index] = MessageRowPresentation(
                     message: row.message,
                     startsGroup: row.startsGroup,
+                    endsGroup: row.endsGroup,
                     startsDay: row.startsDay,
                     replyPreview: row.replyPreview,
                     isReplyAvailable: row.isReplyAvailable,
                     textPlan: textPlan
                 )
             }
+        }
+        var changedBoundaryMessageIDs = Set<MessageID>()
+        if let previousBoundaryRow,
+           messageRows[insertionStart - 1] != previousBoundaryRow
+        {
+            changedBoundaryMessageIDs.insert(previousBoundaryRow.id)
         }
         messages.append(contentsOf: appendedMessages)
         selectedMessageIDs.formUnion(appendedMessages.lazy.map(\.id))
@@ -1663,7 +1648,8 @@ extension AppModel {
                         insertionStart ..< insertionStart + appendedMessages.count
                 )
             ),
-            insertedMessageIDs: appendedMessages.map(\.id)
+            insertedMessageIDs: appendedMessages.map(\.id),
+            changedMessageIDs: changedBoundaryMessageIDs
         )
     }
 
@@ -1706,7 +1692,9 @@ extension AppModel {
 
     @discardableResult
     func reconcileVisibleOrCached(_ incoming: Message) -> Message {
-        let message = reactionPresentationPreserving(incoming)
+        let message = reactionPresentationPreserving(
+            outgoingAttachmentPresentationPreserving(incoming)
+        )
         if message.channelID == openThread?.id {
             reconcileThread(message)
         }
@@ -1798,6 +1786,12 @@ extension AppModel {
     }
 
     func updateOutgoingState(_ state: OutboxState, nonce: String, channelID: ChannelID) {
+        if openThread?.id == channelID,
+           let index = threadMessages.firstIndex(where: { $0.nonce == nonce })
+        {
+            threadMessages[index].outboxState = state
+            return
+        }
         if selectedChannelID == channelID,
            let index = messages.firstIndex(where: { $0.nonce == nonce })
         {
@@ -1814,6 +1808,10 @@ extension AppModel {
     }
 
     func removeOutgoingMessage(nonce: String, channelID: ChannelID) {
+        if openThread?.id == channelID {
+            threadMessages.removeAll { $0.nonce == nonce }
+            return
+        }
         if selectedChannelID == channelID {
             mutateSelectedMessages {
                 $0.removeAll { $0.nonce == nonce }
@@ -1826,6 +1824,9 @@ extension AppModel {
     }
 
     func outgoingState(nonce: String, channelID: ChannelID) -> OutboxState? {
+        if openThread?.id == channelID {
+            return threadMessages.first { $0.nonce == nonce }?.outboxState
+        }
         if selectedChannelID == channelID {
             return messages.first { $0.nonce == nonce }?.outboxState
         }
@@ -1973,28 +1974,6 @@ extension AppModel {
             && zip(rows, messages).allSatisfy {
                 $0.message == $1
             }
-    }
-
-    func restoreSelectedMessages(
-        _ restoredMessages: [Message],
-        preparedRows: [MessageRowPresentation]?
-    ) {
-        let oldMessages = messages
-        messages = restoredMessages
-        rebuildSelectedMessageIndexes()
-        if let preparedRows,
-           Self.rows(preparedRows, match: restoredMessages)
-        {
-            messageRows = preparedRows
-        } else {
-            messageRows = MessageGrouping.updating(
-                existing: messageRows,
-                oldMessages: oldMessages,
-                newMessages: restoredMessages
-            )
-        }
-        publishMessageRowsUpdate(invalidatesAllRows: true)
-        messageRowsNonAppendRevision &+= 1
     }
 
 }

@@ -1,183 +1,320 @@
-import Observation
+import AppKit
 import SakuraCordModels
 import SwiftUI
 
-@MainActor
-@Observable
-final class ComponentChoicePickerModel {
-    enum LoadState: Equatable {
-        case idle
-        case loading
-        case loaded
-        case failed(String)
-    }
+struct ComponentChoicePicker: View {
+    typealias Loader = @MainActor @Sendable (String) async throws
+        -> [ComponentSelectOption]
 
-    typealias Loader =
-        @MainActor (String) async throws -> [ComponentSelectOption]
+    @State private var selection: [String] = []
+    @State private var knownOptionsByValue:
+        [String: ComponentSelectOption] = [:]
 
+    private let placeholder: String
+    private let selectKind: ComponentSelectKind
+    private let options: [ComponentSelectOption]
+    private let initialOptions: [ComponentSelectOption]
+    private let maximumSelectionCount: Int
     private let loader: Loader
-    private let debounce: Duration
-    private var loadTask: Task<Void, Never>?
-    private var requestGeneration = 0
-
-    private(set) var query = ""
-    private(set) var choices: [ComponentSelectOption] = []
-    private(set) var state: LoadState = .idle
+    private let resultPlacement: SelectionFieldResultPlacement
+    private let selectionChanged: ([ComponentSelectOption]) -> Void
+    private let submitSingleSelection: ([String]) -> Void
+    private let dismiss: () -> Void
 
     init(
-        debounce: Duration = .milliseconds(180),
-        loader: @escaping Loader
+        placeholder: String,
+        selectKind: ComponentSelectKind,
+        options: [ComponentSelectOption],
+        initialOptions: [ComponentSelectOption],
+        selectedOptions: [ComponentSelectOption]?,
+        maximumSelectionCount: Int,
+        resultPlacement: SelectionFieldResultPlacement,
+        loader: @escaping Loader,
+        selectionChanged: @escaping ([ComponentSelectOption]) -> Void,
+        submitSingleSelection: @escaping ([String]) -> Void,
+        dismiss: @escaping () -> Void
     ) {
-        self.debounce = debounce
+        self.placeholder = placeholder
+        self.selectKind = selectKind
+        self.options = options
+        self.initialOptions = initialOptions
+        self.maximumSelectionCount = max(1, maximumSelectionCount)
+        self.resultPlacement = resultPlacement
         self.loader = loader
+        self.selectionChanged = selectionChanged
+        self.submitSingleSelection = submitSingleSelection
+        self.dismiss = dismiss
+        let initialOptions = selectedOptions
+            ?? options.filter(\.isDefault)
+        _selection = State(
+            initialValue: Array(initialOptions.map(\.value).prefix(
+                max(1, maximumSelectionCount)
+            ))
+        )
+        _knownOptionsByValue = State(
+            initialValue: Dictionary(
+                (options + (selectedOptions ?? []) + initialOptions).map {
+                    ($0.value, $0)
+                },
+                uniquingKeysWith: { _, newer in newer }
+            )
+        )
     }
 
-    func loadInitialChoices() {
-        scheduleLoad(isImmediate: true)
+    var body: some View {
+        SelectionField(
+            selection: selectionBinding,
+            mode: selectionMode,
+            source: source,
+            configuration: SelectionFieldConfiguration(
+                placeholder: placeholder,
+                searchPlaceholder: "Search options",
+                maximumListHeight: 232,
+                initiallyExpanded: true,
+                clearsQueryAfterSelection: maximumSelectionCount > 1,
+                collapsesAfterSingleSelection: true,
+                selectionPresentation: .cards,
+                resultPlacement: resultPlacement
+            ),
+            accessibilityIdentifier: "component-selection-field",
+            onDismiss: dismiss
+        )
+        .frame(maxWidth: .infinity)
+        .frame(
+            maxHeight: .infinity,
+            alignment: resultPlacement == .below ? .top : .bottom
+        )
     }
 
-    func updateQuery(_ value: String) {
-        guard query != value else { return }
-        query = value
-        scheduleLoad(isImmediate: false)
+    private var selectionBinding: Binding<[String]> {
+        Binding(
+            get: { selection },
+            set: { newValue in
+                let oldValue = selection
+                selection = newValue
+                selectionChanged(
+                    newValue.compactMap { knownOptionsByValue[$0] }
+                )
+                guard maximumSelectionCount == 1,
+                      newValue.count == 1,
+                      newValue != oldValue
+                else { return }
+                submitSingleSelection(newValue)
+            }
+        )
     }
 
-    func cancel() {
-        requestGeneration += 1
-        loadTask?.cancel()
-        loadTask = nil
+    private var selectionMode: SelectionFieldSelectionMode {
+        maximumSelectionCount == 1
+            ? .single
+            : .multiple(maximum: maximumSelectionCount)
     }
 
-    private func scheduleLoad(isImmediate: Bool) {
-        requestGeneration += 1
-        let generation = requestGeneration
-        let requestedQuery = query
-        loadTask?.cancel()
-        state = .loading
-        loadTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                if !isImmediate, debounce > .zero {
-                    try await Task.sleep(for: debounce)
-                }
-                try Task.checkCancellation()
-                let loadedChoices = try await loader(requestedQuery)
-                try Task.checkCancellation()
-                guard generation == requestGeneration else { return }
-                choices = Array(loadedChoices.prefix(25))
-                state = .loaded
-                loadTask = nil
-            } catch is CancellationError {
-                return
-            } catch {
-                guard generation == requestGeneration else { return }
-                choices = []
-                state = .failed(error.localizedDescription)
-                loadTask = nil
+    private var source: SelectionFieldSource<String> {
+        if selectKind == .string {
+            return .local(
+                options: options.map {
+                    ComponentChoiceOptionPresentation.fieldOption(
+                        $0,
+                        selectKind: selectKind
+                    )
+                },
+                maximumResults: 25
+            )
+        }
+        var seenInitialValues = Set<String>()
+        let initial = (initialOptions + selection.compactMap {
+            knownOptionsByValue[$0]
+        }).filter { seenInitialValues.insert($0.value).inserted }
+        return .dynamic(
+            initialOptions: initial.map {
+                ComponentChoiceOptionPresentation.fieldOption(
+                    $0,
+                    selectKind: selectKind
+                )
+            },
+            debounce: .milliseconds(120),
+            maximumResults: 25
+        ) { query in
+            let loaded = try await loader(query)
+            for option in loaded {
+                knownOptionsByValue[option.value] = option
+            }
+            return loaded.map {
+                ComponentChoiceOptionPresentation.fieldOption(
+                    $0,
+                    selectKind: selectKind
+                )
             }
         }
     }
 }
 
-struct ComponentChoicePicker: View {
-    @State private var model: ComponentChoicePickerModel
-    @FocusState private var searchIsFocused: Bool
-
-    private let placeholder: String
-    private let select: (ComponentSelectOption) -> Void
-
-    init(
-        placeholder: String,
-        loader: @escaping ComponentChoicePickerModel.Loader,
-        select: @escaping (ComponentSelectOption) -> Void
-    ) {
-        self.placeholder = placeholder
-        self.select = select
-        _model = State(
-            initialValue: ComponentChoicePickerModel(loader: loader)
+enum ComponentChoiceOptionPresentation {
+    static func fieldOption(
+        _ option: ComponentSelectOption,
+        selectKind: ComponentSelectKind
+    ) -> SelectionFieldOption<String> {
+        let entityKind = option.entityKind
+            ?? defaultEntityKind(for: selectKind)
+        return SelectionFieldOption(
+            id: option.value,
+            title: title(for: option, entityKind: entityKind),
+            subtitle: option.description,
+            leading: leading(for: option, entityKind: entityKind),
+            titleStyle: titleStyle(
+                for: option,
+                entityKind: entityKind
+            ),
+            searchTerms: [option.value]
         )
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(placeholder)
-                .font(.headline)
-                .lineLimit(2)
-
-            TextField(
-                "Search",
-                text: Binding(
-                    get: { model.query },
-                    set: model.updateQuery
-                )
-            )
-            .textFieldStyle(.roundedBorder)
-            .focused($searchIsFocused)
-            .accessibilityLabel("Search component choices")
-
-            choiceContent
-        }
-        .padding(12)
-        .frame(width: 340, height: 300)
-        .task {
-            model.loadInitialChoices()
-            searchIsFocused = true
-        }
-        .onDisappear {
-            model.cancel()
+    private static func defaultEntityKind(
+        for selectKind: ComponentSelectKind
+    ) -> ComponentSelectOptionEntityKind? {
+        switch selectKind {
+        case .string:
+            nil
+        case .user:
+            .user
+        case .role:
+            .role
+        case .channel:
+            .channel
+        case .mentionable:
+            nil
         }
     }
 
-    @ViewBuilder
-    private var choiceContent: some View {
-        switch model.state {
-        case .idle, .loading:
-            Spacer()
-            ProgressView("Loading choices…")
-                .frame(maxWidth: .infinity)
-            Spacer()
-        case .loaded where model.choices.isEmpty:
-            ContentUnavailableView(
-                "No Matches",
-                systemImage: "magnifyingglass",
-                description: Text("Try a different search.")
+    private static func title(
+        for option: ComponentSelectOption,
+        entityKind: ComponentSelectOptionEntityKind?
+    ) -> String {
+        switch entityKind {
+        case .role:
+            option.label.hasPrefix("@")
+                ? String(option.label.dropFirst())
+                : option.label
+        case .channel:
+            option.label.hasPrefix("#")
+                ? String(option.label.dropFirst())
+                : option.label
+        case .user, nil:
+            option.label
+        }
+    }
+
+    private static func leading(
+        for option: ComponentSelectOption,
+        entityKind: ComponentSelectOptionEntityKind?
+    ) -> SelectionFieldLeading {
+        switch entityKind {
+        case .user:
+            return .remoteImage(
+                url: option.imageURL,
+                fallback: option.label,
+                shape: .circle
             )
-        case .loaded:
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    ForEach(model.choices) { option in
-                        Button {
-                            select(option)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(option.label)
-                                    .lineLimit(1)
-                                if let description = option.description {
-                                    Text(description)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 6)
-                        .accessibilityLabel(option.label)
-                        .accessibilityHint(
-                            option.description ?? "Select this option"
-                        )
-                    }
-                }
+        case .role:
+            return .role(
+                colorHex: option.colorHex,
+                iconURL: option.imageURL,
+                unicodeEmoji: option.unicodeEmoji
+            )
+        case .channel:
+            return .systemImage(
+                ChannelIconPresentation.systemImage(
+                    for: option.channelKind ?? .unknown,
+                    isHidden: false
+                )
+            )
+        case nil:
+            if let imageURL = option.imageURL {
+                return .remoteImage(
+                    url: imageURL,
+                    fallback: option.label,
+                    shape: (option.imageShape ?? .circle) == .circle
+                        ? .circle
+                        : .roundedRectangle
+                )
             }
-        case let .failed(message):
-            ContentUnavailableView(
-                "Choices Unavailable",
-                systemImage: "exclamationmark.triangle",
-                description: Text(message)
+            return option.emoji.map(leading(for:)) ?? .none
+        }
+    }
+
+    private static func titleStyle(
+        for option: ComponentSelectOption,
+        entityKind: ComponentSelectOptionEntityKind?
+    ) -> SelectionFieldTitleStyle {
+        switch entityKind {
+        case .user:
+            .memberColor(option.colorHex)
+        case .role:
+            .roleColor(option.colorHex)
+        case .channel, nil:
+            .standard
+        }
+    }
+
+    static func leading(
+        for emoji: EmojiReference
+    ) -> SelectionFieldLeading {
+        if let url = emoji.imageURL(size: 64) {
+            return .remoteImage(
+                url: url,
+                fallback: emoji.name,
+                shape: .roundedRectangle
             )
+        }
+        return .text(emoji.name)
+    }
+
+    static func fieldHeight(
+        options: [ComponentSelectOption],
+        selectKind: ComponentSelectKind,
+        fieldWidth: CGFloat
+    ) -> CGFloat {
+        SelectionFieldLayoutMetrics.preferredHeight(
+            options: options.map {
+                fieldOption($0, selectKind: selectKind)
+            },
+            width: fieldWidth,
+            usesCards: true
+        )
+    }
+}
+
+extension NativeTimelineComponentLayout {
+    func selectMediaKeys(
+        _ hiddenContainerFrames: [CGRect]
+    ) -> [NativeTimelineMediaKey] {
+        selects.flatMap { select -> [NativeTimelineMediaKey] in
+            guard !NativeTimelineSpoilerConcealmentPolicy
+                .isInsideHiddenContainer(
+                    select.frame,
+                    hiddenContainerFrames: hiddenContainerFrames
+                )
+            else { return [] }
+            return select.selectedOptions.flatMap { option in
+                var keys: [NativeTimelineMediaKey] = []
+                if let url = option.imageURL, !url.isFileURL {
+                    keys.append(.media(
+                        url,
+                        maximumPixelDimension: 64
+                    ))
+                }
+                if let emoji = option.emoji,
+                   emoji.id != nil,
+                   let url = emoji.imageURL(size: 32)
+                {
+                    keys.append(.media(
+                        url,
+                        maximumPixelDimension: 64
+                    ))
+                }
+                return keys
+            }
         }
     }
 }

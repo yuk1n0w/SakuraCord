@@ -122,11 +122,13 @@ struct MessageTimelineView: View {
                 } label: {
                     Label("New messages", systemImage: "arrow.down")
                         .font(.callout.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .environment(\.colorScheme, .dark)
                         .padding(.horizontal, 15)
                         .padding(.vertical, 8)
                         .contentShape(Capsule())
                         .glassEffect(
-                            .regular.tint(Color.accentColor).interactive(),
+                            .regular.tint(SakuraCordAccentColor.color).interactive(),
                             in: Capsule()
                         )
                 }
@@ -203,6 +205,7 @@ struct MessageTimelineView: View {
         }
         .onExitCommand {
             guard !model.consumeEscapeForMediaViewer() else { return }
+            guard !model.consumeEscapeForPinnedMessages() else { return }
             guard !model.consumeEscapeForUnfocusedMessageSearch() else { return }
             guard !model.consumeEscapeForReply(in: .channel) else { return }
             guard !model.consumeEscapeForComposerAttachments(in: .channel) else { return }
@@ -673,7 +676,7 @@ struct MessageTimelineLoadingSkeleton: View {
     var body: some View {
         SkeletonShimmerTimeline {
             ZStack {
-                Color(nsColor: .windowBackgroundColor)
+                SakuraCordThemeBackground()
                 GeometryReader { geometry in
                     VStack(alignment: .leading, spacing: 20) {
                         ForEach(
@@ -726,11 +729,13 @@ struct ChannelBeginningView: View {
             Text(title)
                 .font(.largeTitle.weight(.bold))
                 .textSelection(.enabled)
+                .tint(SakuraCordAccentColor.color)
 
             Text(description)
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
+                .tint(SakuraCordAccentColor.color)
         }
         .padding(.horizontal, 16)
         .padding(.top, 28)

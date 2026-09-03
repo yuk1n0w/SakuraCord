@@ -20,6 +20,9 @@ workspace is a convenience entry point.
 Dependencies point inward toward models and explicit protocols. Views do not
 construct Discord requests or own network transports.
 
+The app resource catalog vendors only SocialSymbols' GitHub and Discord symbol
+sets for the About settings page. No SocialSymbols package dependency is used.
+
 ## Application state
 
 `AppModel` is a Main Actor observable projection over a `ChatProvider` and
@@ -32,6 +35,9 @@ Launch state is explicit:
 - `--offline`, `--offline-long-server-list`, and
   `--offline-forum-performance` construct deterministic fixture providers and
   an in-memory database with Discord networking disabled.
+- `--offline-pins-performance-autoscroll` opens a deterministic 5,000-message
+  paginated pin fixture through the production pin state and shared native
+  timeline, using the existing display-link scroll benchmark and signposts.
 - A normal launch restores a real account session, presents native sign-in, or
   reports a connection failure. It never falls back to mock data. The complete
   chat layout remains a data-free skeleton until the live Gateway bootstrap is
@@ -43,23 +49,29 @@ observable models so it does not invalidate the complete app tree.
 
 `AppUpdateController` owns Sparkle's `SPUStandardUpdaterController` for the
 application lifetime. It starts only when the canonical release bundle contains
-the complete production update configuration. Source, debug, ad-hoc developer,
-and offline builds omit that configuration, make no update request, and leave
-the native **Check for Updates…** controls disabled.
+the complete production update configuration. Builds packaged without that
+configuration make no update request and leave the native **Check for Updates…**
+controls disabled. Code-signing identity does not determine updater eligibility;
+official ad-hoc-signed releases include the production update configuration.
 Production checks the signed feed every six hours while the app is running, or
 after launch when a check is overdue, and presents Sparkle's standard update
 alert when a release is available. Sparkle persists the user's automatic-check
 and automatic-download preferences. Installation remains manual by default.
 Sparkle's standard user driver reports no-update and update-cycle failures.
-The General settings pane also persists a regular/nightly release-track choice.
+The Updates settings pane also persists a regular/nightly release-track choice.
+Until the user makes that choice, the selected track matches the installed
+bundle, so a fresh Nightly installation checks the Nightly feed and a fresh
+Regular installation checks the Regular feed.
 `AppUpdateController` supplies the selected signed feed through Sparkle's
 dynamic-feed delegate. Changing tracks immediately requests a silent Sparkle
 information check, or queues one until the current update cycle ends. When that
 probe finds an update, the controller asks Sparkle to present its normal update
-alert; an up-to-date result remains silent. Returning to
-the regular track selects the stable feed immediately; Sparkle offers the next
-regular release whose shared workflow build number is newer than the installed
-nightly build rather than performing an unsupported downgrade.
+alert; an up-to-date result remains silent. Returning to the regular track
+selects the stable feed immediately. This macOS 26 fork uses upstream Sparkle
+2.9.4 and retains its normal downgrade protection on both tracks. Switching
+tracks does not install a lower build number; returning to an older Regular
+build requires a manual installation. The normal Sparkle alert, verification,
+download, installation, and relaunch flow remain in place.
 
 ## Discord boundary
 
@@ -95,7 +107,10 @@ Within the production provider:
   uploads, native-authentication traffic, and main, voice, and remote-auth
   Gateway envelopes at those transport boundaries. It discards user-authored and
   credential-bearing values, IDs, nonces, request IDs, and rate-limit bucket IDs
-  before retaining a bounded in-memory session log. The Diagnostics settings
+  before retaining a bounded in-memory session log. The export also retains
+  scalar-only Voice socket closure, reconnect, timeout, migration, and app-state
+  lifecycle events even when detailed payload capture is disabled, so transport
+  loops remain diagnosable without retaining content. The Diagnostics settings
   pane exports the retained JSON Lines data and reports when older entries were
   dropped. Its optional disk capture is off by default and writes private JSON
   Lines session files under Application Support only after the user enables it.
@@ -152,6 +167,11 @@ the app starts its read-only newest-history request concurrently with the
 remaining navigation projection and consumes that single in-flight task when
 the channel loader starts. This prefetch is process-only coordination: it is
 cancelled on account/session reset and never persists messages across launches.
+The current user's full profile is likewise prefetched into the account-scoped
+in-memory profile cache once the initial guild context is known, and again when
+that context changes, so the You Bar can present its final profile card without
+an intermediate loading-sized popover. Prefetch failures remain silent and the
+ordinary on-demand profile loader remains the fallback.
 
 Authenticated performance launch modes retain detailed signposts and exact
 resource windows for startup, account switching, DM/server/channel navigation,
@@ -173,6 +193,15 @@ quitting discards it.
 History responses and Gateway events decode into the same domain message
 model. Updates merge only fields present in the event. `MessageRendering`
 parses message content; it does not own a competing message-row view.
+
+Pinned-message pages and mutation serialization belong to account-scoped
+`AppModel` session state. Typed page and message-pin values live in
+`SakuraCordModels`; `ChatProvider` owns the paginated read and Pin/Unpin
+boundary; `DiscordRESTProvider` and `MockChatProvider` implement it. The pins
+popover supplies `.pins(channelID)` rows to `NativeMessageTimelineView`, so it
+reuses normal rich rendering, menus, accessibility, and exact-message
+navigation without inheriting history acknowledgement, unread, composer, or
+sidebar ownership.
 
 Every rendered conversation surface—guild text and announcement channels,
 direct and group direct messages, voice-channel chat, regular threads, and
@@ -316,8 +345,8 @@ work, not an implemented architecture claim.
 `script/build_and_run.sh` builds the debug or release SwiftPM product, assembles the `.app`,
 compiles the selected Icon Composer source with `actool`, embeds frameworks and
 resource bundles, copies the complete third-party notices into the app's
-otherwise hidden `Contents/Resources/THIRD_PARTY_NOTICES.md`, and ad-hoc signs
-the result.
+resources, copies the canonical versioned release notes into
+`Contents/Resources/Releases`, and ad-hoc signs the result.
 
 The canonical icon sources are:
 
@@ -356,11 +385,12 @@ Nightly beta tags must point to commits on the `nightly` source branch, use
 human-facing `vX.Y.Z Beta N` release and Discord titles, and use tag-specific
 `SakuraCord-vX.Y.Z-Beta-N.dmg` assets. They run the same validation and
 packaging job, publish as GitHub prereleases, and select their dedicated
-Discord channel and role. Only after a
-nightly prerelease's assets are publicly re-downloaded and compared does the
-workflow atomically update the signed appcast on the generated `nightly-feed`
-branch. The application reads that feed from
-`https://raw.githubusercontent.com/SakuraCordApp/SakuraCord/nightly-feed/appcast.xml`.
+Discord channel and role. The application reads the latest signed prerelease
+appcast through the website's Cloudflare Worker at
+`https://sakuracord.app/updates/appcast.xml`. The Worker selects the newest
+published GitHub prerelease and serves its canonical `appcast.xml` asset with a
+short cache lifetime; no generated source branch or cross-repository write
+credential is required.
 If a maintainer edits the GitHub Release body after publication, a
 release-edit workflow downloads the unchanged DMG,
 preserves its build number, regenerates and verifies the signed appcast with the

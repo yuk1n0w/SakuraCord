@@ -880,6 +880,12 @@ private final class QuickSwitcherResultCanvas: NSView {
 
     override var isFlipped: Bool { true }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+        layer?.setNeedsDisplay()
+    }
+
     private var rows: [QuickSwitcherRowPresentation] = []
     private var origins: [CGFloat] = []
     private var selectedResultID: QuickSwitcherResultID?
@@ -1164,7 +1170,7 @@ private final class QuickSwitcherResultCanvas: NSView {
             if let image = images[url] {
                 drawImage(image, in: rect, context: context)
             } else {
-                NSColor.controlAccentColor.setFill()
+                NSColor.sakuraCordAccentColor.setFill()
                 context.fillEllipse(in: rect)
                 drawText(
                     String(row.title.prefix(1)).uppercased(),
@@ -1399,6 +1405,12 @@ private struct QuickSwitcherSearchField: NSViewRepresentable {
         func controlTextDidChange(_ notification: Notification) {
             guard let field = notification.object as? NSTextField else { return }
             text = field.stringValue
+        }
+
+        func controlTextDidBeginEditing(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            (field.currentEditor() as? NSTextView)?
+                .applySakuraCordTextSelectionAppearance()
         }
 
         func control(

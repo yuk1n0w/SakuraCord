@@ -423,6 +423,7 @@ extension NativeTimelineRowLayout {
             beginningLayout: nil,
             searchSectionRegion: nil,
             searchCardFrame: nil,
+            bubbleRegion: nil,
             highlightFrame: CGRect(
                 x: 0,
                 y: prefixHeight,
@@ -455,6 +456,7 @@ extension NativeTimelineRowLayout {
             attachmentRegions: attachmentRegions,
             embedFrames: embedRegions.map(\.frame),
             embedRegions: embedRegions,
+            sakuraCordDeepLinkRegions: [],
             componentFrames: [],
             componentLayouts: [],
             stickerFrames: stickerFrames,
@@ -462,7 +464,8 @@ extension NativeTimelineRowLayout {
             reactionRegions: reactionRegions,
             addReactionFrame: addReactionFrame,
             ephemeralRegion: nil,
-            failedFrame: failedFrame
+            failedFrame: failedFrame,
+            pinnedAtFrame: nil
         )
     }
 
@@ -604,7 +607,7 @@ extension NativeTimelineRowLayout {
 
         let sizes = presented.map { reactionSize($0, showsReactors: showsReactors) }
             + [CGSize(
-                width: ReactionActionMenuPresentation.inline.width,
+                width: ReactionActionMenuPresentation.inline.width(enlarged: false),
                 height: MessageReactionMetrics.pillHeight
             )]
         let wrapping = InlineWrappingLayoutPlan.frames(

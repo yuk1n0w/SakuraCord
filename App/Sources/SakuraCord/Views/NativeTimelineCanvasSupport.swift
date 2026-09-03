@@ -190,11 +190,14 @@ nonisolated enum NativeTimelineMessageMenuAction: Equatable {
     case forward
     case markUnread
     case editMessage
+    case pinMessage
+    case unpinMessage
     case copyText
     case copyLink
     case copyMessageID
     case copyAuthorID
     case deleteMessage
+    case discardFailedMessage
 }
 
 nonisolated enum NativeTimelineSearchResultPresentation {
@@ -214,28 +217,79 @@ nonisolated enum NativeTimelineMessageMenuEntry: Equatable {
 nonisolated enum NativeTimelineMessageMenuPolicy {
     static func entries(
         canEdit: Bool,
+        canDelete: Bool,
         canRetry: Bool,
         canReply: Bool,
         canForward: Bool = false,
+        canPin: Bool = false,
+        isPinned: Bool = false,
         context: NativeTimelineMessageInteractionContext = .conversation
     ) -> [NativeTimelineMessageMenuEntry] {
         if context == .searchResult {
-            return searchResultEntries(canDelete: canEdit)
+            return resultEntries(
+                canDelete: canDelete,
+                canPin: canPin,
+                isPinned: isPinned,
+                includesMarkUnread: true
+            )
+        }
+        if context == .pinnedResult {
+            return resultEntries(
+                canDelete: canDelete,
+                canPin: canPin,
+                isPinned: true,
+                includesMarkUnread: false
+            )
+        }
+
+        return conversationEntries(
+            canEdit: canEdit,
+            canDelete: canDelete,
+            canRetry: canRetry,
+            canReply: canReply,
+            canForward: canForward,
+            canPin: canPin,
+            isPinned: isPinned
+        )
+    }
+
+    private static func conversationEntries(
+        canEdit: Bool,
+        canDelete: Bool,
+        canRetry: Bool,
+        canReply: Bool,
+        canForward: Bool,
+        canPin: Bool,
+        isPinned: Bool
+    ) -> [NativeTimelineMessageMenuEntry] {
+        if canRetry {
+            return [
+                .action(
+                    .retrySending,
+                    title: "Retry Send",
+                    systemImage: "arrow.clockwise"
+                ),
+                .separator,
+                .action(
+                    .copyText,
+                    title: "Copy Text",
+                    systemImage: "doc.on.doc"
+                ),
+                .separator,
+                .action(
+                    .discardFailedMessage,
+                    title: "Delete Message",
+                    systemImage: "trash",
+                    isDestructive: true
+                ),
+            ]
         }
 
         var result: [NativeTimelineMessageMenuEntry] = []
-        if canRetry {
-            result.append(.action(
-                .retrySending,
-                title: "Retry Sending",
-                systemImage: "arrow.clockwise"
-            ))
-            result.append(.separator)
-        }
         result.append(.action(
             .addReaction,
             title: "Add Reaction",
-            systemImage: "face.smiling.inverse"
+            systemImage: SakuraCordSystemSymbol.emojiFaceGrinning
         ))
         if canReply {
             result.append(.action(
@@ -256,6 +310,13 @@ nonisolated enum NativeTimelineMessageMenuPolicy {
                 .editMessage,
                 title: "Edit Message",
                 systemImage: "pencil"
+            ))
+        }
+        if canPin {
+            result.append(.action(
+                isPinned ? .unpinMessage : .pinMessage,
+                title: isPinned ? "Unpin Message" : "Pin Message",
+                systemImage: isPinned ? "pin.slash" : "pin"
             ))
         }
         result.append(.action(
@@ -279,7 +340,7 @@ nonisolated enum NativeTimelineMessageMenuPolicy {
             title: "Copy Message ID",
             systemImage: "number.square.fill"
         ))
-        if canEdit {
+        if canDelete {
             result.append(.separator)
             result.append(.action(
                 .deleteMessage,
@@ -291,8 +352,11 @@ nonisolated enum NativeTimelineMessageMenuPolicy {
         return result
     }
 
-    private static func searchResultEntries(
-        canDelete: Bool
+    private static func resultEntries(
+        canDelete: Bool,
+        canPin: Bool,
+        isPinned: Bool,
+        includesMarkUnread: Bool
     ) -> [NativeTimelineMessageMenuEntry] {
         var result: [NativeTimelineMessageMenuEntry] = [
             .action(
@@ -301,12 +365,23 @@ nonisolated enum NativeTimelineMessageMenuPolicy {
                 systemImage: NativeTimelineSearchResultPresentation
                     .jumpToMessageSystemImage
             ),
-            .action(
+        ]
+        if includesMarkUnread {
+            result.append(.action(
                 .markUnread,
                 title: "Mark Unread",
                 systemImage: "envelope.badge"
-            ),
-            .separator,
+            ))
+        }
+        if canPin {
+            result.append(.action(
+                isPinned ? .unpinMessage : .pinMessage,
+                title: isPinned ? "Unpin Message" : "Pin Message",
+                systemImage: isPinned ? "pin.slash" : "pin"
+            ))
+        }
+        result.append(.separator)
+        result.append(contentsOf: [
             .action(
                 .copyText,
                 title: "Copy Text",
@@ -327,7 +402,7 @@ nonisolated enum NativeTimelineMessageMenuPolicy {
                 title: "Copy Message Author ID",
                 systemImage: "number.square.fill"
             ),
-        ]
+        ])
         if canDelete {
             result.append(contentsOf: [
                 .separator,
@@ -466,6 +541,7 @@ nonisolated struct NativeTimelineTextSpoilerRevealKey: Hashable {
 
 @MainActor
 final class NativeTimelineSpoilerRevealStore {
+    var revealMode: ChatSpoilerRevealMode = .click
     var revealedMedia: Set<NativeTimelineComponentRevealKey> = []
     var revealedText: Set<NativeTimelineTextSpoilerRevealKey> = []
     var observers: [UUID: (MessageID) -> Void] = [:]
@@ -473,13 +549,14 @@ final class NativeTimelineSpoilerRevealStore {
     func isMediaRevealed(
         _ key: NativeTimelineComponentRevealKey
     ) -> Bool {
-        revealedMedia.contains(key)
+        revealMode == .always || revealedMedia.contains(key)
     }
 
     @discardableResult
     func revealMedia(
         _ key: NativeTimelineComponentRevealKey
     ) -> Bool {
+        guard permitsCurrentRevealInteraction else { return false }
         let inserted = revealedMedia.insert(key).inserted
         if inserted {
             notifyObservers(messageID: key.messageID)
@@ -490,13 +567,14 @@ final class NativeTimelineSpoilerRevealStore {
     func isTextRevealed(
         _ key: NativeTimelineTextSpoilerRevealKey
     ) -> Bool {
-        revealedText.contains(key)
+        revealMode == .always || revealedText.contains(key)
     }
 
     @discardableResult
     func revealText(
         _ key: NativeTimelineTextSpoilerRevealKey
     ) -> Bool {
+        guard permitsCurrentRevealInteraction else { return false }
         let inserted = revealedText.insert(key).inserted
         if inserted {
             notifyObservers(messageID: key.messageID)
@@ -518,6 +596,40 @@ final class NativeTimelineSpoilerRevealStore {
                 }
                 .map(\.rangeLocation)
         )
+    }
+
+    func revealedTextLocations(
+        messageID: MessageID,
+        contentID: String,
+        value: NSAttributedString
+    ) -> Set<Int> {
+        guard revealMode == .always else {
+            return revealedTextLocations(
+                messageID: messageID,
+                contentID: contentID,
+                contentHash: value.string.hashValue
+            )
+        }
+        var locations: Set<Int> = []
+        value.enumerateAttribute(
+            .discordMarkdownSpoiler,
+            in: NSRange(location: 0, length: value.length)
+        ) { rawValue, range, _ in
+            if (rawValue as? NSNumber)?.boolValue == true {
+                locations.insert(range.location)
+            }
+        }
+        return locations
+    }
+
+    private var permitsCurrentRevealInteraction: Bool {
+        guard revealMode != .always else { return true }
+        guard let event = NSApp?.currentEvent else {
+            // Accessibility actions do not necessarily have a backing pointer
+            // event, so they remain an equivalent way to reveal a spoiler.
+            return true
+        }
+        return revealMode.permitsReveal(modifierFlags: event.modifierFlags)
     }
 
     func reset() {
@@ -732,6 +844,11 @@ nonisolated struct NativeTimelineComponentButtonTarget: Hashable {
     let componentID: String
 }
 
+nonisolated struct NativeTimelineComponentSelectTarget: Hashable {
+    let messageID: MessageID
+    let componentID: String
+}
+
 nonisolated enum NativeTimelineComponentButtonVisualState {
     static let pressAnimationDuration: TimeInterval = 0.09
 
@@ -825,6 +942,23 @@ nonisolated enum NativeTimelinePointerActivationPolicy {
         released: T?
     ) -> Bool {
         pressed != nil && pressed == released
+    }
+}
+
+nonisolated enum NativeTimelineResultActivationPolicy {
+    static func frame(
+        for context: NativeTimelineMessageInteractionContext,
+        searchCardFrame: CGRect?,
+        highlightFrame: CGRect?
+    ) -> CGRect? {
+        switch context {
+        case .searchResult:
+            searchCardFrame
+        case .pinnedResult:
+            highlightFrame
+        case .conversation:
+            nil
+        }
     }
 }
 
@@ -1024,15 +1158,26 @@ final class NativeTimelineLoadingIndicator: NSView {
             1
         )
         layer?.addSublayer(replicator)
-        spoke.backgroundColor = NSColor.secondaryLabelColor
-            .withAlphaComponent(0.82).cgColor
         replicator.addSublayer(spoke)
+        updateColorsForEffectiveAppearance()
         startAnimating()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateColorsForEffectiveAppearance()
+    }
+
+    private func updateColorsForEffectiveAppearance() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            spoke.backgroundColor = NSColor.secondaryLabelColor
+                .withAlphaComponent(0.82).cgColor
+        }
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -1061,6 +1206,7 @@ final class NativeTimelineLoadingIndicator: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        updateColorsForEffectiveAppearance()
         if window == nil {
             replicator.removeAnimation(forKey: "rotation")
         } else {
@@ -1103,15 +1249,31 @@ final class NativeTimelineInlineVideoOverlay: NSView {
         layer?.cornerRadius = 8
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = true
-        layer?.backgroundColor = NativeTimelineSemanticColor.opacity(
-            .secondaryLabelColor,
-            0.10
-        ).cgColor
+        updateColorsForEffectiveAppearance()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateColorsForEffectiveAppearance()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateColorsForEffectiveAppearance()
+    }
+
+    private func updateColorsForEffectiveAppearance() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = NativeTimelineSemanticColor.opacity(
+                .secondaryLabelColor,
+                0.10
+            ).cgColor
+        }
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -1686,7 +1848,7 @@ final class NativeTimelineSpoilerOverlayHost: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         if window?.firstResponder === self {
-            NSColor.keyboardFocusIndicatorColor.setStroke()
+            NSColor.sakuraCordAccentColor.setStroke()
             let focus = NSBezierPath(
                 concentricRoundedRect: bounds.insetBy(dx: 2, dy: 2),
                 cornerRadius: max(1, cornerRadius - 2)
@@ -1755,10 +1917,7 @@ final class NativeTimelineAnimatedMediaOverlay: NSView {
         imageClipView.addSubview(imageView)
 
         selectionView.wantsLayer = true
-        selectionView.layer?.backgroundColor =
-            NSColor.selectedTextBackgroundColor
-                .withAlphaComponent(0.5)
-                .cgColor
+        updateSelectionColor()
         selectionView.isHidden = true
         addSubview(selectionView)
     }
@@ -1766,6 +1925,16 @@ final class NativeTimelineAnimatedMediaOverlay: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateSelectionColor()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateSelectionColor()
     }
 
     func display(
@@ -1777,6 +1946,7 @@ final class NativeTimelineAnimatedMediaOverlay: NSView {
         opacity: CGFloat,
         fillsFrame: Bool
     ) {
+        updateSelectionColor()
         imageClipView.frame = mediaFrame
         imageClipView.alphaValue = opacity
         imageClipView.layer?.cornerRadius = cornerRadius
@@ -1792,6 +1962,15 @@ final class NativeTimelineAnimatedMediaOverlay: NSView {
             selectionView.isHidden = false
         } else {
             selectionView.isHidden = true
+        }
+    }
+
+    private func updateSelectionColor() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            selectionView.layer?.backgroundColor =
+                NSColor.sakuraCordTextSelectionBackgroundColor
+                    .withAlphaComponent(0.5)
+                    .cgColor
         }
     }
 

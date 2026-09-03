@@ -16,10 +16,16 @@ nonisolated enum NativeMemberListMetrics {
     static let paintedRowHeight: CGFloat = 44
     static let avatarSize: CGFloat = 34
     static let avatarContainerSize: CGFloat = 38.08
+    static let presenceIndicatorSize: CGFloat = 11
     static let rowCornerRadius: CGFloat = 9
     static let prewarmItemCount = 8
     static let activityEmojiSize: CGFloat = 15
     static let maximumVisibleAnimatedEmojiCount = 64
+}
+
+nonisolated struct NativeMemberListPresentation: Equatable, Sendable {
+    var showsActivityDetails = true
+    var showsRoleColors = true
 }
 
 nonisolated enum MemberListSkeletonLayout {
@@ -160,6 +166,7 @@ struct NativeMemberListView: NSViewRepresentable {
     let dismissProfile: () -> Void
     let runsPerformanceAutoScroll: Bool
     let viewportIdentity: ChannelID?
+    var presentation = NativeMemberListPresentation()
     var onViewportRange: (ClosedRange<Int>) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator {
@@ -193,6 +200,23 @@ final class NativeMemberListScrollView: NSScrollView {
     override func layout() {
         super.layout()
         synchronizeCanvasFrame()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateBackgroundForEffectiveAppearance()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateBackgroundForEffectiveAppearance()
+    }
+
+    private func updateBackgroundForEffectiveAppearance() {
+        backgroundColor = .clear
+        needsDisplay = true
+        contentView.needsDisplay = true
+        documentView?.needsDisplay = true
     }
 
     func synchronizeCanvasFrame() {
@@ -242,6 +266,7 @@ final class NativeMemberListCoordinator: NSObject {
     var performanceInterval: OSSignpostIntervalState?
     var documentPreparationTask: Task<Void, Never>?
     var requestedSections: [MemberSection]?
+    var requestedPresentation: NativeMemberListPresentation?
     var documentPreparationGeneration: UInt64 = 0
     let animatedImageScrollSource = AnimatedImageInteractiveScrollSource.memberList(UUID())
     var animatedImageScrollRevision: UInt64 = 0
@@ -259,8 +284,7 @@ final class NativeMemberListCoordinator: NSObject {
         let scrollView = NativeMemberListScrollView()
         scrollView.inputPerformanceProbe.install(on: scrollView)
         scrollView.documentView = canvas
-        scrollView.drawsBackground = true
-        scrollView.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.45)
+        scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
@@ -274,6 +298,17 @@ final class NativeMemberListCoordinator: NSObject {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.viewportDidScroll() }
+        })
+        observations.append(center.addObserver(
+            forName: .sakuraCordThemeDidCommit,
+            object: nil,
+            queue: .main
+        ) { [weak self, weak scrollView] _ in
+            MainActor.assumeIsolated {
+                scrollView?.needsDisplay = true
+                scrollView?.contentView.needsDisplay = true
+                self?.canvas?.needsDisplay = true
+            }
         })
         self.scrollView = scrollView
         self.canvas = canvas
@@ -307,6 +342,7 @@ final class NativeMemberListCoordinator: NSObject {
         }
         requestDocumentUpdate(
             sections: parent.sections,
+            presentation: parent.presentation,
             scrollView: scrollView,
             canvas: canvas
         )
@@ -404,10 +440,13 @@ final class NativeMemberListCoordinator: NSObject {
 
     func requestDocumentUpdate(
         sections: [MemberSection],
+        presentation: NativeMemberListPresentation,
         scrollView: NSScrollView,
         canvas: NativeMemberListCanvasView
     ) {
-        guard requestedSections != sections else { return }
+        guard requestedSections != sections
+            || requestedPresentation != presentation
+        else { return }
         if parent.runsPerformanceAutoScroll {
             let layoutSections = sections.map(PerformanceLayoutSection.init)
             if performanceLayoutSections != layoutSections {
@@ -418,6 +457,7 @@ final class NativeMemberListCoordinator: NSObject {
             }
         }
         requestedSections = sections
+        requestedPresentation = presentation
         documentPreparationGeneration &+= 1
         let generation = documentPreparationGeneration
         documentPreparationTask?.cancel()
@@ -436,6 +476,7 @@ final class NativeMemberListCoordinator: NSObject {
             documentPreparationTask = nil
             guard let document = NativeMemberListCanvasView.prepareDocument(
                 sections: sections,
+                presentation: presentation,
                 reusing: preparationSnapshot
             ) else { return }
             applyPreparedDocument(
@@ -454,6 +495,7 @@ final class NativeMemberListCoordinator: NSObject {
                 ) {
                     NativeMemberListCanvasView.prepareDocument(
                         sections: sections,
+                        presentation: presentation,
                         reusing: preparationSnapshot,
                         cancelsCooperatively: true
                     )
@@ -468,6 +510,7 @@ final class NativeMemberListCoordinator: NSObject {
                   !Task.isCancelled,
                   self.documentPreparationGeneration == generation,
                   self.requestedSections == sections,
+                  self.requestedPresentation == presentation,
                   let document,
                   let scrollView,
                   let canvas
@@ -489,7 +532,8 @@ final class NativeMemberListCoordinator: NSObject {
         canvas: NativeMemberListCanvasView
     ) {
         guard documentPreparationGeneration == generation,
-              requestedSections == document.sections
+              requestedSections == document.sections,
+              requestedPresentation == document.presentation
         else { return }
         _ = AppPerformanceSignposts.measureSync("MemberListDocumentPublication") {
             canvas.applyPreparedDocument(document)
@@ -764,6 +808,7 @@ final class NativeMemberListCanvasView: NSView {
     }
 
     nonisolated struct PreparationSnapshot: Sendable {
+        let presentation: NativeMemberListPresentation
         let sections: [MemberSection]
         let items: [Item]
         let itemIndexesByID: [ItemID: Int]
@@ -774,6 +819,7 @@ final class NativeMemberListCanvasView: NSView {
     }
 
     nonisolated struct PreparedDocument: Sendable {
+        let presentation: NativeMemberListPresentation
         let sections: [MemberSection]
         let items: [Item]
         let itemIndexesByID: [ItemID: Int]
@@ -836,6 +882,20 @@ final class NativeMemberListCanvasView: NSView {
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+        layer?.setNeedsDisplay()
+        rowOverlay?.needsDisplay = true
+        rowForegroundOverlay?.needsDisplay = true
+        for overlay in avatarOverlays.values {
+            overlay.needsDisplay = true
+        }
+        for overlay in activityEmojiOverlays.values {
+            overlay.needsDisplay = true
+        }
+    }
+
     var items: [Item] = []
     var presentedSections: [MemberSection] = []
     var itemIndexesByID: [ItemID: Int] = [:]
@@ -843,6 +903,7 @@ final class NativeMemberListCanvasView: NSView {
     var origins: [CGFloat] = []
     var contentHeight: CGFloat = 1
     var preparedText: [ItemID: PreparedText] = [:]
+    var presentation = NativeMemberListPresentation()
     var loadedItemIndexes: [Int] = []
     var selectedMemberID: UserID?
     var profilePresentation: ProfilePresentationState?
@@ -961,6 +1022,7 @@ final class NativeMemberListCanvasView: NSView {
         guard sections != presentedSections else { return false }
         guard let document = Self.prepareDocument(
             sections: sections,
+            presentation: presentation,
             reusing: preparationSnapshot()
         ) else {
             return false
@@ -973,8 +1035,11 @@ final class NativeMemberListCanvasView: NSView {
         _ document: PreparedDocument,
         previousItems suppliedPreviousItems: [Item]? = nil
     ) -> Bool {
-        guard document.sections != presentedSections else { return false }
+        guard document.sections != presentedSections
+            || document.presentation != presentation
+        else { return false }
         let previousItems = suppliedPreviousItems ?? items
+        presentation = document.presentation
         presentedSections = document.sections
         items = document.items
         itemIndexesByID = document.itemIndexesByID
@@ -1060,15 +1125,19 @@ final class NativeMemberListCanvasView: NSView {
 
     nonisolated static func prepareDocument(
         sections: [MemberSection],
+        presentation: NativeMemberListPresentation = .init(),
         reusing preparationSnapshot: PreparationSnapshot? = nil,
         cancelsCooperatively: Bool = false
     ) -> PreparedDocument? {
-        if let preparationSnapshot {
+        if let preparationSnapshot,
+           preparationSnapshot.presentation == presentation
+        {
             let stableDocument = AppPerformanceSignposts.measureSync(
                 "MemberListStableLayoutPreparation"
             ) {
                 prepareStableLayoutDocument(
                     sections: sections,
+                    presentation: presentation,
                     reusing: preparationSnapshot,
                     cancelsCooperatively: cancelsCooperatively
                 )
@@ -1100,12 +1169,14 @@ final class NativeMemberListCanvasView: NSView {
         ) {
             prepareText(
                 for: items,
+                presentation: presentation,
                 reusing: preparationSnapshot,
                 cancelsCooperatively: cancelsCooperatively
             )
         }
         guard let preparedText else { return nil }
         return PreparedDocument(
+            presentation: presentation,
             sections: sections,
             items: items,
             itemIndexesByID: itemIndexesByID,
@@ -1128,6 +1199,7 @@ final class NativeMemberListCanvasView: NSView {
 
     private nonisolated static func prepareStableLayoutDocument(
         sections: [MemberSection],
+        presentation: NativeMemberListPresentation,
         reusing snapshot: PreparationSnapshot,
         cancelsCooperatively: Bool
     ) -> PreparedDocument? {
@@ -1144,6 +1216,7 @@ final class NativeMemberListCanvasView: NSView {
         let changedIndexes = replacements.keys.sorted()
         guard let replacementText = prepareText(
             for: changedIndexes.compactMap { replacements[$0] },
+            presentation: presentation,
             reusing: nil,
             cancelsCooperatively: cancelsCooperatively
         ) else { return nil }
@@ -1351,6 +1424,7 @@ final class NativeMemberListCanvasView: NSView {
             }
         }
         return PreparedDocument(
+            presentation: snapshot.presentation,
             sections: sections,
             items: items,
             itemIndexesByID: itemIndexesByID,
@@ -1432,6 +1506,7 @@ final class NativeMemberListCanvasView: NSView {
 
     func preparationSnapshot() -> PreparationSnapshot {
         PreparationSnapshot(
+            presentation: presentation,
             sections: presentedSections,
             items: items,
             itemIndexesByID: itemIndexesByID,
@@ -1444,14 +1519,17 @@ final class NativeMemberListCanvasView: NSView {
 
     private nonisolated static func prepareText(
         for items: [Item],
+        presentation: NativeMemberListPresentation,
         reusing preparationSnapshot: PreparationSnapshot?,
         cancelsCooperatively: Bool
     ) -> [ItemID: PreparedText]? {
         let nameFont = NSFont.systemFont(
-            ofSize: NSFont.preferredFont(forTextStyle: .body).pointSize,
+            ofSize: InterfaceTypographyMetrics.interfaceTextSize,
             weight: .semibold
         )
-        let activityFont = NSFont.systemFont(ofSize: 12)
+        let activityFont = NSFont.systemFont(
+            ofSize: max(10, InterfaceTypographyMetrics.interfaceTextSize - 1)
+        )
         var preparedText: [ItemID: PreparedText] = [:]
         preparedText.reserveCapacity(min(
             items.count,
@@ -1466,7 +1544,8 @@ final class NativeMemberListCanvasView: NSView {
             }
             let item = items[index]
             guard case .member(let member, _) = item else { continue }
-            if let previousIndex = preparationSnapshot?.itemIndexesByID[item.id],
+            if preparationSnapshot?.presentation == presentation,
+               let previousIndex = preparationSnapshot?.itemIndexesByID[item.id],
                let previousItems = preparationSnapshot?.items,
                previousItems.indices.contains(previousIndex),
                previousItems[previousIndex] == item,
@@ -1475,22 +1554,27 @@ final class NativeMemberListCanvasView: NSView {
                 preparedText[item.id] = existing
                 continue
             }
-            let nameColor = MessageAuthorPresentation.topRoleColor(in: member.roles)
-                .map(Self.color(hex:)) ?? .labelColor
-            let alpha: CGFloat = member.isOnline ? 1 : 0.55
+            let nameColor = presentation.showsRoleColors
+                ? MessageAuthorPresentation.topRoleColor(in: member.roles)
+                    .map(Self.color(hex:)) ?? .labelColor
+                : .labelColor
+            let alpha: CGFloat = presentation.showsActivityDetails
+                && !member.isOnline ? 0.55 : 1
             let name = Self.line(
                 member.user.displayName,
                 font: nameFont,
                 color: nameColor.withAlphaComponent(alpha)
             )
-            let activity = member.activityText.flatMap { text -> CTLine? in
+            let activity = presentation.showsActivityDetails
+                ? member.activityText.flatMap { text -> CTLine? in
                 guard !text.isEmpty else { return nil }
                 return NativeMemberActivityPresentation.line(
                     text,
                     font: activityFont,
                     color: Self.memberActivityColor.withAlphaComponent(alpha)
                 )
-            }
+                }
+                : nil
             let activityTruncationToken = activity.map { _ in
                 Self.line(
                     "…",
@@ -1593,16 +1677,56 @@ final class NativeMemberListCanvasView: NSView {
     ) {
         let label = "\(section.title) — \(section.totalCount)"
         let font = NSFont.systemFont(
-            ofSize: NSFont.preferredFont(forTextStyle: .body).pointSize,
+            ofSize: InterfaceTypographyMetrics.interfaceTextSize,
             weight: .semibold
         )
-        let color = section.colorHex.map(Self.color(hex:))
-            ?? .secondaryLabelColor
-        Self.draw(
-            line: Self.line(label, font: font, color: color),
-            at: CGPoint(
+        let isRoleSection = if case .role = section.id { true } else { false }
+        let showsRoleIndicator = presentation.showsRoleColors && isRoleSection
+        let color: NSColor = if showsRoleIndicator {
+            SakuraCordAccentColor.nsColor(forRoleColorHex: section.colorHex)
+        } else {
+            .secondaryLabelColor
+        }
+        let line = Self.line(label, font: font, color: color)
+        let labelY = origins[index] + 12
+        let labelX: CGFloat
+        if showsRoleIndicator {
+            let indicatorSize: CGFloat = 8
+            var lineAscent: CGFloat = 0
+            CTLineGetTypographicBounds(line, &lineAscent, nil, nil)
+            let glyphBounds = CTLineGetBoundsWithOptions(
+                line,
+                [.useGlyphPathBounds]
+            )
+            let labelMidY = labelY + lineAscent - glyphBounds.midY
+            let indicatorRect = CGRect(
                 x: NativeMemberListMetrics.horizontalInset + 10,
-                y: origins[index] + 12
+                y: labelMidY - indicatorSize / 2,
+                width: indicatorSize,
+                height: indicatorSize
+            )
+            let indicator = NSBezierPath(ovalIn: indicatorRect)
+            if SakuraCordAccentColor.usesAccentFallback(
+                forRoleColorHex: section.colorHex
+            ) {
+                color.withAlphaComponent(0.14).setFill()
+                indicator.fill()
+                color.setStroke()
+                indicator.lineWidth = 1.25
+                indicator.stroke()
+            } else {
+                color.setFill()
+                indicator.fill()
+            }
+            labelX = indicatorRect.maxX + 6
+        } else {
+            labelX = NativeMemberListMetrics.horizontalInset + 10
+        }
+        Self.draw(
+            line: line,
+            at: CGPoint(
+                x: labelX,
+                y: labelY
             ),
             context: context
         )
@@ -1687,13 +1811,15 @@ final class NativeMemberListCanvasView: NSView {
             context: context,
             style: style
         )
-        drawSkeletonShape(
-            in: presence,
-            radius: 5.5,
-            opacity: 1,
-            context: context,
-            style: style
-        )
+        if presentation.showsActivityDetails {
+            drawSkeletonShape(
+                in: presence,
+                radius: 5.5,
+                opacity: 1,
+                context: context,
+                style: style
+            )
+        }
 
         let textX = contentX
             + NativeMemberListMetrics.avatarContainerSize + 8
@@ -1830,7 +1956,7 @@ final class NativeMemberListCanvasView: NSView {
         drawMemberAvatar(member, at: index, context: context)
 
         let textX = row.minX + 4 + NativeMemberListMetrics.avatarContainerSize + 8
-        let nameY = member.activityText?.isEmpty == false ? row.minY + 5 : row.minY + 13
+        let nameY = prepared.activity == nil ? row.minY + 13 : row.minY + 5
         let botBadgeWidth: CGFloat = 30
         let tagPresentation = member.user.primaryGuild.flatMap(guildTagPresentation)
         let accessoryWidths = (member.user.isBot ? [botBadgeWidth] : [])
@@ -1924,9 +2050,20 @@ final class NativeMemberListCanvasView: NSView {
             width: NativeMemberListMetrics.avatarSize,
             height: NativeMemberListMetrics.avatarSize
         )
-        let opacity: CGFloat = member.isOnline ? 1 : 0.55
+        let opacity: CGFloat = presentation.showsActivityDetails
+            && !member.isOnline ? 0.55 : 1
+        let presenceIndicatorRect = AvatarPresencePresentation.indicatorRect(
+            avatarRect: avatar,
+            indicatorSize: NativeMemberListMetrics.presenceIndicatorSize
+        )
         context.saveGState()
         context.setAlpha(opacity)
+        context.addRect(context.boundingBoxOfClipPath)
+        context.addEllipse(in: AvatarPresencePresentation.cutoutRect(
+            avatarRect: avatar,
+            indicatorSize: NativeMemberListMetrics.presenceIndicatorSize
+        ))
+        context.clip(using: .evenOdd)
 
         let avatarURL = member.guildAvatarURL ?? member.user.avatarURL
         context.saveGState()
@@ -1976,17 +2113,15 @@ final class NativeMemberListCanvasView: NSView {
             )
         }
 
-        drawPresenceIndicator(
-            member.status,
-            in: CGRect(
-                x: container.maxX - 10,
-                y: container.maxY - 10,
-                width: 11,
-                height: 11
-            ),
-            context: context
-        )
         context.restoreGState()
+
+        if presentation.showsActivityDetails {
+            drawPresenceIndicator(
+                member.status,
+                in: presenceIndicatorRect,
+                context: context
+            )
+        }
     }
 
     func drawAvatarFallback(
@@ -1994,7 +2129,7 @@ final class NativeMemberListCanvasView: NSView {
         in rect: CGRect,
         context: CGContext
     ) {
-        let accent = NSColor.controlAccentColor
+        let accent = SakuraCordAccentColor.nsColor
         let gradient = CGGradient(
             colorsSpace: CGColorSpaceCreateDeviceRGB(),
             colors: [
@@ -2043,40 +2178,19 @@ final class NativeMemberListCanvasView: NSView {
         in rect: CGRect,
         context: CGContext
     ) {
-        let color: NSColor = switch status {
-        case .online: Self.color(hex: 0x23A55A)
-        case .idle: Self.color(hex: 0xF0B232)
-        case .dnd: Self.color(hex: 0xF23F43)
-        case .invisible, .offline: Self.color(hex: 0x80848E)
-        }
-        context.setFillColor(color.cgColor)
-        context.fillEllipse(in: rect)
-        context.setStrokeColor(NSColor.controlBackgroundColor.cgColor)
-        context.setLineWidth(2)
-        context.strokeEllipse(in: rect.insetBy(dx: 1, dy: 1))
-        if status == .dnd {
-            let bar = CGRect(
-                x: rect.midX - rect.width * 0.275,
-                y: rect.midY - 1,
-                width: rect.width * 0.55,
-                height: 2
-            )
-            Self.fillRounded(
-                bar,
-                radius: 1,
-                color: .white,
-                context: context
-            )
-        } else if status == .idle {
-            let size = rect.width * 0.62
-            context.setFillColor(NSColor.controlBackgroundColor.cgColor)
-            context.fillEllipse(in: CGRect(
-                x: rect.midX - size / 2 - rect.width * 0.18,
-                y: rect.midY - size / 2 - rect.height * 0.18,
-                width: size,
-                height: size
-            ))
-        }
+        context.saveGState()
+        context.addEllipse(in: rect)
+        context.clip()
+        context.addPath(
+            PresenceIndicatorPresentation.path(for: status, in: rect).cgPath
+        )
+        context.setFillColor(
+            Self.color(
+                hex: PresenceIndicatorPresentation.colorHex(for: status)
+            ).cgColor
+        )
+        context.drawPath(using: .eoFill)
+        context.restoreGState()
     }
 
     func guildTagPresentation(for identity: PrimaryGuildIdentity) -> GuildTagPresentation? {
@@ -2453,7 +2567,8 @@ final class NativeMemberListCanvasView: NSView {
                 host.rootView = AnyView(
                     AnimatedRemoteImage(
                         url: configuration.url,
-                        maximumPixelDimension: 64
+                        maximumPixelDimension: 64,
+                        accessibilityCategory: .emoji
                     )
                     .opacity(configuration.opacity)
                     .allowsHitTesting(false)
@@ -2487,6 +2602,7 @@ final class NativeMemberListCanvasView: NSView {
                 accessibilityRows[id] = value
                 return value
             }()
+            proxy.showsActivityDetails = presentation.showsActivityDetails
             proxy.member = member
             proxy.activation = { [weak self] member in self?.selectMember(member) }
             proxy.frame = paintedRowRect(at: index)
@@ -2536,15 +2652,14 @@ final class NativeMemberListCanvasView: NSView {
         }
         setNeedsDisplay(itemRect(at: index))
         let isSelected = selectedMemberID == member.id
-        host.rootView = AnyView(MemberRow(
-            member: member,
-            isSelected: isSelected,
-            isProfilePresented: false,
-            profilePresentation: nil,
-            showsContents: false,
-            select: { [weak self] in self?.selectMember(member) },
-            dismissProfile: {}
-        ))
+        host.rootView = AnyView(
+            MemberRow(
+                member: member,
+                isSelected: isSelected,
+                showsContents: false,
+                select: { [weak self] in self?.selectMember(member) }
+            )
+        )
         host.frame = CGRect(
             x: NativeMemberListMetrics.horizontalInset,
             y: origins[index],
@@ -2900,14 +3015,15 @@ final class NativeMemberForegroundOverlayView: NSView {
 
 @MainActor
 final class NativeMemberAccessibilityProxyView: NSButton {
+    var showsActivityDetails = true
     var member: Member? {
         didSet {
             guard let member else { return }
             setAccessibilityLabel(member.user.displayName)
             setAccessibilityHelp(member.user.username)
-            let activity = member.activityText.flatMap {
+            let activity = showsActivityDetails ? member.activityText.flatMap {
                 $0.isEmpty ? nil : NativeMemberActivityPresentation.accessibilityText($0)
-            }
+            } : nil
             setAccessibilityValue(activity)
             toolTip = member.user.username
         }

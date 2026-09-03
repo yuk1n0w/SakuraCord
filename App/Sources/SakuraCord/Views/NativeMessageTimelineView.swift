@@ -703,6 +703,15 @@ extension NativeMessageTimelineCoordinator {
                     parent.conversation.messageInteractionContext
                 canvas.actions = actions
             }
+            if canvas.accessibilitySettingsSnapshot
+                != parent.model.accessibilitySettings
+            {
+                canvas.accessibilitySettingsSnapshot =
+                    parent.model.accessibilitySettings
+                canvas.removeAccessibilityProxies()
+                canvas.reconcileAccessibilityProxiesIfActive()
+                canvas.reconcileAnimatedMedia(allowsScrolling: true)
+            }
             if parent.hasMoreMessages,
                leadingHistoryReserve == 0,
                conversationChanged || !oldParent.hasMoreMessages
@@ -806,6 +815,10 @@ extension NativeMessageTimelineCoordinator {
             parent: NativeMessageTimelineView,
             scrollView: NSScrollView
         ) {
+            parent.model.timelineSpoilerRevealStore.revealMode =
+                parent.model.chatSettings.spoilerRevealMode
+            canvas?.spoilerRevealStore.revealMode =
+                parent.model.chatSettings.spoilerRevealMode
             (scrollView as? NativeTimelineInputShieldScrollView)?.model = parent.model
             canvas?.setOverlayInteractionBlocked(
                 parent.model.mediaViewerPresentation != nil
@@ -970,7 +983,16 @@ extension NativeMessageTimelineCoordinator {
                 loadEarlier: parent.loadEarlier,
                 openMessage: parent.conversation.activatesMessageOnClick
                     ? { [weak model = parent.model] message in
-                        model?.navigateToSearchResult(message)
+                        guard let model else { return }
+                        switch parent.conversation {
+                        case .search:
+                            model.navigateToSearchResult(message)
+                        case .pins:
+                            model.dismissPinnedMessages()
+                            model.navigateToPinnedResult(message)
+                        case .channel, .thread:
+                            break
+                        }
                     }
                     : nil,
                 openReply: parent.openReply,
@@ -1000,6 +1022,9 @@ extension NativeMessageTimelineCoordinator {
                     guard let model else { return }
                     Task { await model.delete(message) }
                 },
+                togglePin: { [weak model = parent.model] message in
+                    model?.togglePinnedState(for: message)
+                },
                 react: { [weak model = parent.model] emoji, message in
                     guard let model else { return }
                     Task { await model.toggleReaction(emoji, on: message) }
@@ -1017,6 +1042,20 @@ extension NativeMessageTimelineCoordinator {
                             values: values
                         )
                     }
+                },
+                discardFailed: { [weak model = parent.model] message in
+                    model?.discardFailedOutgoingMessage(message)
+                },
+                checkForUpdates: {
+                    (NSApp.delegate as? AppDelegate)?
+                        .updateController.checkForUpdates()
+                },
+                applyTheme: { [weak model = parent.model] sharedTheme in
+                    SakuraCordThemeStore.shared.apply(sharedTheme.theme)
+                    guard let model else { return }
+                    var appearance = model.appearanceSettings
+                    appearance.colorScheme = sharedTheme.appearance
+                    model.applyAppearanceSettings(appearance)
                 }
             )
         }
@@ -1246,8 +1285,11 @@ extension NativeMessageTimelineCoordinator {
                     guard changedIndexes.allSatisfy({
                         newRows.indices.contains($0)
                             && items.indices.contains(oldLeadingCount + $0)
-                            && items[oldLeadingCount + $0].messageID
-                                == newRows[$0].id
+                            && items[oldLeadingCount + $0].identifier
+                                == messageItem(
+                                    newRows[$0],
+                                    from: newParent
+                                ).identifier
                     }) else {
                         performanceFallbackReason = "invalid-replace-hint"
                         return false
@@ -1261,14 +1303,18 @@ extension NativeMessageTimelineCoordinator {
                             ),
                             width: width
                         )
+                        messageIDs[rowIndex] = newRows[rowIndex].id
                     }
                     performanceUpdatePath = "replace-bounded"
                     return true
                 }
                 guard rowCount == newRows.count,
                       newRows.indices.allSatisfy({
-                          items[oldLeadingCount + $0].messageID
-                              == newRows[$0].id
+                          items[oldLeadingCount + $0].identifier
+                              == messageItem(
+                                  newRows[$0],
+                                  from: newParent
+                              ).identifier
                       })
                 else {
                     performanceFallbackReason = "same-count-identity-change"
@@ -1280,6 +1326,7 @@ extension NativeMessageTimelineCoordinator {
                         with: messageItem(newRows[rowIndex], from: newParent),
                         width: width
                     )
+                    messageIDs[rowIndex] = newRows[rowIndex].id
                 }
                 performanceUpdatePath = "replace"
                 return true
@@ -1417,6 +1464,19 @@ extension NativeMessageTimelineCoordinator {
                 )
             }
             if suffixCount > 0 {
+                let boundaryItemIndex = oldLeadingCount + oldLastIndex
+                guard items.indices.contains(boundaryItemIndex) else {
+                    performanceFallbackReason = "invalid-append-boundary"
+                    return false
+                }
+                replaceItem(
+                    at: boundaryItemIndex,
+                    with: messageItem(
+                        newRows[oldLastIndex],
+                        from: newParent
+                    ),
+                    width: width
+                )
                 let firstInsertedIndex = items.count
                 let insertedItems = newRows.suffix(suffixCount).map {
                     messageItem($0, from: newParent)
@@ -1580,18 +1640,23 @@ extension NativeMessageTimelineCoordinator {
                     }
                 }
             }
-            let finalMessageIDs = newRows.map(\.id)
-            let oldMessageIDSet = Set(messageIDs)
-            let finalMessageIDSet = Set(finalMessageIDs)
-            guard oldMessageIDSet.count == messageIDs.count,
-                  finalMessageIDSet.count == finalMessageIDs.count
+            let currentIdentities = items
+                .dropFirst(oldLeadingCount)
+                .compactMap { $0.messageRow?.identity }
+            let finalIdentities = newRows.map(\.identity)
+            let currentIdentitySet = Set(currentIdentities)
+            let finalIdentitySet = Set(finalIdentities)
+            guard currentIdentities.count == messageIDs.count,
+                  currentIdentitySet.count == currentIdentities.count,
+                  finalIdentitySet.count == finalIdentities.count
             else {
                 performanceFallbackReason =
-                    "journal-duplicate-message-id"
+                    "journal-duplicate-message-identity"
                 return false
             }
-            let removalRowIndexes = messageIDs.indices.filter { rowIndex in
-                !finalMessageIDSet.contains(messageIDs[rowIndex])
+            let finalMessageIDs = newRows.map(\.id)
+            let removalRowIndexes = currentIdentities.indices.filter { rowIndex in
+                !finalIdentitySet.contains(currentIdentities[rowIndex])
             }
             guard removalRowIndexes.allSatisfy({
                 journalRemovedMessageIDs.contains(messageIDs[$0])
@@ -1600,8 +1665,8 @@ extension NativeMessageTimelineCoordinator {
                 return false
             }
             let insertionRowIndexes =
-                finalMessageIDs.indices.filter { rowIndex in
-                    !oldMessageIDSet.contains(finalMessageIDs[rowIndex])
+                finalIdentities.indices.filter { rowIndex in
+                    !currentIdentitySet.contains(finalIdentities[rowIndex])
                 }
             guard insertionRowIndexes.allSatisfy({
                 journalInsertedMessageIDs.contains(finalMessageIDs[$0])
@@ -1609,17 +1674,17 @@ extension NativeMessageTimelineCoordinator {
                 performanceFallbackReason = "journal-insert-identity"
                 return false
             }
-            var appliedMessageIDs = messageIDs
+            var appliedIdentities = currentIdentities
             for rowIndex in removalRowIndexes.reversed() {
-                appliedMessageIDs.remove(at: rowIndex)
+                appliedIdentities.remove(at: rowIndex)
             }
             for rowIndex in insertionRowIndexes {
-                appliedMessageIDs.insert(
-                    finalMessageIDs[rowIndex],
+                appliedIdentities.insert(
+                    finalIdentities[rowIndex],
                     at: rowIndex
                 )
             }
-            guard appliedMessageIDs == finalMessageIDs else {
+            guard appliedIdentities == finalIdentities else {
                 performanceFallbackReason =
                     "journal-applied-identity"
                 return false
@@ -1669,7 +1734,7 @@ extension NativeMessageTimelineCoordinator {
             if let firstMessageID = finalMessageIDs.first {
                 didPrependItems =
                     previousFirstMessageID != firstMessageID
-                    && !oldMessageIDSet.contains(firstMessageID)
+                    && insertionRowIndexes.contains(0)
             } else {
                 didPrependItems = false
             }

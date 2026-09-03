@@ -5,6 +5,7 @@ import SwiftUI
 
 struct RootView: View {
     let model: AppModel
+    @Environment(\.colorSchemeContrast) private var systemColorSchemeContrast
     @State private var toolbarSearchFieldMetrics = ToolbarSearchFieldMetrics.zero
 
     var body: some View {
@@ -75,6 +76,37 @@ struct RootView: View {
         .onChange(of: performanceContext, initial: true) { _, context in
             AppPerformanceDiagnostics.shared.setContext(context)
         }
+        .onChange(of: model.showInspector) { _, isVisible in
+            if model.interfaceSettings.showsMemberList != isVisible {
+                model.interfaceSettings.showsMemberList = isVisible
+            }
+            guard SettingsPreferenceStore.shared.value(
+                for: .rememberMemberListVisibility
+            ) == .bool(true) else { return }
+            GeneralWindowRestorationStore.shared.recordMemberListVisibility(
+                isVisible
+            )
+        }
+        .onChange(of: model.selectedChannelID) { _, _ in
+            guard let activeAccountID = model.activeAccountID,
+                  let selectedChannel = model.selectedChannel
+            else { return }
+            SettingsConversationRestorationStore.shared.record(
+                accountID: activeAccountID,
+                guildID: selectedChannel.guildID?.description,
+                channelID: selectedChannel.id.description
+            )
+        }
+        .contrast(
+            model.accessibilitySettings.increasesContrast
+                && systemColorSchemeContrast == .standard
+                ? 1.12
+                : 1
+        )
+        .background {
+            SakuraCordThemeBackground()
+                .ignoresSafeArea()
+        }
     }
 
     private var showsMessageSearchToolbar: Bool {
@@ -131,6 +163,7 @@ private struct ChatRootView: View {
     @State private var showAccountSwitcher = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var supplementaryPaneFrame = CGRect.zero
+    @State private var supplementaryToolbarSpacerWidth: CGFloat = 0
     @State private var workspaceFrame = CGRect.zero
     @State private var sidebarWidth = ChatChromeMetrics.serverRailWidth + 230
     @State private var presentsForumComposer = false
@@ -138,6 +171,7 @@ private struct ChatRootView: View {
     @State private var isInstantUpload = false
     @State private var hoveredFileDropDestination: MessageComposerDestination?
     @State private var modifierPollingTask: Task<Void, Never>?
+    @State private var composerDropInteraction = ComposerDropInteractionState()
 
     var body: some View {
         @Bindable var model = model
@@ -200,8 +234,12 @@ private struct ChatRootView: View {
         .toolbar {
             conversationToolbar
         }
+        .environment(\.composerDropInteraction, composerDropInteraction)
         .overlay(alignment: .topLeading) {
             ZStack(alignment: .topLeading) {
+                SakuraCordTextInputAccentBridge()
+                .frame(width: 0, height: 0)
+
                 if columnVisibility != .detailOnly {
                     if model.isSwitchingAccounts {
                         SkeletonShimmerTimeline {
@@ -214,7 +252,10 @@ private struct ChatRootView: View {
                         )
                     } else {
                         Text(sidebarDisplayName)
-                            .font(.title3.weight(.semibold))
+                            .font(.system(
+                                size: InterfaceTypographyMetrics.interfaceTextSize + 2,
+                                weight: .semibold
+                            ))
                             .lineLimit(1)
                             .truncationMode(.tail)
                             .frame(width: 150, height: 28, alignment: .leading)
@@ -251,9 +292,7 @@ private struct ChatRootView: View {
                 WindowActivityReader { isActive in
                     model.reportMainWindowActive(isActive)
                 }
-                WindowChromeDimmingBridge(
-                    isDimmed: isFileDropTargeted && canAcceptWindowDrops
-                )
+                WindowChromeDimmingBridge(isDimmed: showsFileDropEffect)
                 WindowGlassBackdropBridge()
             }
             .frame(width: 0, height: 0)
@@ -311,13 +350,13 @@ private struct ChatRootView: View {
             }
         }
         .overlay {
-            if isFileDropTargeted, canAcceptWindowDrops {
+            if showsFileDropEffect {
                 ComposerFileDropOverlay(
                     model: model,
                     workspaceFrame: workspaceFrame,
                     supplementaryPaneFrame: supplementaryPaneFrame,
-                    hoveredDestination: hoveredFileDropDestination,
-                    isInstantUpload: isInstantUpload
+                    hoveredDestination: effectiveFileDropDestination,
+                    isInstantUpload: effectiveInstantUpload
                 )
                 .allowsHitTesting(false)
             }
@@ -382,11 +421,20 @@ private struct ChatRootView: View {
         .onChange(of: hasOpenSupplementaryConversation) { _, isOpen in
             if !isOpen {
                 supplementaryPaneFrame = .zero
+                supplementaryToolbarSpacerWidth = 0
+            }
+        }
+        .onChange(of: model.openThread?.id) { _, threadID in
+            if threadID != nil {
+                model.dismissPinnedMessages()
             }
         }
         .onChange(of: model.selectedChannelID) { _, channelID in
             presentsForumComposer = false
             model.mediaViewerPresentation = nil
+            if model.selectedChannel?.kind == .voice {
+                model.dismissPinnedMessages()
+            }
             AppPerformanceSignposts.expectStartupConversation(channelID)
         }
         .onAppear {
@@ -461,7 +509,13 @@ private struct ChatRootView: View {
         } message: {
             Text(model.errorMessage ?? "Unknown error")
         }
-        .onReceive(NotificationCenter.default.publisher(for: .sakuracordToggleInspector)) { _ in model.showInspector.toggle() }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: .sakuracordToggleChannelSidebar
+            )
+        ) { _ in
+            columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+        }
         .onReceive(NotificationCenter.default.publisher(for: .sakuracordNotificationDeepLink)) { notification in
             guard let link = notification.object as? NotificationDeepLink else { return }
             Task { await model.navigate(from: link) }
@@ -508,38 +562,65 @@ private struct ChatRootView: View {
                     .padding(.vertical, 5)
                 }
             } else if let channel = model.selectedChannel {
-                ConversationToolbarLabel(
-                    title: channel.name,
-                    systemImage: channelToolbarSymbol(channel),
-                    subtitle: isDirectMessageSelected
-                        ? directMessageToolbarSubtitle(for: channel)
-                        : nil
-                )
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
+                if isDirectMessageSelected {
+                    ConversationToolbarLabel(
+                        title: channel.name,
+                        systemImage: channelToolbarSymbol(channel),
+                        subtitle: directMessageToolbarSubtitle(for: channel),
+                        textSize: InterfaceTypographyMetrics.interfaceTextSize
+                    )
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                } else if let topic = channelTopic(for: channel) {
+                    ChannelTopicToolbarButton(
+                        title: channel.name,
+                        systemImage: channelToolbarSymbol(channel),
+                        topic: topic,
+                        textSize: InterfaceTypographyMetrics.interfaceTextSize
+                    )
+                } else {
+                    ConversationToolbarLabel(
+                        title: channel.name,
+                        systemImage: channelToolbarSymbol(channel),
+                        subtitle: nil,
+                        textSize: InterfaceTypographyMetrics.interfaceTextSize
+                    )
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                }
             }
         }
 
         if !model.isSwitchingAccounts {
             if let presentation = supplementaryToolbarPresentation {
                 ToolbarItem {
-                    HStack(spacing: 0) {
-                        ConversationToolbarLabel(
-                            title: presentation.title,
-                            systemImage: presentation.systemImage,
-                            subtitle: presentation.subtitle
-                        )
-                        Spacer(minLength: 0)
-                    }
-                    .frame(
-                        width: max(supplementaryPaneFrame.width - 64, 120),
-                        alignment: .leading
+                    ConversationToolbarLabel(
+                        title: presentation.title,
+                        systemImage: presentation.systemImage,
+                        subtitle: nil,
+                        textSize: InterfaceTypographyMetrics.interfaceTextSize
                     )
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .onGeometryChange(for: CGRect.self) { proxy in
+                        proxy.frame(in: .global)
+                    } action: { frame in
+                        alignSupplementaryToolbarTitle(frame)
+                    }
                 }
-            }
 
-            if hasOpenSupplementaryToolbarConversation {
+                ToolbarSpacer(.fixed)
+
                 ToolbarItem {
+                    Color.clear
+                        .frame(width: supplementaryToolbarSpacerWidth, height: 1)
+                        .accessibilityHidden(true)
+                }
+                .sharedBackgroundVisibility(.hidden)
+
+                ToolbarSpacer(.fixed)
+
+                ToolbarItem(placement: .primaryAction) {
                     Button(action: closeSupplementaryConversation) {
                         Label("Close conversation", systemImage: "xmark")
                             .labelStyle(.iconOnly)
@@ -627,6 +708,33 @@ private struct ChatRootView: View {
                             Label("Open Chat", systemImage: "bubble.left.fill")
                         }
                         .help("Open voice channel chat")
+                    }
+                }
+            }
+
+            if let pinsChannelID = toolbarPinsChannelID {
+                ToolbarSpacer(.fixed)
+                ToolbarItem {
+                    Button {
+                        if model.pinnedMessages.isPresented {
+                            model.dismissPinnedMessages()
+                        } else {
+                            model.presentPinnedMessages(channelID: pinsChannelID)
+                        }
+                    } label: {
+                        Label("Pinned Messages", systemImage: "pin.fill")
+                    }
+                    .help("Pinned Messages")
+                    .popover(
+                        isPresented: Binding(
+                            get: { model.pinnedMessages.isPresented },
+                            set: { presented in
+                                if !presented { model.dismissPinnedMessages() }
+                            }
+                        ),
+                        arrowEdge: .bottom
+                    ) {
+                        PinnedMessagesPopoverView(model: model)
                     }
                 }
             }
@@ -762,6 +870,21 @@ private struct ChatRootView: View {
         return model.isComposerDropEligible(proposed) ? proposed : nil
     }
 
+    private var showsFileDropEffect: Bool {
+        canAcceptWindowDrops
+            && (isFileDropTargeted || composerDropInteraction.isTargeted)
+    }
+
+    private var effectiveFileDropDestination: MessageComposerDestination? {
+        composerDropInteraction.destination ?? hoveredFileDropDestination
+    }
+
+    private var effectiveInstantUpload: Bool {
+        composerDropInteraction.isTargeted
+            ? composerDropInteraction.isInstant
+            : isInstantUpload
+    }
+
     private func proposedComposerDestination(atX horizontalPosition: CGFloat) -> MessageComposerDestination {
         if model.openThread != nil, supplementaryPaneFrame != .zero {
             let localThreadLeadingEdge = supplementaryPaneFrame.minX - workspaceFrame.minX
@@ -866,6 +989,13 @@ private struct ChatRootView: View {
         }
     }
 
+    private func channelTopic(for channel: Channel) -> String? {
+        guard let topic = channel.topic?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !topic.isEmpty
+        else { return nil }
+        return topic
+    }
+
     private var hasOpenSupplementaryConversation: Bool {
         hasOpenSupplementaryToolbarConversation
             || model.messageSearch.isPresented
@@ -881,25 +1011,53 @@ private struct ChatRootView: View {
         return model.selectedChannel
     }
 
+    private var hasToolbarActionBeforePins: Bool {
+        selectedPrivateChannel != nil
+            || (selectedVoiceChannel != nil && !model.isVoiceChatOpen)
+    }
+
+    private var hasToolbarActionBeforeInspector: Bool {
+        selectedPrivateChannel != nil
+            || toolbarPinsChannelID != nil
+    }
+
+    private var toolbarPinsChannelID: ChannelID? {
+        guard selectedVoiceChannel == nil, model.openThread == nil else { return nil }
+        return model.activePinsChannelID
+    }
+
     private var supplementaryToolbarPresentation: SupplementaryToolbarPresentation? {
         if let thread = model.openThread {
-            let replyCount = max(thread.messageCount, model.threadMessages.count)
             return SupplementaryToolbarPresentation(
                 title: thread.name,
-                systemImage: "bubble.left.and.bubble.right",
-                subtitle: "\(replyCount) \(replyCount == 1 ? "reply" : "replies")"
+                systemImage: "bubble.left.and.bubble.right"
             )
         }
         guard model.isVoiceChatOpen, let channel = model.selectedChannel else { return nil }
         return SupplementaryToolbarPresentation(
             title: channel.name,
-            systemImage: "bubble.left.fill",
-            subtitle: "Voice channel chat"
+            systemImage: "bubble.left.fill"
         )
     }
 
     private var supplementaryCloseHelp: String {
         model.openThread == nil ? "Close voice channel chat" : "Close thread"
+    }
+
+    private func alignSupplementaryToolbarTitle(_ titleFrame: CGRect) {
+        guard supplementaryPaneFrame != .zero,
+              titleFrame != .zero,
+              titleFrame.minX.isFinite
+        else { return }
+
+        let targetLeadingEdge = supplementaryPaneFrame.minX
+            + ChatChromeMetrics.toolbarPaneEdgeInset
+        let correction = titleFrame.minX - targetLeadingEdge
+        guard abs(correction) > 0.5 else { return }
+        supplementaryToolbarSpacerWidth = max(
+            0,
+            supplementaryToolbarSpacerWidth + correction
+        )
     }
 
     private func closeSupplementaryConversation() {
@@ -1193,29 +1351,76 @@ private struct ComposerFileDropOverlay: View {
 private struct SupplementaryToolbarPresentation {
     let title: String
     let systemImage: String
-    let subtitle: String
 }
 
 private struct ConversationToolbarLabel: View {
     let title: String
     let systemImage: String
     var subtitle: String?
+    let textSize: CGFloat
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: systemImage)
             VStack(alignment: .leading, spacing: 0) {
                 Text(title)
-                    .font(subtitle == nil ? .body : .headline)
+                    .font(.system(
+                        size: textSize,
+                        weight: subtitle == nil ? .regular : .semibold
+                    ))
                     .lineLimit(1)
                 if let subtitle {
                     Text(subtitle)
-                        .font(.caption2)
+                        .font(.system(size: max(10, textSize - 2)))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             }
         }
         .padding(.horizontal, 6)
+    }
+}
+
+private struct ChannelTopicToolbarButton: View {
+    let title: String
+    let systemImage: String
+    let topic: String
+    let textSize: CGFloat
+    @State private var isTopicPresented = false
+
+    var body: some View {
+        Button {
+            isTopicPresented.toggle()
+        } label: {
+            ConversationToolbarLabel(
+                title: title,
+                systemImage: systemImage,
+                subtitle: nil,
+                textSize: textSize
+            )
+        }
+        .popover(
+            isPresented: $isTopicPresented,
+            attachmentAnchor: .rect(.bounds),
+            arrowEdge: .bottom
+        ) {
+            ChannelTopicPopover(topic: topic)
+        }
+        .help("Show channel topic")
+        .accessibilityLabel("Show channel topic")
+        .accessibilityValue(title)
+    }
+}
+
+private struct ChannelTopicPopover: View {
+    let topic: String
+
+    var body: some View {
+        Text(topic)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .textSelection(.enabled)
+            .tint(SakuraCordAccentColor.color)
+            .padding(16)
+            .frame(width: 320, alignment: .leading)
     }
 }

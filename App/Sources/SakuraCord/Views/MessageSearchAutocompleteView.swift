@@ -952,6 +952,12 @@ private final class MessageSearchAutocompleteCanvas: NSView {
 
     override var isFlipped: Bool { true }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+        layer?.setNeedsDisplay()
+    }
+
     private var rows: [MessageSearchAutocompleteSuggestion] = []
     private var channelSystemImagesByID: [ChannelID: String] = [:]
     private var origins: [CGFloat] = []
@@ -1274,7 +1280,7 @@ private final class MessageSearchAutocompleteCanvas: NSView {
             context.scaleBy(x: 1, y: -1)
             context.draw(image, in: destination)
         } else {
-            NSColor.controlAccentColor.setFill()
+            NSColor.sakuraCordAccentColor.setFill()
             context.fillEllipse(in: rect)
             drawText(
                 String(name.prefix(1)).uppercased(),

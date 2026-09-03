@@ -650,6 +650,8 @@ extension AppModel {
         reconcilePrivateCallSounds()
         voiceSessionState = .connecting
         voiceErrorMessage = nil
+        isVoiceMuted = voiceVideoPreferences.joinsMuted
+        isVoiceDeafened = voiceVideoPreferences.joinsDeafened
         do {
             let info = try await account.provider.joinVoice(
                 channelID: channel.id,
@@ -673,7 +675,12 @@ extension AppModel {
                 channelID: channel.id
             ) else { return }
             watchAvailableDirectMessageStreamsAutomatically()
-            soundPlayer.play(.userJoin)
+            if voiceVideoPreferences.playsFeedbackSounds {
+                soundPlayer.play(.userJoin)
+            }
+            if !voiceVideoPreferences.joinsWithCameraOff, !isCameraEnabled {
+                await toggleCamera()
+            }
         } catch {
             guard isCurrentVoiceOperation(
                 account,
@@ -1036,7 +1043,8 @@ extension AppModel {
     func leaveVoice(
         account: AppModelAccountSession? = nil,
         expectedOperation: AppModelVoiceOperationIdentity? = nil,
-        preservingVoiceActionGeneration preservedActionGeneration: UInt64? = nil
+        preservingVoiceActionGeneration preservedActionGeneration: UInt64? = nil,
+        notifyDiscord: Bool = true
     ) async {
         let account = account ?? accountSession()
         guard isCurrentAccountSession(account) else { return }
@@ -1064,7 +1072,7 @@ extension AppModel {
         voiceMigrationTask = nil
         voiceEventTask?.cancel()
         voiceEventTask = nil
-        await teardownApplicationStreams(account: account, notifyDiscord: true)
+        await teardownApplicationStreams(account: account, notifyDiscord: notifyDiscord)
         await departingSession?.disconnect()
         guard isCurrentAccountSession(account),
               voiceMigrationGeneration == voiceGeneration,
@@ -1073,7 +1081,7 @@ extension AppModel {
         if voiceSession === departingSession {
             voiceSession = nil
         }
-        if activeVoiceChannel?.id == channel?.id, channel != nil {
+        if notifyDiscord, activeVoiceChannel?.id == channel?.id, channel != nil {
             try? await account.provider.updateVoiceState(
                 channelID: nil,
                 guildID: guildID,
@@ -1091,15 +1099,16 @@ extension AppModel {
         voiceParticipants = []
         isLocallySpeaking = false
         voiceVideoFrames = [:]
-        if let ownUserID = snapshot?.currentUser.id {
+        if notifyDiscord, let ownUserID = snapshot?.currentUser.id {
             voiceStates[ownUserID] = nil
         }
         voiceEncryptionVersion = nil
         voiceLatencyMilliseconds = nil
         voiceSessionState = .idle
+        voiceConnectedAt = nil
         isCameraEnabled = false
         reconcilePrivateCallSounds()
-        if hadActiveVoice {
+        if hadActiveVoice, voiceVideoPreferences.playsFeedbackSounds {
             soundPlayer.play(.disconnect)
         }
     }
@@ -1110,7 +1119,6 @@ extension AppModel {
         let session = voiceSession
         isVoiceMuted.toggle()
         let muted = isVoiceMuted
-        UserDefaults.standard.set(isVoiceMuted, forKey: "voiceMuted")
         await session?.setMuted(muted)
         guard isCurrentVoiceOperation(
             account,
@@ -1123,7 +1131,7 @@ extension AppModel {
             generation: generation,
             voiceSession: session
         ) else { return }
-        if activeVoiceChannel != nil {
+        if activeVoiceChannel != nil, voiceVideoPreferences.playsFeedbackSounds {
             soundPlayer.play(muted ? .mute : .unmute)
         }
     }
@@ -1134,7 +1142,6 @@ extension AppModel {
         let session = voiceSession
         isVoiceDeafened.toggle()
         let deafened = isVoiceDeafened
-        UserDefaults.standard.set(isVoiceDeafened, forKey: "voiceDeafened")
         await session?.setDeafened(deafened)
         guard isCurrentVoiceOperation(
             account,
@@ -1147,7 +1154,7 @@ extension AppModel {
             generation: generation,
             voiceSession: session
         ) else { return }
-        if activeVoiceChannel != nil {
+        if activeVoiceChannel != nil, voiceVideoPreferences.playsFeedbackSounds {
             soundPlayer.play(deafened ? .deafen : .undeafen)
         }
     }
@@ -1165,7 +1172,7 @@ extension AppModel {
                 generation: generation,
                 voiceSession: session
             ) else { return }
-            if activeVoiceChannel != nil {
+            if activeVoiceChannel != nil, voiceVideoPreferences.playsFeedbackSounds {
                 soundPlayer.play(enabled ? .cameraOn : .cameraOff)
             }
             return
@@ -1194,7 +1201,9 @@ extension AppModel {
                 generation: generation,
                 voiceSession: session
             ), activeVoiceChannel?.id == channel?.id else { return }
-            soundPlayer.play(enabled ? .cameraOn : .cameraOff)
+            if voiceVideoPreferences.playsFeedbackSounds {
+                soundPlayer.play(enabled ? .cameraOn : .cameraOff)
+            }
         } catch {
             guard isCurrentVoiceOperation(
                 account,
@@ -1206,31 +1215,41 @@ extension AppModel {
         }
     }
 
-    func selectCamera(_ camera: CameraDeviceInfo?) async {
-        UserDefaults.standard.set(camera?.uniqueID, forKey: "voiceCameraUID")
+    @discardableResult
+    func selectCamera(_ camera: CameraDeviceInfo?) async -> Bool {
         let account = accountSession()
         let generation = voiceMigrationGeneration
         let session = voiceSession
-        do { try await session?.selectCamera(uniqueID: camera?.uniqueID) } catch {
+        do {
+            try await session?.selectCamera(uniqueID: camera?.uniqueID)
+            selectedCameraUID = camera?.uniqueID
+            if voiceVideoPreferences.remembersCamera {
+                voiceVideoPreferences.cameraUID = camera?.uniqueID ?? ""
+            }
+            voiceDeviceStatusMessage = camera.map {
+                "Using “\($0.name)” as the camera."
+            } ?? "Using the system-default camera."
+            return true
+        } catch {
             guard isCurrentVoiceOperation(
                 account,
                 generation: generation,
                 voiceSession: session
-            ) else { return }
+            ) else { return false }
+            voiceDeviceStatusMessage = "The camera could not be changed."
             voiceErrorMessage = error.localizedDescription
             errorMessage = error.localizedDescription
+            return false
         }
     }
 
     func updateInputVolume(_ value: Float) async {
         inputVolume = min(max(value, 0), 2)
-        UserDefaults.standard.set(Double(inputVolume), forKey: "voiceInputVolume")
         await voiceSession?.setInputVolume(inputVolume)
     }
 
     func updateOutputVolume(_ value: Float) async {
         outputVolume = min(max(value, 0), 2)
-        UserDefaults.standard.set(Double(outputVolume), forKey: "voiceOutputVolume")
         await voiceSession?.setOutputVolume(outputVolume)
     }
 
@@ -1287,13 +1306,7 @@ extension AppModel {
         let session = DiscordVoiceSession(
             info: info,
             configuration: currentVoiceConfiguration(),
-            gatewayDiagnostics: VoiceGatewayDiagnostics { direction, data in
-                DiscordAPIDiagnosticStore.shared.recordWebSocketData(
-                    transport: "voice_gateway",
-                    direction: direction.rawValue,
-                    data: data
-                )
-            }
+            gatewayDiagnostics: voiceGatewayDiagnostics(transport: "voice_gateway")
         )
         voiceSession = session
         voiceEventTask?.cancel()
@@ -1331,6 +1344,7 @@ extension AppModel {
     }
 
     func scheduleVoiceServerMigration(to info: VoiceConnectionInfo?) {
+        recordVoiceServerMigrationScheduled(info)
         voiceMigrationGeneration &+= 1
         let generation = voiceMigrationGeneration
         voiceMigrationTask?.cancel()
@@ -1375,10 +1389,11 @@ extension AppModel {
         isCameraEnabled = false
         voiceSessionState = .reconnecting
 
-        guard let info else { return }
+        guard let info else { return recordVoiceServerMigrationWaiting() }
         guard info.channelID == activeVoiceChannel?.id else { return }
 
         do {
+            recordVoiceServerMigrationStarted()
             try await startVoiceSession(
                 with: info,
                 account: account,
@@ -1401,6 +1416,7 @@ extension AppModel {
                 ) else { return }
                 isCameraEnabled = true
             }
+            recordVoiceServerMigrationCompleted()
         } catch is CancellationError {
             return
         } catch {
@@ -1410,15 +1426,28 @@ extension AppModel {
             voiceSessionState = .failed
             voiceErrorMessage = error.localizedDescription
             errorMessage = error.localizedDescription
+            recordVoiceServerMigrationFailed()
         }
     }
 
     func consumeVoiceEvent(_ event: VoiceSessionEvent) {
         switch event {
         case .stateChanged(let state):
+            recordVoiceSessionStateReceived(state)
             voiceSessionState = state
             if state == .connected {
+                voiceConnectedAt = voiceConnectedAt ?? .now
                 watchAvailableDirectMessageStreamsAutomatically()
+            } else if state == .disconnected, activeVoiceChannel != nil {
+                let account = accountSession()
+                let operation = currentVoiceOperationIdentity()
+                startAccountChildTask(account: account) { model, account in
+                    await model.leaveVoice(
+                        account: account,
+                        expectedOperation: operation,
+                        notifyDiscord: false
+                    )
+                }
             }
         case .latencyUpdated(let milliseconds):
             voiceLatencyMilliseconds = milliseconds
@@ -1467,6 +1496,36 @@ extension AppModel {
             membersByID[user.id]
                 ?? Member(user: user, roleName: "Member", status: .offline)
         return presentProfile(for: member, destination: .contextual)
+    }
+
+    func showSystemMessageProfile(
+        userID: UserID,
+        sourceMessage: Message? = nil
+    ) {
+        if let user = systemMessageUser(
+            userID: userID,
+            sourceMessage: sourceMessage
+        ) {
+            _ = showProfile(for: user)
+        }
+    }
+
+    func navigateToSystemMessageTarget(
+        guildID: GuildID?,
+        channelID: ChannelID,
+        messageID: MessageID
+    ) {
+        let isRootChannel = snapshot?.channels.contains { $0.id == channelID } == true
+            || visibleChannels.contains { $0.id == channelID }
+        if isRootChannel {
+            navigate(to: guildID, channelID: channelID, messageID: messageID)
+        } else {
+            navigate(
+                to: guildID,
+                linkedChannelID: channelID,
+                messageID: messageID
+            )
+        }
     }
 
     func showInspectorProfile(for user: User) {
@@ -1610,6 +1669,8 @@ extension AppModel {
         dismissInspectorProfile()
         dismissContextualProfile()
         if clearsCache {
+            currentUserProfilePrefetch?.task.cancel()
+            currentUserProfilePrefetch = nil
             profileCache.removeAll(keepingCapacity: false)
         }
     }
@@ -1829,7 +1890,10 @@ extension AppModel {
                 channelID: selectedChannelID,
                 windowIsActive: isActive
             ) {
-                scheduleAcknowledgement(channelID: selectedChannelID, messageID: target)
+                scheduleAutomaticAcknowledgement(
+                    channelID: selectedChannelID,
+                    messageID: target
+                )
             }
         }
         if let threadID = openThread?.id {
@@ -1838,7 +1902,7 @@ extension AppModel {
                 channelID: threadID,
                 windowIsActive: isActive
             ) {
-                scheduleAcknowledgement(channelID: threadID, messageID: target)
+                scheduleAutomaticAcknowledgement(channelID: threadID, messageID: target)
             }
         }
     }
@@ -1866,7 +1930,7 @@ extension AppModel {
             )
         }
         if let target {
-            scheduleAcknowledgement(channelID: channelID, messageID: target)
+            scheduleAutomaticAcknowledgement(channelID: channelID, messageID: target)
         }
     }
 
@@ -1890,7 +1954,7 @@ extension AppModel {
             "Timeline initial c=\(channel, privacy: .public) r=\(reached, privacy: .public) e=\(eligible, privacy: .public) m=\(targetID, privacy: .public)"
         )
         if let target {
-            scheduleAcknowledgement(channelID: channelID, messageID: target)
+            scheduleAutomaticAcknowledgement(channelID: channelID, messageID: target)
         }
     }
 
@@ -1913,7 +1977,7 @@ extension AppModel {
             isPresented: true,
             initialHistoryLoaded: true
         ) {
-            scheduleAcknowledgement(channelID: channelID, messageID: target)
+            scheduleAutomaticAcknowledgement(channelID: channelID, messageID: target)
         }
     }
 

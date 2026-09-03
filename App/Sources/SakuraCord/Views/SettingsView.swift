@@ -1,270 +1,207 @@
-import DiscordProtocol
-import MediaPipeline
+import AppKit
 import SwiftUI
 
 struct SettingsView: View {
     let model: AppModel
     @ObservedObject var updateController: AppUpdateController
-    @AppStorage("sendWithReturn") private var sendWithReturn = true
-    @AppStorage("mediaCacheLimit") private var mediaCacheLimit = 2_147_483_648
-    @AppStorage("reduceAnimatedMedia") private var reduceAnimatedMedia = false
-    @State private var inputDeviceUID =
-        UserDefaults.standard.string(forKey: "voiceInputDeviceUID") ?? ""
-    @State private var outputDeviceUID =
-        UserDefaults.standard.string(forKey: "voiceOutputDeviceUID") ?? ""
-    @AppStorage("voiceCameraUID") private var cameraUID = ""
-    @AppStorage("voiceInputVolume") private var inputVolume = 1.0
-    @AppStorage("voiceOutputVolume") private var outputVolume = 1.0
-    @State private var notificationPermission = "Checking…"
+
+    @Environment(\.locale) private var locale
+    @Environment(\.colorSchemeContrast) private var systemColorSchemeContrast
+    @SceneStorage("settings.selected-account") private var storedSelectedAccount = ""
+    @State private var state = SettingsViewState()
+    @State private var launchAtLogin = LaunchAtLoginController()
+    @State private var isSearchPresented = false
+    private let navigationRouter = SettingsNavigationRouter.shared
 
     var body: some View {
-        @Bindable var notificationPreferences = model.notificationPreferences
-        TabView {
-            Form {
-                Section("Messages and media") {
-                    Toggle("Press Return to send messages", isOn: $sendWithReturn)
-                    Toggle("Reduce animated media", isOn: $reduceAnimatedMedia)
-                }
-
-                Section("Software updates") {
-                    Picker(
-                        "Release track",
-                        selection: Binding(
-                            get: { updateController.releaseTrack },
-                            set: { updateController.setReleaseTrack($0) }
-                        )
-                    ) {
-                        ForEach(AppUpdateReleaseTrack.allCases) { track in
-                            Text(track.title).tag(track)
-                        }
-                    }
-                    .disabled(!updateController.isEnabled)
-
-                    Text(updateController.releaseTrack.detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Toggle(
-                        "Automatically check for updates",
-                        isOn: Binding(
-                            get: {
-                                updateController.automaticallyChecksForUpdates
-                            },
-                            set: {
-                                updateController.setAutomaticallyChecksForUpdates($0)
-                            }
-                        )
-                    )
-                    .disabled(!updateController.isEnabled)
-                    .accessibilityHint(
-                        "Uses SakuraCord’s signed update feed on the configured schedule."
-                    )
-
-                    Toggle(
-                        "Automatically download updates",
-                        isOn: Binding(
-                            get: {
-                                updateController.automaticallyDownloadsUpdates
-                            },
-                            set: {
-                                updateController.setAutomaticallyDownloadsUpdates($0)
-                            }
-                        )
-                    )
-                    .disabled(
-                        !updateController.isEnabled
-                            || !updateController.allowsAutomaticUpdates
-                    )
-                    .accessibilityHint(
-                        "Downloaded updates remain cryptographically verified before installation."
-                    )
-
-                    LabeledContent("Update status") {
-                        Text(updateController.availabilityDescription)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.trailing)
-                    }
-
-                    Button("Check for Updates…") {
-                        updateController.checkForUpdates()
-                    }
-                    .disabled(!updateController.canCheckForUpdates)
-                    .accessibilityHint(updateController.availabilityDescription)
-                }
-            }
-            .formStyle(.grouped)
-            .tabItem { Label("General", systemImage: "gearshape") }
-
-            Form {
-                Picker("Media cache", selection: $mediaCacheLimit) {
-                    Text("512 MB").tag(536_870_912)
-                    Text("2 GB").tag(2_147_483_648)
-                    Text("5 GB").tag(5_368_709_120)
-                    Text("10 GB").tag(10_737_418_240)
-                }
-                Text("Credentials are stored only in the macOS Keychain. Cached message data never contains the account credential.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            .formStyle(.grouped)
-            .tabItem { Label("Storage", systemImage: "internaldrive") }
-
-            Form {
-                LabeledContent("System permission") {
-                    Text(notificationPermission)
-                        .foregroundStyle(.secondary)
-                    Button("Request Permission") {
-                        Task {
-                            _ = await model.requestNotificationPermission()
-                            await updateNotificationPermission()
-                        }
-                    }
-                }
-                Toggle("Enable native notifications", isOn: $notificationPreferences.isEnabled)
-                Picker("Notification previews", selection: $notificationPreferences.previewStyle) {
-                    ForEach(NotificationPreviewStyle.allCases) { style in
-                        Text(style.title).tag(style)
-                    }
-                }
-                Toggle("Play sound", isOn: $notificationPreferences.playsSound)
-                Toggle("Show unread mentions in Dock", isOn: $notificationPreferences.showsDockBadge)
-                Toggle("Quiet hours", isOn: $notificationPreferences.quietHoursEnabled)
-                if notificationPreferences.quietHoursEnabled {
-                    Stepper(
-                        "Start: \(notificationPreferences.quietStartHour):00",
-                        value: $notificationPreferences.quietStartHour,
-                        in: 0 ... 23
-                    )
-                    Stepper(
-                        "End: \(notificationPreferences.quietEndHour):00",
-                        value: $notificationPreferences.quietEndHour,
-                        in: 0 ... 23
-                    )
-                }
-                Text("Discord’s server and channel notification settings remain authoritative. These controls only narrow local macOS presentation.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .formStyle(.grouped)
-            .tabItem { Label("Notifications", systemImage: "bell") }
-            .task { await updateNotificationPermission() }
-            .onChange(of: notificationPreferences.showsDockBadge) {
-                model.refreshDockBadge()
-            }
-
-            Form {
-                Picker("Input device", selection: $inputDeviceUID) {
-                    Text(systemDefaultAudioDeviceLabel(model.mediaDevices.audioInputs)).tag("")
-                    ForEach(model.mediaDevices.audioInputs) { device in
-                        Text(device.name).tag(device.uid)
-                    }
-                }
-                Picker("Output device", selection: $outputDeviceUID) {
-                    Text(systemDefaultAudioDeviceLabel(model.mediaDevices.audioOutputs)).tag("")
-                    ForEach(model.mediaDevices.audioOutputs) { device in
-                        Text(device.name).tag(device.uid)
-                    }
-                }
-                Picker("Camera", selection: $cameraUID) {
-                    Text("System Default").tag("")
-                    ForEach(model.mediaDevices.cameras) { camera in
-                        Text(camera.name).tag(camera.uniqueID)
-                    }
-                }
-                LabeledContent("Input volume") {
-                    Slider(value: $inputVolume, in: 0 ... 2)
-                    Text("\(Int(inputVolume * 100))%")
-                        .monospacedDigit()
-                        .frame(width: 46, alignment: .trailing)
-                }
-                LabeledContent("Output volume") {
-                    Slider(value: $outputVolume, in: 0 ... 2)
-                    Text("\(Int(outputVolume * 100))%")
-                        .monospacedDigit()
-                        .frame(width: 46, alignment: .trailing)
-                }
-                if let status = model.voiceDeviceStatusMessage {
-                    Text(status)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .formStyle(.grouped)
-            .tabItem { Label("Voice & Video", systemImage: "waveform.and.mic") }
-            .task {
-                await model.refreshMediaDevices()
-            }
-            .onChange(of: inputDeviceUID) { _, uid in
-                guard uid != (UserDefaults.standard.string(
-                    forKey: "voiceInputDeviceUID"
-                ) ?? "") else { return }
-                let device = model.mediaDevices.audioInputs.first { $0.uid == uid }
-                Task {
-                    guard await model.selectInputDevice(device) else {
-                        inputDeviceUID = UserDefaults.standard.string(
-                            forKey: "voiceInputDeviceUID"
-                        ) ?? ""
-                        return
-                    }
-                }
-            }
-            .onChange(of: outputDeviceUID) { _, uid in
-                guard uid != (UserDefaults.standard.string(
-                    forKey: "voiceOutputDeviceUID"
-                ) ?? "") else { return }
-                let device = model.mediaDevices.audioOutputs.first { $0.uid == uid }
-                Task {
-                    guard await model.selectOutputDevice(device) else {
-                        outputDeviceUID = UserDefaults.standard.string(
-                            forKey: "voiceOutputDeviceUID"
-                        ) ?? ""
-                        return
-                    }
-                }
-            }
-            .onChange(of: cameraUID) { _, uid in
-                let camera = model.mediaDevices.cameras.first { $0.uniqueID == uid }
-                Task { await model.selectCamera(camera) }
-            }
-            .onChange(of: inputVolume) { _, value in
-                Task { await model.updateInputVolume(Float(value)) }
-            }
-            .onChange(of: outputVolume) { _, value in
-                Task { await model.updateOutputVolume(Float(value)) }
-            }
-            .onChange(of: model.mediaDevices) {
-                inputDeviceUID = UserDefaults.standard.string(
-                    forKey: "voiceInputDeviceUID"
-                ) ?? ""
-                outputDeviceUID = UserDefaults.standard.string(
-                    forKey: "voiceOutputDeviceUID"
-                ) ?? ""
-            }
-
-            Form {
-                Text("Plugins will run in a sandboxed WebAssembly host. This foundation build exposes the manifest and permission model but does not execute plugins yet.")
-                    .font(.callout)
-            }
-            .formStyle(.grouped)
-            .tabItem { Label("Plugins", systemImage: "puzzlepiece.extension") }
-
-            DiagnosticsSettingsView()
+        @Bindable var state = state
+        NavigationSplitView {
+            SettingsSidebar(state: state)
+        } detail: {
+            SettingsDetailRouter(
+                model: model,
+                updateController: updateController,
+                state: state,
+                launchAtLogin: launchAtLogin,
+                selectedAccountID: $storedSelectedAccount
+            )
+            .modifier(
+                SettingsContrastModifier(
+                    isEnabled: model.accessibilitySettings.increasesContrast
+                        && systemColorSchemeContrast == .standard
+                )
+            )
         }
-        .frame(width: 620, height: 470)
-    }
-
-    private func updateNotificationPermission() async {
-        notificationPermission =
-            switch await model.notificationAuthorizationStatus() {
-            case .authorized, .provisional, .ephemeral: "Allowed"
-            case .denied: "Denied in System Settings"
-            case .notDetermined: "Not requested"
-            @unknown default: "Unknown"
+        .searchable(
+            text: $state.searchText,
+            isPresented: $isSearchPresented,
+            placement: .sidebar,
+            prompt: LocalizedStringResource(
+                "Search Settings",
+                bundle: #bundle,
+                comment: "Prompt for the Settings sidebar search field."
+            )
+        )
+        .background {
+            ZStack {
+                SakuraCordThemeBackground()
+                    .ignoresSafeArea()
+                SettingsWindowBehaviorBridge()
+                SakuraCordTextInputAccentBridge()
             }
+        }
+        .onKeyPress(.return) {
+            state.activateFirstSearchResult() ? .handled : .ignored
+        }
+        .onKeyPress(.escape) {
+            guard isSearchPresented else { return .ignored }
+            state.searchText = ""
+            isSearchPresented = false
+            NSApp.keyWindow?.makeFirstResponder(nil)
+            return .handled
+        }
+        .task {
+            state.updateLocale(locale)
+        }
+        .task(id: navigationRouter.request?.id) {
+            guard let request = navigationRouter.request else { return }
+            state.navigate(
+                to: request.destination,
+                controlID: request.controlID
+            )
+            navigationRouter.consume(request.id)
+        }
+        .onChange(of: locale) { _, locale in
+            state.updateLocale(locale)
+        }
+        .frame(
+            minWidth: 760,
+            idealWidth: 980,
+            minHeight: 520,
+            idealHeight: 700
+        )
     }
-
 }
 
-private func systemDefaultAudioDeviceLabel(_ devices: [AudioDeviceInfo]) -> String {
-    guard let device = devices.first(where: \.isDefault) else { return "System Default" }
-    return "System Default (\(device.name))"
+/// Applies the Settings-specific behavior that SwiftUI doesn't expose.
+private struct SettingsWindowBehaviorBridge: NSViewRepresentable {
+    func makeNSView(context: Context) -> WindowBehaviorView {
+        WindowBehaviorView()
+    }
+
+    func updateNSView(_ view: WindowBehaviorView, context: Context) {
+        view.applyWindowBehavior()
+    }
+
+    final class WindowBehaviorView: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            applyWindowBehavior()
+            DispatchQueue.main.async { [weak self] in
+                self?.applyWindowBehavior()
+                self?.centerWindow()
+            }
+        }
+
+        func applyWindowBehavior() {
+            guard let window else { return }
+            window.toolbarStyle = .unified
+            window.styleMask.insert(.resizable)
+            window.contentMaxSize = NSSize(
+                width: CGFloat.greatestFiniteMagnitude,
+                height: CGFloat.greatestFiniteMagnitude
+            )
+        }
+
+        private func centerWindow() {
+            guard let window else { return }
+            let screen = NSApp.windows.first {
+                $0 !== window
+                    && $0.isVisible
+                    && $0.styleMask.contains(.fullScreen)
+            }?.screen ?? NSScreen.main ?? window.screen
+            guard let screen else { return }
+
+            let visibleFrame = screen.visibleFrame
+            let origin = NSPoint(
+                x: visibleFrame.midX - window.frame.width / 2,
+                y: visibleFrame.midY - window.frame.height / 2
+            )
+            window.setFrameOrigin(origin)
+        }
+    }
+}
+
+private struct SettingsContrastModifier: ViewModifier {
+    let isEnabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.contrast(1.12)
+        } else {
+            content
+        }
+    }
+}
+
+private struct SettingsDetailRouter: View {
+    let model: AppModel
+    @ObservedObject var updateController: AppUpdateController
+    let state: SettingsViewState
+    let launchAtLogin: LaunchAtLoginController
+    @Binding var selectedAccountID: String
+
+    var body: some View {
+        switch state.selectedPage {
+        case .myAccount:
+            MyAccountSettingsPage(
+                model: model,
+                state: state,
+                selectedAccountID: $selectedAccountID
+            )
+        case .general:
+            GeneralSettingsPage(
+                model: model,
+                state: state,
+                launchAtLogin: launchAtLogin
+            )
+        case .appearance:
+            AppearanceSettingsPage(model: model, state: state)
+        case .interface:
+            InterfaceSettingsPage(model: model, state: state)
+        case .chat:
+            ChatSettingsPage(model: model, state: state)
+        case .notifications:
+            NotificationsSettingsPage(model: model, state: state)
+        case .voiceVideo:
+            VoiceVideoSettingsPage(model: model, state: state)
+        case .accessibility:
+            AccessibilitySettingsPage(model: model, state: state)
+        case .keyboardShortcuts:
+            KeyboardShortcutsSettingsPage(state: state)
+        case .privacySafety:
+            PrivacySafetySettingsPage(model: model, state: state)
+        case .storageDownloads:
+            StorageDownloadsSettingsPage(model: model, state: state)
+        case .diagnostics:
+            DiagnosticsSettingsPage(
+                model: model,
+                updateController: updateController,
+                state: state
+            )
+        case .softwareUpdates:
+            SoftwareUpdatesSettingsPage(
+                updateController: updateController,
+                state: state
+            )
+        case .extensions:
+            ExtensionsSettingsPage(state: state)
+        case .about:
+            AboutSettingsPage(
+                updateController: updateController,
+                state: state
+            )
+        }
+    }
 }

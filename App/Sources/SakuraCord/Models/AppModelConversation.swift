@@ -943,20 +943,28 @@ extension AppModel {
 
     @discardableResult
     func sendThreadComposerMessage(attachments: [ForumPostAttachment]) async -> Bool {
-        guard let thread = openThread, openThreadAccess.canSend else { return false }
+        await submitThreadComposerMessage(attachments: attachments).serverConfirmed
+    }
+
+    func submitThreadComposerMessage(
+        attachments: [ForumPostAttachment]
+    ) async -> ComposerSubmissionResult {
+        guard let thread = openThread, openThreadAccess.canSend else { return .rejected }
         let content = threadDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty || !attachments.isEmpty else { return false }
-        guard validateAttachmentCount(attachments) else { return false }
+        guard !content.isEmpty || !attachments.isEmpty else { return .rejected }
+        guard validateAttachmentCount(attachments) else { return .rejected }
         let replyTo = threadReplyingTo?.id
         let mentionsRepliedUser = threadReplyMentionsAuthor
-        return await sendThreadMessage(
+        let confirmed = await sendThreadMessage(
             content: content,
             replyTo: replyTo,
             mentionsRepliedUser: mentionsRepliedUser,
+            replyPreview: threadReplyingTo.map(MessageReplyPreview.init),
             attachments: attachments,
             thread: thread,
             clearsComposer: true
         )
+        return .enqueued(serverConfirmed: confirmed)
     }
 
     @discardableResult
@@ -964,6 +972,7 @@ extension AppModel {
         content: String,
         replyTo: MessageID? = nil,
         mentionsRepliedUser: Bool = true,
+        replyPreview: MessageReplyPreview? = nil,
         attachments: [ForumPostAttachment],
         thread: MessageThreadSummary,
         clearsComposer: Bool
@@ -975,32 +984,21 @@ extension AppModel {
             mentionsRepliedUser: mentionsRepliedUser,
             attachments: attachments
         )
-        threadErrorMessage = nil
-        threadErrorScope = nil
+        let optimistic = optimisticMessage(
+            for: draft,
+            replyPreview: replyPreview
+        )
+        appendOutgoingMessage(optimistic)
+        outgoingMessages.draftsByNonce[draft.nonce] = draft
         if clearsComposer {
             threadDraft = ""
             threadReplyingTo = nil
         }
-        let session = accountSession()
-        do {
-            let message = try await session.provider.send(draft)
-            guard isCurrentAccountSession(session) else { return false }
-            guard openThread?.id == thread.id else { return true }
-            let reconciled = reconcileVisibleOrCached(message)
-            journalAuthoritativeMessageUpsert(reconciled)
-            guard isCurrentAccountSession(session) else { return false }
+        let didSend = await performOutgoingSend(draft, isRetry: false)
+        if didSend {
             completeConversationReadingAndAdvance(channelID: thread.id)
-            return true
-        } catch {
-            guard isCurrentAccountSession(session) else { return false }
-            guard openThread?.id == thread.id else { return false }
-            if clearsComposer, threadDraft.isEmpty {
-                threadDraft = content
-            }
-            threadErrorMessage = error.localizedDescription
-            threadErrorScope = .action
-            return false
         }
+        return didSend
     }
 
     func updateDraft(_ value: String) {
@@ -1020,6 +1018,15 @@ extension AppModel {
             guard let self, self.isCurrentAccountSession(session) else { return }
             try? await session.database?.saveDraft(value, channelID: channelID)
         }
+    }
+
+    func updateThreadDraft(_ value: String) {
+        threadDraft = value
+        guard let thread = openThread else {
+            stopLocalTyping(clearThrottle: value.isEmpty)
+            return
+        }
+        scheduleLocalTyping(for: value, channelID: thread.id)
     }
 
     func loadApplicationCommands() {
@@ -1524,9 +1531,10 @@ extension AppModel {
         on message: Message, customID: String, kind: ComponentInteractionKind, values: [String] = []
     ) async {
         let key = ComponentControlKey(messageID: message.id, customID: customID)
-        guard !pendingComponentControls.contains(key) else { return }
+        guard !componentInteractionPresentation.pendingControls.contains(key)
+        else { return }
         guard supportedCapabilities.contains(.components) else {
-            componentErrors[key] =
+            componentInteractionPresentation.errors[key] =
                 ChatProviderError.capabilityDisabled(.components).localizedDescription
             return
         }
@@ -1534,17 +1542,18 @@ extension AppModel {
             messageID: message.id, channelID: message.channelID, guildID: message.guildID,
             applicationID: message.applicationID, customID: customID, kind: kind, values: values
         )
-        pendingComponentControls.insert(key)
+        componentInteractionPresentation.pendingControls.insert(key)
         componentKeyByNonce[submission.nonce] = key
-        componentErrors[key] = nil
+        componentInteractionPresentation.errors[key] = nil
         let session = accountSession()
         do {
             try await session.provider.submitComponentInteraction(submission)
         } catch {
             guard isCurrentAccountSession(session) else { return }
-            pendingComponentControls.remove(key)
+            componentInteractionPresentation.pendingControls.remove(key)
             componentKeyByNonce[submission.nonce] = nil
-            componentErrors[key] = error.localizedDescription
+            componentInteractionPresentation.errors[key] =
+                error.localizedDescription
         }
     }
 
@@ -1573,16 +1582,256 @@ extension AppModel {
         guard isCurrentAccountSession(session) else {
             throw CancellationError()
         }
+        return Array(
+            resolvedComponentChoices(
+                choices,
+                kind: kind,
+                guildID: guildID
+            ).prefix(25)
+        )
+    }
+
+    func cachedComponentChoices(
+        kind: ComponentSelectKind,
+        guildID: GuildID?,
+        channelTypes: [Int]
+    ) -> [ComponentSelectOption] {
+        let roles = componentChoiceRoles(in: guildID)
+        let choices: [ComponentSelectOption]
+        switch kind {
+        case .string:
+            choices = []
+        case .user:
+            choices = componentChoiceMembers(in: guildID).map {
+                componentChoice(for: $0, roles: roles)
+            }
+        case .role:
+            choices = roles
+                .sorted(by: componentChoiceRolePrecedes)
+                .map(componentChoice(for:))
+        case .mentionable:
+            choices = componentChoiceMembers(in: guildID).map {
+                componentChoice(for: $0, roles: roles)
+            } + roles
+                .sorted(by: componentChoiceRolePrecedes)
+                .map(componentChoice(for:))
+        case .channel:
+            choices = componentChoiceChannels(
+                in: guildID,
+                channelTypes: channelTypes
+            ).map(componentChoice(for:))
+        }
         return Array(choices.prefix(25))
     }
 
+    private func resolvedComponentChoices(
+        _ choices: [ComponentSelectOption],
+        kind: ComponentSelectKind,
+        guildID: GuildID?
+    ) -> [ComponentSelectOption] {
+        let membersByValue = Dictionary(
+            componentChoiceMembers(in: guildID).map {
+                (String($0.id.rawValue), $0)
+            },
+            uniquingKeysWith: { _, newer in newer }
+        )
+        let rolesByValue = Dictionary(
+            componentChoiceRoles(in: guildID).map {
+                (String($0.id.rawValue), $0)
+            },
+            uniquingKeysWith: { _, newer in newer }
+        )
+        let channelsByValue = Dictionary(
+            componentChoiceChannels(in: guildID, channelTypes: []).map {
+                (String($0.id.rawValue), $0)
+            },
+            uniquingKeysWith: { _, newer in newer }
+        )
+        let roles = Array(rolesByValue.values)
+        return choices.map { choice in
+            switch kind {
+            case .string:
+                choice
+            case .user:
+                membersByValue[choice.value].map {
+                    componentChoice(for: $0, roles: roles)
+                } ?? componentChoiceFallback(choice, entityKind: .user)
+            case .role:
+                rolesByValue[choice.value].map(componentChoice(for:))
+                    ?? componentChoiceFallback(choice, entityKind: .role)
+            case .mentionable:
+                if let member = membersByValue[choice.value] {
+                    componentChoice(for: member, roles: roles)
+                } else if let role = rolesByValue[choice.value] {
+                    componentChoice(for: role)
+                } else {
+                    choice
+                }
+            case .channel:
+                channelsByValue[choice.value].map(componentChoice(for:))
+                    ?? componentChoiceFallback(choice, entityKind: .channel)
+            }
+        }
+    }
+
+    private func componentChoiceMembers(
+        in guildID: GuildID?
+    ) -> [Member] {
+        let values: [Member]
+        if let guildID,
+           let stored = membersByGuildID[guildID],
+           !stored.isEmpty
+        {
+            values = Array(stored.values)
+        } else {
+            values = members
+        }
+        return values.sorted {
+            let comparison = $0.user.displayName.localizedCaseInsensitiveCompare(
+                $1.user.displayName
+            )
+            return comparison == .orderedSame
+                ? $0.id < $1.id
+                : comparison == .orderedAscending
+        }
+    }
+
+    private func componentChoiceRoles(
+        in guildID: GuildID?
+    ) -> [GuildRole] {
+        if let guildID,
+           let stored = guildRolesByGuildID[guildID],
+           !stored.isEmpty
+        {
+            return stored
+        }
+        return guildRoles
+    }
+
+    private func componentChoiceChannels(
+        in guildID: GuildID?,
+        channelTypes: [Int]
+    ) -> [Channel] {
+        let source = snapshot?.channels ?? visibleChannels
+        return source.filter { channel in
+            (guildID == nil || channel.guildID == guildID)
+                && (channelTypes.isEmpty
+                    || channelTypes.contains(channel.discordCommandType))
+        }.sorted {
+            if $0.categoryPosition != $1.categoryPosition {
+                return $0.categoryPosition < $1.categoryPosition
+            }
+            if $0.position != $1.position {
+                return $0.position < $1.position
+            }
+            return $0.id < $1.id
+        }
+    }
+
+    private func componentChoice(
+        for member: Member,
+        roles: [GuildRole]
+    ) -> ComponentSelectOption {
+        let roleIDs = Set(member.roleIDs)
+        let colorHex = MessageAuthorPresentation.topRoleColor(
+            in: member.roles
+        ) ?? MessageAuthorPresentation.topRoleColor(
+            in: roles.filter { roleIDs.contains($0.id) }
+        )
+        return ComponentSelectOption(
+            label: member.user.displayName,
+            value: String(member.id.rawValue),
+            description: "@\(member.user.username)",
+            imageURL: member.guildAvatarURL ?? member.user.avatarURL,
+            imageShape: .circle,
+            entityKind: .user,
+            colorHex: colorHex
+        )
+    }
+
+    private func componentChoice(
+        for role: GuildRole
+    ) -> ComponentSelectOption {
+        ComponentSelectOption(
+            label: role.name,
+            value: String(role.id.rawValue),
+            imageURL: role.iconURL,
+            imageShape: .roundedRectangle,
+            entityKind: .role,
+            colorHex: role.colorHex,
+            unicodeEmoji: role.unicodeEmoji
+        )
+    }
+
+    private func componentChoice(
+        for channel: Channel
+    ) -> ComponentSelectOption {
+        ComponentSelectOption(
+            label: channel.name,
+            value: String(channel.id.rawValue),
+            description: channel.category,
+            entityKind: .channel,
+            channelKind: channel.kind
+        )
+    }
+
+    private func componentChoiceFallback(
+        _ choice: ComponentSelectOption,
+        entityKind: ComponentSelectOptionEntityKind
+    ) -> ComponentSelectOption {
+        var resolved = choice
+        resolved.entityKind = entityKind
+        if entityKind == .role, resolved.label.hasPrefix("@")
+            || entityKind == .channel && resolved.label.hasPrefix("#")
+        {
+            resolved.label.removeFirst()
+        }
+        return resolved
+    }
+
+    private func componentChoiceRolePrecedes(
+        _ lhs: GuildRole,
+        _ rhs: GuildRole
+    ) -> Bool {
+        if lhs.position != rhs.position {
+            return lhs.position > rhs.position
+        }
+        let comparison = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
+        return comparison == .orderedSame
+            ? lhs.id < rhs.id
+            : comparison == .orderedAscending
+    }
+
     func isComponentPending(messageID: MessageID, customID: String) -> Bool {
-        pendingComponentControls.contains(
+        componentInteractionPresentation.pendingControls.contains(
             ComponentControlKey(messageID: messageID, customID: customID))
     }
 
+    func componentSelection(
+        messageID: MessageID,
+        customID: String
+    ) -> [ComponentSelectOption]? {
+        componentInteractionPresentation.selections[
+            ComponentControlKey(messageID: messageID, customID: customID)
+        ]
+    }
+
+    func setComponentSelection(
+        _ options: [ComponentSelectOption],
+        messageID: MessageID,
+        customID: String
+    ) {
+        componentInteractionPresentation.selections[
+            ComponentControlKey(messageID: messageID, customID: customID)
+        ] = options
+    }
+
+    func publishComponentSelectionPresentation() {
+        timelinePresentationRevision &+= 1
+    }
+
     func componentError(for messageID: MessageID) -> String? {
-        componentErrors
+        componentInteractionPresentation.errors
             .filter { $0.key.messageID == messageID }
             .sorted { $0.key.customID < $1.key.customID }
             .first?.value
@@ -1613,43 +1862,57 @@ extension AppModel {
         }
     }
 
-    func scheduleLocalTyping(for value: String) {
-        guard !value.isEmpty,
+    func scheduleLocalTyping(for value: String, channelID: ChannelID? = nil) {
+        let destination: (id: ChannelID, supportsTyping: Bool)? =
+            if let channelID {
+                (channelID, true)
+            } else if let selectedChannel {
+                (selectedChannel.id, Self.supportsTyping(selectedChannel.kind))
+            } else {
+                nil
+            }
+        guard chatSettings.sendsTypingIndicators,
+              !value.isEmpty,
               connectionState == .ready,
-              let channel = selectedChannel,
-              Self.supportsTyping(channel.kind)
+              let destination,
+              destination.supportsTyping
         else {
             stopLocalTyping(clearThrottle: value.isEmpty)
             return
         }
-        if localTypingTask != nil, localTypingChannelID == channel.id {
+        if localTypingTask != nil, localTypingChannelID == destination.id {
             return
         }
         stopLocalTyping(clearThrottle: false)
         localTypingGeneration &+= 1
         let generation = localTypingGeneration
-        localTypingChannelID = channel.id
+        localTypingChannelID = destination.id
         let now = Date.now
         let debounce = Self.seconds(localTypingTiming.debounce)
         let remainingThrottle =
-            lastTypingRequestAt[channel.id]
+            lastTypingRequestAt[destination.id]
                 .map { max(0, Self.seconds(localTypingTiming.throttle) - now.timeIntervalSince($0)) }
                 ?? 0
         let delay = max(debounce, remainingThrottle)
         localTypingTask = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(delay)) } catch { return }
-            await self?.performLocalTyping(channelID: channel.id, generation: generation)
+            await self?.performLocalTyping(
+                channelID: destination.id,
+                generation: generation
+            )
         }
     }
 
     func performLocalTyping(channelID: ChannelID, generation: UInt64) async {
-        guard generation == localTypingGeneration,
+        let isActiveChannelDraft = selectedChannelID == channelID
+            && !draft.isEmpty
+        let isActiveThreadDraft = openThread?.id == channelID
+            && !threadDraft.isEmpty
+        guard chatSettings.sendsTypingIndicators,
+              generation == localTypingGeneration,
               localTypingChannelID == channelID,
-              selectedChannelID == channelID,
-              !draft.isEmpty,
-              connectionState == .ready,
-              let selectedChannel,
-              Self.supportsTyping(selectedChannel.kind)
+              isActiveChannelDraft || isActiveThreadDraft,
+              connectionState == .ready
         else { return }
         localTypingTask = nil
         localTypingChannelID = nil
@@ -1703,21 +1966,27 @@ extension AppModel {
 
     @discardableResult
     func sendComposerMessage(attachments: [ForumPostAttachment]) async -> Bool {
+        await submitComposerMessage(attachments: attachments).serverConfirmed
+    }
+
+    func submitComposerMessage(
+        attachments: [ForumPostAttachment]
+    ) async -> ComposerSubmissionResult {
         guard let channelID = selectedChannelID, selectedConversationAccess.canSend else {
-            return false
+            return .rejected
         }
         let content = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty || !attachments.isEmpty else { return false }
-        guard validateAttachmentCount(attachments) else { return false }
+        guard !content.isEmpty || !attachments.isEmpty else { return .rejected }
+        guard validateAttachmentCount(attachments) else { return .rejected }
         if hasMoreLaterMessages {
-            guard await loadNewestMessageWindow() else { return false }
+            guard await loadNewestMessageWindow() else { return .rejected }
         }
         let replyTo = replyingTo?.id
         let mentionsRepliedUser = replyMentionsAuthor
         let replyPreview = replyingTo.map {
             MessageReplyPreview(message: $0)
         }
-        return await sendChannelMessage(
+        let confirmed = await sendChannelMessage(
             channelID: channelID,
             content: content,
             replyTo: replyTo,
@@ -1726,6 +1995,7 @@ extension AppModel {
             attachments: attachments,
             clearsComposer: true
         )
+        return .enqueued(serverConfirmed: confirmed)
     }
 
     @discardableResult
@@ -1748,24 +2018,12 @@ extension AppModel {
         if clearsComposer {
             stopLocalTyping(clearThrottle: true)
         }
-        let optimistic = Message(
-            id: MessageID(rawValue: UInt64.max - UInt64(messages.count)), channelID: channelID,
-            author: snapshot?.currentUser
-                ?? User(id: UserID(rawValue: 1), username: "me", displayName: "Me"),
-            content: content, replyTo: replyTo, replyPreview: replyPreview,
-            attachments: attachments.enumerated().map {
-                var presentation = OptimisticAttachmentPresentation.attachment(
-                    for: $0.element.url,
-                    index: $0.offset
-                )
-                presentation.filename = $0.element.filename
-                presentation.description = $0.element.description
-                presentation.isSpoiler = $0.element.isSpoiler
-                return presentation
-            }, nonce: outgoing.nonce, outboxState: .sending
+        let optimistic = optimisticMessage(
+            for: outgoing,
+            replyPreview: replyPreview
         )
-        appendSelectedMessage(optimistic)
-        outgoingDraftsByNonce[outgoing.nonce] = outgoing
+        appendOutgoingMessage(optimistic)
+        outgoingMessages.draftsByNonce[outgoing.nonce] = outgoing
         if clearsComposer {
             replyingTo = nil
             updateDraft("")
@@ -1986,25 +2244,26 @@ extension AppModel {
     func retrySending(_ message: Message) async -> Bool {
         guard message.outboxState == .failed,
               let nonce = message.nonce,
-              outgoingState(nonce: nonce, channelID: message.channelID) == .failed
+              outgoingState(nonce: nonce, channelID: message.channelID) == .failed,
+              let outgoing = outgoingMessages.draftsByNonce[nonce]
         else { return false }
-        let outgoing =
-            outgoingDraftsByNonce[nonce]
-                ?? SendMessageDraft(
-                    channelID: message.channelID,
-                    content: message.content,
-                    replyTo: message.replyTo,
-                    attachmentURLs: message.attachments.map(\.url),
-                    nonce: nonce,
-                    stickerIDs: message.stickers.map(\.id)
-                )
-        outgoingDraftsByNonce[nonce] = outgoing
         updateOutgoingState(.sending, nonce: nonce, channelID: message.channelID)
         return await performOutgoingSend(outgoing, isRetry: true)
     }
 
     func performOutgoingSend(_ outgoing: SendMessageDraft, isRetry: Bool) async -> Bool {
         let session = accountSession()
+        let attachmentURLs = outgoing.attachmentURLs
+        beginUsingOwnedPromisedFiles(attachmentURLs)
+        let securityScopedURLs = attachmentURLs.filter {
+            $0.startAccessingSecurityScopedResource()
+        }
+        defer {
+            for url in securityScopedURLs {
+                url.stopAccessingSecurityScopedResource()
+            }
+            endUsingOwnedPromisedFiles(attachmentURLs)
+        }
         Self.messageSendLogger.info(
             """
             Message send started channel=\(outgoing.channelID.description, privacy: .public) \
@@ -2016,7 +2275,7 @@ extension AppModel {
             let confirmed = try await session.provider.send(outgoing)
             guard isCurrentAccountSession(session) else { return false }
             let reconciled = reconcileVisibleOrCached(confirmed)
-            outgoingDraftsByNonce[outgoing.nonce] = nil
+            outgoingMessages.draftsByNonce[outgoing.nonce] = nil
             journalAuthoritativeMessageUpsert(reconciled)
             guard isCurrentAccountSession(session) else { return false }
             Self.messageSendLogger.info(
@@ -2035,10 +2294,8 @@ extension AppModel {
                 updateOutgoingState(state, nonce: outgoing.nonce, channelID: outgoing.channelID)
             } else {
                 state = .failed
-                outgoingDraftsByNonce[outgoing.nonce] = nil
-                removeOutgoingMessage(nonce: outgoing.nonce, channelID: outgoing.channelID)
+                updateOutgoingState(state, nonce: outgoing.nonce, channelID: outgoing.channelID)
             }
-            errorMessage = error.localizedDescription
             let nsError = error as NSError
             Self.messageSendLogger.error(
                 """
@@ -2049,6 +2306,46 @@ extension AppModel {
                 """
             )
             return false
+        }
+    }
+
+    func optimisticMessage(
+        for outgoing: SendMessageDraft,
+        replyPreview: MessageReplyPreview?
+    ) -> Message {
+        let id = outgoingMessages.nextOptimisticMessageID()
+        return Message(
+            id: id,
+            channelID: outgoing.channelID,
+            author: snapshot?.currentUser
+                ?? User(id: UserID(rawValue: 1), username: "me", displayName: "Me"),
+            content: outgoing.content,
+            replyTo: outgoing.replyTo,
+            replyPreview: replyPreview,
+            attachments: outgoing.attachments.enumerated().map {
+                var presentation = OptimisticAttachmentPresentation.attachment(
+                    for: $0.element.url,
+                    index: $0.offset
+                )
+                presentation.filename = $0.element.filename
+                presentation.description = $0.element.description
+                presentation.isSpoiler = $0.element.isSpoiler
+                return presentation
+            },
+            nonce: outgoing.nonce,
+            outboxState: .sending
+        )
+    }
+
+    func appendOutgoingMessage(_ message: Message) {
+        if message.channelID == openThread?.id {
+            var updated = threadMessages
+            Self.insert(message, intoSorted: &updated)
+            threadMessages = updated
+        } else if message.channelID == selectedChannelID {
+            appendSelectedMessage(message)
+        } else {
+            cache(message)
         }
     }
 }

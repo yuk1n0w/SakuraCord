@@ -11,6 +11,7 @@ enum NativeTimelineTextPresentation {
         let prepared: RichMessageAttributedText.Prepared
         let emojiSize: CGFloat
         let baseFontSize: CGFloat
+        let underlinesLinks: Bool
         let mentions: [String: MentionPresentation]
     }
 
@@ -18,6 +19,32 @@ enum NativeTimelineTextPresentation {
         let attributedContent: NSAttributedString?
         let framesetter: CTFramesetter
         let linkedImages: [LinkedImageReference]
+    }
+
+    static func outgoingBubble(_ value: Value) -> Value {
+        guard let attributedContent = value.attributedContent else {
+            return value
+        }
+        let resolved = NSMutableAttributedString(
+            attributedString: attributedContent
+        )
+        let range = NSRange(location: 0, length: resolved.length)
+        resolved.addAttribute(.foregroundColor, value: NSColor.white, range: range)
+        resolved.addAttribute(.underlineColor, value: NSColor.white, range: range)
+        resolved.addAttribute(.strikethroughColor, value: NSColor.white, range: range)
+        resolved.enumerateAttribute(.link, in: range) { link, linkRange, _ in
+            guard link != nil else { return }
+            resolved.addAttribute(
+                .underlineStyle,
+                value: NSUnderlineStyle.single.rawValue,
+                range: linkRange
+            )
+        }
+        return Value(
+            attributedContent: resolved,
+            framesetter: CTFramesetterCreateWithAttributedString(resolved),
+            linkedImages: value.linkedImages
+        )
     }
 
     static var empty: Value {
@@ -28,6 +55,44 @@ enum NativeTimelineTextPresentation {
             ),
             linkedImages: []
         )
+    }
+
+    static func make(
+        row: MessageRowPresentation,
+        model: AppModel?
+    ) -> Value {
+        let message = row.message
+        guard !message.flags.contains(.isComponentsV2) else {
+            return empty
+        }
+        let chatSettings = model?.chatSettings ?? .defaults
+        let systemActorColor = model?.authorPresentation(for: message)
+            .roleColorHex.flatMap { value -> NSColor? in
+                guard value != 0 else { return nil }
+                return NSColor(
+                    red: CGFloat((value >> 16) & 0xFF) / 255,
+                    green: CGFloat((value >> 8) & 0xFF) / 255,
+                    blue: CGFloat(value & 0xFF) / 255,
+                    alpha: 1
+                )
+            }
+        let plan = if message.type.hasGeneratedContent {
+            NativeTimelineTextPlan.make(
+                for: message,
+                currentUserID: model?.snapshot?.currentUser.id,
+                systemActorColor: systemActorColor
+            )
+        } else if !chatSettings.showsAutomaticLinkPreviews
+            || !chatSettings.expandsEmbedsByDefault
+        {
+            NativeTimelineTextPlan.make(
+                for: message,
+                showsAutomaticLinkPreviews: false
+            )
+        } else {
+            row.textPlan
+        }
+        return make(message: message, plan: plan, model: model)
     }
 
     static func make(
@@ -45,7 +110,18 @@ enum NativeTimelineTextPresentation {
             )
         }
 
-        if let preparedBox = plan.attributedText {
+        let settings = model?.interfaceSettings ?? .defaults
+        let preservesCompactSystemStyle = message.type.hasGeneratedContent
+            && model?.appearanceSettings.messageAppearance != .bubbles
+        let resolvedBaseFontSize = preservesCompactSystemStyle
+            ? plan.baseFontSize
+            : InterfaceTypographyMetrics.messageTextSize
+        let underlinesLinks = !message.type.hasGeneratedContent
+            && settings.underlinesLinks
+        if let preparedBox = plan.attributedText,
+           resolvedBaseFontSize == plan.baseFontSize,
+           !underlinesLinks
+        {
             return Value(
                 attributedContent: preparedBox.value,
                 framesetter: preparedBox.framesetter,
@@ -56,7 +132,9 @@ enum NativeTimelineTextPresentation {
         guard let preparation = preparation(
             message: message,
             plan: plan,
-            model: model
+            model: model,
+            baseFontSize: resolvedBaseFontSize,
+            underlinesLinks: underlinesLinks
         ) else {
             return Value(
                 attributedContent: nil,
@@ -77,11 +155,18 @@ enum NativeTimelineTextPresentation {
     static func preparation(
         message: Message,
         plan: NativeTimelineTextPlan,
-        model: AppModel?
+        model: AppModel?,
+        baseFontSize: CGFloat? = nil,
+        underlinesLinks: Bool = false
     ) -> Preparation? {
-        guard plan.attributedText == nil,
-              let prepared = plan.preparedText
-        else { return nil }
+        let resolvedBaseFontSize = baseFontSize ?? plan.baseFontSize
+        if plan.attributedText != nil,
+           resolvedBaseFontSize == plan.baseFontSize,
+           !underlinesLinks
+        {
+            return nil
+        }
+        guard let prepared = plan.preparedText else { return nil }
         let resolver = model.map { MessageMentionResolver(model: $0, message: message) }
         let mentions = prepared.tokens.reduce(into: [String: MentionPresentation]()) { values, token in
             guard case let .mention(mention) = token else { return }
@@ -95,7 +180,8 @@ enum NativeTimelineTextPresentation {
             scope: "message",
             prepared: prepared,
             emojiSize: emojiSize,
-            baseFontSize: plan.baseFontSize,
+            baseFontSize: resolvedBaseFontSize,
+            underlinesLinks: underlinesLinks,
             mentions: mentions.values.sorted {
                 $0.rawToken < $1.rawToken
             }
@@ -104,7 +190,8 @@ enum NativeTimelineTextPresentation {
             key: cacheKey,
             prepared: prepared,
             emojiSize: emojiSize,
-            baseFontSize: plan.baseFontSize,
+            baseFontSize: resolvedBaseFontSize,
+            underlinesLinks: underlinesLinks,
             mentions: mentions
         )
     }
@@ -127,6 +214,7 @@ enum NativeTimelineTextPresentation {
                     prepared: preparation.prepared,
                     emojiSize: preparation.emojiSize,
                     baseFontSize: preparation.baseFontSize,
+                    underlinesLinks: preparation.underlinesLinks,
                     mentionPresentations: preparation.mentions
                 )
             )
@@ -141,6 +229,7 @@ nonisolated final class NativeTimelineResolvedTextCache: Sendable {
         let prepared: RichMessageAttributedText.Prepared
         let emojiSize: CGFloat
         let baseFontSize: CGFloat
+        let underlinesLinks: Bool
         let mentions: [MentionPresentation]
     }
 
@@ -203,6 +292,7 @@ nonisolated enum NativeTimelineCoreText {
         prepared: RichMessageAttributedText.Prepared,
         emojiSize: CGFloat,
         baseFontSize: CGFloat? = nil,
+        underlinesLinks: Bool = false,
         mentionPresentations: [String: MentionPresentation]
     ) -> NSAttributedString {
         let resolvedBaseFontSize =
@@ -267,7 +357,9 @@ nonisolated enum NativeTimelineCoreText {
             output.addAttributes(
                 [
                     .foregroundColor: NSColor.linkColor,
-                    .underlineStyle: 0,
+                    .underlineStyle: underlinesLinks
+                        ? NSUnderlineStyle.single.rawValue
+                        : 0,
                 ],
                 range: range
             )
@@ -412,6 +504,8 @@ enum NativeTimelineEmbedLayout {
         let attachments: [Attachment]
         let origin: CGPoint
         let maximumWidth: CGFloat
+        let integratesWithBubble: Bool
+        let drawsTopSeparator: Bool
 
         var region: NativeTimelineRowLayout.EmbedRegion? {
         switch MessageEmbedPresentation.kind(for: embed) {
@@ -437,11 +531,12 @@ enum NativeTimelineEmbedLayout {
                 mediaURL: url,
                 mediaIsVideo: embed.video != nil,
                 mediaAutoplaysInline: embed.type?.lowercased() == "gifv",
-                accentColor: nil
+                accentColor: nil,
+                drawsTopSeparator: false
             )
         case .card:
-            let cardPadding: CGFloat = 12
-            let stripeWidth: CGFloat = 4
+            let cardPadding: CGFloat = integratesWithBubble ? 0 : 12
+            let stripeWidth: CGFloat = integratesWithBubble ? 0 : 4
             let innerChrome = stripeWidth + cardPadding * 2
             let maximumContentWidth = max(80, maximumWidth - innerChrome)
 
@@ -518,7 +613,9 @@ enum NativeTimelineEmbedLayout {
             // thumbnail. SwiftUI applies its 12-point spacing on both sides
             // of that spacer even when the spacer collapses to zero.
             let thumbnailAllowance: CGFloat =
-                thumbnailSize > 0 ? thumbnailSize + 24 : 0
+                thumbnailSize > 0
+                    ? thumbnailSize + (integratesWithBubble ? 12 : 24)
+                    : 0
 
             let naturalTextWidth = textColumnIdealWidth(
                 author: author,
@@ -549,10 +646,12 @@ enum NativeTimelineEmbedLayout {
                 naturalFooterWidth,
                 92
             )
-            let width = min(
-                maximumWidth,
-                max(120, ceil(naturalContentWidth + innerChrome))
-            )
+            let width = integratesWithBubble
+                ? maximumWidth
+                : min(
+                    maximumWidth,
+                    max(120, ceil(naturalContentWidth + innerChrome))
+                )
             let contentX = origin.x + stripeWidth + cardPadding
             let contentWidth = max(80, width - innerChrome)
             let textWidth = max(40, contentWidth - thumbnailAllowance)
@@ -755,11 +854,13 @@ enum NativeTimelineEmbedLayout {
                 x: origin.x,
                 y: origin.y,
                 width: width,
-                height: max(58, cardHeight)
+                height: max(integratesWithBubble ? 18 : 58, cardHeight)
             )
             return .init(
                 embedID: embed.id,
-                kind: .card,
+                kind: integratesWithBubble
+                    ? .bubbleIntegratedCard
+                    : .card,
                 frame: frame,
                 textRegions: textRegions,
                 imageRegions: imageRegions,
@@ -767,7 +868,9 @@ enum NativeTimelineEmbedLayout {
                 mediaURL: mediaURL,
                 mediaIsVideo: embed.video != nil,
                 mediaAutoplaysInline: false,
-                accentColor: embed.color
+                accentColor: embed.color,
+                drawsTopSeparator:
+                    integratesWithBubble && drawsTopSeparator
             )
         }
         }
@@ -888,7 +991,9 @@ enum NativeTimelineEmbedLayout {
         model: AppModel?,
         attachments: [Attachment],
         origin: CGPoint,
-        maximumWidth: CGFloat
+        maximumWidth: CGFloat,
+        integratesWithBubble: Bool = false,
+        drawsTopSeparator: Bool = false
     ) -> NativeTimelineRowLayout.EmbedRegion? {
         Builder(
             embed: embed,
@@ -896,7 +1001,9 @@ enum NativeTimelineEmbedLayout {
             model: model,
             attachments: attachments,
             origin: origin,
-            maximumWidth: maximumWidth
+            maximumWidth: maximumWidth,
+            integratesWithBubble: integratesWithBubble,
+            drawsTopSeparator: drawsTopSeparator
         ).region
     }
 
@@ -919,12 +1026,15 @@ enum NativeTimelineEmbedLayout {
                 resolver?.presentation(mention)
                 ?? MentionPresentation.fallback(for: mention)
         }
+        let interfaceSettings = model?.interfaceSettings ?? .defaults
+        let baseFontSize = InterfaceTypographyMetrics.messageTextSize
         let key = NativeTimelineResolvedTextCache.Key(
             messageID: message.id,
             scope: "embed:\(embed.id):\(scope)",
             prepared: prepared,
             emojiSize: emojiSize,
-            baseFontSize: 15,
+            baseFontSize: baseFontSize,
+            underlinesLinks: interfaceSettings.underlinesLinks,
             mentions: mentions.values.sorted {
                 $0.rawToken < $1.rawToken
             }
@@ -934,6 +1044,8 @@ enum NativeTimelineEmbedLayout {
                 NativeTimelineCoreText.make(
                     prepared: prepared,
                     emojiSize: emojiSize,
+                    baseFontSize: baseFontSize,
+                    underlinesLinks: interfaceSettings.underlinesLinks,
                     mentionPresentations: mentions
                 ),
                 layoutHeightAdjustment: 1

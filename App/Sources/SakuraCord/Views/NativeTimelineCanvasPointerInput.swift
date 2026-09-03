@@ -66,7 +66,6 @@ extension NativeTimelineCanvasView {
                     )
                 }
                 if case let .message(row, _, _) = items[index],
-                   row.startsGroup,
                    !row.message.type.hasGeneratedContent
                 {
                     for frame in
@@ -94,6 +93,12 @@ extension NativeTimelineCanvasView {
                 {
                     addCursorRect(
                         frame.offsetBy(dx: 0, dy: rowOrigin),
+                        cursor: .pointingHand
+                    )
+                }
+                for region in layouts[index].sakuraCordDeepLinkRegions {
+                    addCursorRect(
+                        region.buttonFrame.offsetBy(dx: 0, dy: rowOrigin),
                         cursor: .pointingHand
                     )
                 }
@@ -174,6 +179,9 @@ extension NativeTimelineCanvasView {
         setHoveredCompactTimestampRow(
             compactTimestampRowIndex(at: point)
         )
+        setHoveredAuthorMessageID(
+            authorNamePointerHit(at: point)
+        )
         setHoveredMention(
             mentionPointerHit(at: point)
         )
@@ -207,6 +215,7 @@ extension NativeTimelineCanvasView {
         setHoveredCompactTimestampRow(
             compactTimestampRowIndex(at: point)
         )
+        setHoveredAuthorMessageID(authorNamePointerHit(at: point))
         setHoveredMention(mentionPointerHit(at: point))
         setHoveredTextLink(textLinkPointerHit(at: point))
         setHoveredTextSpoiler(textSpoilerPointerHit(at: point))
@@ -244,6 +253,14 @@ extension NativeTimelineCanvasView {
                hoveredCompactTimestampRow == index
             {
                 setHoveredCompactTimestampRow(nil)
+            }
+            if let index = event.trackingArea?.userInfo?[
+                "nativeTimelineRowIndex"
+            ] as? Int,
+               items.indices.contains(index),
+               items[index].messageID == hoveredAuthorMessageID
+            {
+                setHoveredAuthorMessageID(nil)
             }
             if let index = event.trackingArea?.userInfo?[
                 "nativeTimelineRowIndex"
@@ -300,6 +317,7 @@ extension NativeTimelineCanvasView {
         }
         if kind == "canvas" {
             setHoveredCompactTimestampRow(nil)
+            setHoveredAuthorMessageID(nil)
             setHoveredMention(nil)
             setHoveredTextLink(nil)
             setHoveredTextSpoiler(nil)
@@ -326,7 +344,7 @@ extension NativeTimelineCanvasView {
             return
         }
         if let hit = componentButtonPointerHit(at: point),
-           !hit.region.isDisabled
+           !hit.kind.isDisabled
         {
             setHoveredComponentButton(hit.target)
             pressedComponentButton = hit.target
@@ -470,10 +488,18 @@ extension NativeTimelineCanvasView {
                 released: hit?.target
             ), let hit
             {
-                _ = activateComponentButton(
-                    hit.region,
-                    message: hit.message
-                )
+                switch hit.kind {
+                case let .component(region):
+                    _ = activateComponentButton(
+                        region,
+                        message: hit.message
+                    )
+                case .sakuraCordDeepLink(.checkForUpdates),
+                     .sakuraCordDeepLink(.updateToApplyTheme):
+                    actions?.checkForUpdates()
+                case let .sakuraCordDeepLink(.applyTheme(theme)):
+                    actions?.applyTheme(theme)
+                }
             }
             return
         }
@@ -538,8 +564,7 @@ extension NativeTimelineCanvasView {
             model?.dismissEphemeralMessage(row.message)
             return
         }
-        if row.startsGroup,
-           !row.message.type.hasGeneratedContent,
+        if !row.message.type.hasGeneratedContent,
            let authorFrame =
                NativeTimelineAuthorProfileGeometry.hitFrame(
                    at: local,
@@ -737,6 +762,13 @@ extension NativeTimelineCanvasView {
     ) {
         guard let model else { return }
         closeMentionPopover()
+        let presentationIdentity = AnyHashable(user.id)
+        if messageProfilePopoverCoordinator.isPresenting(
+            identity: presentationIdentity
+        ) {
+            closeMessageProfilePopover()
+            return
+        }
         closeMessageProfilePopover()
         let requestID = model.showProfile(for: user)
         let popoverAnchor = StablePopoverAnchor(
@@ -748,11 +780,11 @@ extension NativeTimelineCanvasView {
             anchor: popoverAnchor,
             anchorSnapshot: nil,
             isPresented: true,
-            configuration: .contextualProfile,
+            configuration: .memberProfile,
             onDismiss: { [weak self] in
                 self?.activeMessageProfilePopoverAnchor = nil
             },
-            presentationIdentity: AnyHashable(user.id),
+            presentationIdentity: presentationIdentity,
             content: AnyView(
                 MessageProfilePopoverContent(
                     model: model,
@@ -784,7 +816,7 @@ extension NativeTimelineCanvasView {
                 )
             ),
             anchor: anchor,
-            configuration: .contextualProfile
+            configuration: .memberProfile
         )
     }
 
@@ -952,6 +984,11 @@ extension NativeTimelineCanvasView {
                 ? compactTimestampRowIndex(at: point)
                 : nil
         )
+        setHoveredAuthorMessageID(
+            visibleRect.contains(point)
+                ? authorNamePointerHit(at: point)
+                : nil
+        )
         setHoveredMention(
             visibleRect.contains(point)
                 ? mentionPointerHit(at: point)
@@ -1013,6 +1050,22 @@ extension NativeTimelineCanvasView {
             )
         }
         return nil
+    }
+
+    func authorNamePointerHit(at point: CGPoint) -> MessageID? {
+        guard let index = rowIndex(at: point.y),
+              items.indices.contains(index),
+              layouts.indices.contains(index),
+              case let .message(row, _, _) = items[index],
+              row.startsGroup,
+              !row.message.type.hasGeneratedContent,
+              let authorFrame = layouts[index].authorFrame
+        else { return nil }
+        let local = CGPoint(
+            x: point.x,
+            y: point.y - displayedRowOrigin(at: index)
+        )
+        return authorFrame.contains(local) ? row.message.id : nil
     }
 
     func textLinkPointerHit(
@@ -1268,8 +1321,7 @@ extension NativeTimelineCanvasView {
         if layout.ephemeralRegion?.dismissFrame.contains(local) == true {
             return .ephemeralDismiss(message.id)
         }
-        if row.startsGroup,
-           !message.type.hasGeneratedContent,
+        if !message.type.hasGeneratedContent,
            NativeTimelineAuthorProfileGeometry.hitFrame(
                at: local,
                avatarFrame: layout.avatarFrame,
@@ -1325,7 +1377,11 @@ extension NativeTimelineCanvasView {
             return .thread(message.id, thread.id)
         }
         if actions?.openMessage != nil,
-           layout.searchCardFrame?.contains(local) == true
+           NativeTimelineResultActivationPolicy.frame(
+               for: messageInteractionContext,
+               searchCardFrame: layout.searchCardFrame,
+               highlightFrame: layout.highlightFrame
+           )?.contains(local) == true
         {
             return .message(message.id)
         }
@@ -1353,6 +1409,23 @@ extension NativeTimelineCanvasView {
             x: point.x,
             y: point.y - rowOrigin
         )
+        if let region = layouts[index].sakuraCordDeepLinkRegions.first(
+            where: { $0.buttonFrame.contains(local) }
+        ) {
+            return ComponentButtonPointerHit(
+                target: NativeTimelineComponentButtonTarget(
+                    messageID: row.id,
+                    componentID: region.componentID
+                ),
+                rowIndex: index,
+                message: row.message,
+                kind: .sakuraCordDeepLink(region.action),
+                frame: region.buttonFrame.offsetBy(
+                    dx: 0,
+                    dy: rowOrigin
+                )
+            )
+        }
         for layout in layouts[index].componentLayouts {
             if layout.containers.contains(where: { container in
                 guard container.isSpoiler,
@@ -1376,7 +1449,7 @@ extension NativeTimelineCanvasView {
                     ),
                     rowIndex: index,
                     message: row.message,
-                    region: region,
+                    kind: .component(region),
                     frame: region.frame.offsetBy(
                         dx: 0,
                         dy: rowOrigin
@@ -1623,7 +1696,7 @@ extension NativeTimelineCanvasView {
         reactionCountAnimationHosts[key]?.removeFromSuperview()
 
         let color: NSColor = reaction.didCurrentUserReact
-            ? .controlAccentColor
+            ? .sakuraCordAccentColor
             : .labelColor
         let animationState = TimelineReactionCountAnimation(
             from: from,
@@ -1736,7 +1809,11 @@ extension NativeTimelineCanvasView {
         }
         let reduceMotion =
             NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-            || UserDefaults.standard.bool(forKey: "reduceAnimatedMedia")
+            || (model?.accessibilitySettings.reducesAllOptionalMotion(
+                systemReduceMotion: false
+            ) ?? false)
+            || (model?.chatSettings.reducesAnimatedMedia
+                ?? UserDefaults.standard.bool(forKey: "reduceAnimatedMedia"))
             || !permitsAnimatedMediaPlayback
 
         var rows:
@@ -1805,8 +1882,18 @@ extension NativeTimelineCanvasView {
         lottieStickerRows = stickerRows
         reconcileAnimatedMediaOverlays(reduceMotion: reduceMotion)
         if !allowsScrolling {
-            reconcileInlineVideoOverlays(plays: !reduceMotion)
-            reconcileLottieStickerOverlays(reduceMotion: reduceMotion)
+            reconcileInlineVideoOverlays(
+                plays: !reduceMotion
+                    && (model?.chatSettings.autoplaysInlineVideos ?? true)
+            )
+            reconcileLottieStickerOverlays(
+                reduceMotion: reduceMotion
+                    || (model?.accessibilitySettings.reducesAnimation(
+                        .sticker,
+                        systemReduceMotion: false
+                    ) ?? false)
+                    || !(model?.chatSettings.autoplaysAnimatedStickers ?? true)
+            )
         }
     }
 

@@ -79,6 +79,23 @@ final class NativeTimelineCanvasView: NSView {
         case componentButton(Int, String)
         case sticker(String)
         case reaction(String)
+
+        nonisolated var accessibilityCategory: AccessibilityAnimationCategory {
+            switch self {
+            case .authorAvatar, .replyAvatar, .invocationAvatar, .reactionAvatar:
+                .avatar
+            case .authorAvatarDecoration:
+                .decoration
+            case .messageEmoji, .embedEmoji, .componentEmoji,
+                 .componentButton, .reaction:
+                .emoji
+            case .sticker:
+                .sticker
+            case .linkedImage, .attachment, .embedImage, .embedMedia,
+                 .componentImage, .componentMedia:
+                .gif
+            }
+        }
     }
 
     struct AnimatedMediaOverlayKey: Hashable {
@@ -116,10 +133,24 @@ final class NativeTimelineCanvasView: NSView {
     }
 
     struct ComponentButtonPointerHit {
+        enum Kind {
+            case component(NativeTimelineComponentLayout.ButtonRegion)
+            case sakuraCordDeepLink(SakuraCordDeepLinkAction)
+
+            var isDisabled: Bool {
+                switch self {
+                case let .component(region):
+                    region.isDisabled
+                case .sakuraCordDeepLink:
+                    false
+                }
+            }
+        }
+
         let target: NativeTimelineComponentButtonTarget
         let rowIndex: Int
         let message: Message
-        let region: NativeTimelineComponentLayout.ButtonRegion
+        let kind: Kind
         let frame: CGRect
     }
 
@@ -184,7 +215,20 @@ final class NativeTimelineCanvasView: NSView {
     var rowOrigins: [CGFloat] { storage.rowOrigins }
     var contentHeight: CGFloat { storage.contentHeight }
 
+    func presentedTextPlan(for row: MessageRowPresentation) -> NativeTimelineTextPlan {
+        guard model?.chatSettings.showsAutomaticLinkPreviews == false
+            || model?.chatSettings.expandsEmbedsByDefault == false
+        else {
+            return row.textPlan
+        }
+        return NativeTimelineTextPlan.make(
+            for: row.message,
+            showsAutomaticLinkPreviews: false
+        )
+    }
+
     var model: AppModel?
+    var accessibilitySettingsSnapshot = AccessibilitySettingsSnapshot.defaults
     var presentedConversationID: ChannelID?
     var mediaReadyConversationID: ChannelID?
     var mediaViewerHighlightedMessageID: MessageID?
@@ -207,7 +251,8 @@ final class NativeTimelineCanvasView: NSView {
     let messageProfilePopoverCoordinator =
         StableAnchoredPopoverPresenter<AnyView>.Coordinator()
     var activeMessageProfilePopoverAnchor: StablePopoverAnchor?
-    var componentChoicePopover: NSPopover?
+    var componentChoiceOverlay: ComponentChoiceOverlayController?
+    var activeComponentChoiceTarget: NativeTimelineComponentSelectTarget?
     let mentionPopoverCoordinator =
         StableAnchoredPopoverPresenter<AnyView>.Coordinator()
     var activeMentionPopoverAnchor: StablePopoverAnchor?
@@ -318,6 +363,12 @@ final class NativeTimelineCanvasView: NSView {
             name: NSApplication.didBecomeActiveNotification,
             object: nil
         )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(mediaPlaybackVisibilityDidChange(_:)),
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil
+        )
         notificationCenter.addObserver(
             self,
             selector: #selector(mediaPlaybackVisibilityDidChange(_:)),
@@ -339,12 +390,14 @@ final class NativeTimelineCanvasView: NSView {
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
+        invalidatePresentationCaches()
         reconcileBeginningSelectionOverlay()
     }
 
     deinit {
         MainActor.assumeIsolated {
             NotificationCenter.default.removeObserver(self)
+            NSWorkspace.shared.notificationCenter.removeObserver(self)
             mediaInvalidationTask?.cancel()
             visibleMediaRequestTask?.cancel()
             historySkeletonShimmerTask?.cancel()
@@ -394,11 +447,14 @@ enum NativeTimelineRowPainter {
         model: AppModel?,
         isHovered: Bool,
         showsCompactTimestamp: Bool = false,
+        isAuthorHovered: Bool = false,
         hoveredMention: NativeTimelineMentionHover? = nil,
         hoveredTextLink: NativeTimelineTextLinkHover? = nil,
         hoveredTextSpoiler: NativeTimelineTextSpoilerHover? = nil,
         hoveredComponentButton:
             NativeTimelineComponentButtonTarget? = nil,
+        activeComponentChoiceTarget:
+            NativeTimelineComponentSelectTarget? = nil,
         pressedComponentButton:
             NativeTimelineComponentButtonTarget? = nil,
         componentButtonPressProgress: CGFloat = 0,
@@ -428,6 +484,10 @@ enum NativeTimelineRowPainter {
             border.stroke()
         }
 
+        if let bubble = layout.bubbleRegion {
+            NativeTimelineBubbleDrawing.fill(bubble)
+        }
+
         drawHighlight(
             for: item,
             // A bubble row is highlighted around its bubble rather than
@@ -436,6 +496,7 @@ enum NativeTimelineRowPainter {
             // frame itself stays full width for hover and hit testing.
             in: layout.highlightBackgroundFrame,
             cornerRadius: layout.highlightBackgroundCornerRadius,
+            bubbleRegion: layout.bubbleRegion,
             model: model,
             isHovered: isHovered
         )
@@ -459,10 +520,12 @@ enum NativeTimelineRowPainter {
                 model: model,
                 isHovered: isHovered,
                 showsCompactTimestamp: showsCompactTimestamp,
+                isAuthorHovered: isAuthorHovered,
                 hoveredMention: hoveredMention,
                 hoveredTextLink: hoveredTextLink,
                 hoveredTextSpoiler: hoveredTextSpoiler,
                 hoveredComponentButton: hoveredComponentButton,
+                activeComponentChoiceTarget: activeComponentChoiceTarget,
                 pressedComponentButton: pressedComponentButton,
                 componentButtonPressProgress:
                     componentButtonPressProgress,
@@ -500,6 +563,7 @@ enum NativeTimelineRowPainter {
         for item: NativeMessageTimelineItem,
         in frame: CGRect?,
         cornerRadius: CGFloat,
+        bubbleRegion: NativeTimelineBubbleRegion?,
         model: AppModel?,
         isHovered: Bool
     ) {
@@ -509,23 +573,23 @@ enum NativeTimelineRowPainter {
         // A bubble row's highlight has to match the shape it sits behind.
         // Filling the frame directly puts a hard-edged box around a rounded
         // bubble, so the whole pass is clipped to the rounded shape instead.
-        let clipsToRoundedShape = cornerRadius > 0
-        if clipsToRoundedShape {
-            NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.saveGraphicsState()
+        if let bubbleRegion {
+            NativeTimelineBubbleDrawing.path(for: bubbleRegion).addClip()
+        } else if cornerRadius > 0 {
             NSBezierPath(
                 concentricRoundedRect: frame,
                 cornerRadius: cornerRadius
             ).addClip()
         }
-        defer {
-            if clipsToRoundedShape {
-                NSGraphicsContext.restoreGraphicsState()
-            }
-        }
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        let drawFrame = bubbleRegion.map {
+            NativeTimelineBubbleDrawing.path(for: $0).bounds
+        } ?? frame
         if isHighlighted {
             drawStripedHighlight(
-                in: frame,
-                color: .controlAccentColor,
+                in: drawFrame,
+                color: .sakuraCordAccentColor,
                 backgroundAlpha: 0.14
             )
         } else {
@@ -539,6 +603,12 @@ enum NativeTimelineRowPainter {
             ) {
             case .none:
                 break
+            case .failed:
+                drawStripedHighlight(
+                    in: drawFrame,
+                    color: .systemRed,
+                    backgroundAlpha: 0.12
+                )
             case .ephemeral:
                 NSColor(
                     srgbRed: 88 / 255,
@@ -546,10 +616,10 @@ enum NativeTimelineRowPainter {
                     blue: 242 / 255,
                     alpha: 0.10
                 ).setFill()
-                frame.fill()
+                drawFrame.fill()
             case .mention:
                 drawStripedHighlight(
-                    in: frame,
+                    in: drawFrame,
                     color: NSColor(
                         srgbRed: 240 / 255,
                         green: 178 / 255,
@@ -562,7 +632,7 @@ enum NativeTimelineRowPainter {
         }
         if isHovered {
             NSColor.labelColor.withAlphaComponent(0.055).setFill()
-            frame.fill()
+            drawFrame.fill()
         }
     }
 

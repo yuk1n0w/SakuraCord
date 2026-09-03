@@ -170,7 +170,10 @@ private struct ThreadConversationComposer: View {
         VStack(spacing: 0) {
             switch model.openThreadAccess {
             case .checking:
-                DisabledComposerView(message: "Checking thread permissions…")
+                DisabledComposerView(
+                    message: "Checking thread permissions…",
+                    appearance: model.appearanceSettings.composerBarAppearance
+                )
             case .readable(canSend: true):
                 ComposerView(
                     model: model,
@@ -181,7 +184,8 @@ private struct ThreadConversationComposer: View {
             case .readable(canSend: false):
                 if !thread.isLocked {
                     DisabledComposerView(
-                        message: "You do not have permission to send messages in this thread."
+                        message: "You do not have permission to send messages in this thread.",
+                        appearance: model.appearanceSettings.composerBarAppearance
                     )
                 }
             case .hidden:
@@ -342,7 +346,7 @@ private struct ThreadMessageTimelineView: View {
                         .padding(.vertical, 8)
                         .contentShape(Capsule())
                         .glassEffect(
-                            .regular.tint(Color.accentColor).interactive(),
+                            .regular.tint(SakuraCordAccentColor.color).interactive(),
                             in: Capsule()
                         )
                 }
@@ -400,6 +404,7 @@ private struct ThreadMessageTimelineView: View {
         }
         .onExitCommand {
             guard !model.consumeEscapeForMediaViewer() else { return }
+            guard !model.consumeEscapeForPinnedMessages() else { return }
             guard !model.consumeEscapeForUnfocusedMessageSearch() else { return }
             guard !model.consumeEscapeForReply(in: .thread) else { return }
             guard !model.consumeEscapeForComposerAttachments(in: .thread) else { return }

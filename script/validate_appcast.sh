@@ -110,8 +110,11 @@ if [[ "$APPCAST_VERSION" != "${SAKURACORD_BUILD_NUMBER:-}" ]]; then
   echo "Appcast build version does not match SAKURACORD_BUILD_NUMBER." >&2
   exit 1
 fi
-if [[ "$APPCAST_SHORT_VERSION" != "${SAKURACORD_VERSION:-}" ]]; then
-  echo "Appcast short version does not match SAKURACORD_VERSION." >&2
+EXPECTED_APPCAST_DISPLAY_VERSION="$(
+  sakuracord_release_appcast_display_version_from_tag "$EXPECTED_TAG"
+)"
+if [[ "$APPCAST_SHORT_VERSION" != "$EXPECTED_APPCAST_DISPLAY_VERSION" ]]; then
+  echo "Appcast short version does not match the release display version." >&2
   exit 1
 fi
 if [[ "$APPCAST_HAS_RELEASE_NOTES" != "true" ]]; then
@@ -167,11 +170,20 @@ assert_plist_value() {
 assert_plist_value "CFBundleIdentifier" "dev.sakuracord.SakuraCord"
 assert_plist_value "CFBundleVersion" "$SAKURACORD_BUILD_NUMBER"
 assert_plist_value "CFBundleShortVersionString" "$SAKURACORD_VERSION"
+assert_plist_value "SakuraCordReleaseDisplayVersion" \
+  "$EXPECTED_APPCAST_DISPLAY_VERSION"
 assert_plist_value "SakuraCordUpdatesEnabled" "true"
+EXPECTED_RELEASE_TRACK="$(sakuracord_release_track_from_tag "$EXPECTED_TAG")"
+assert_plist_value "SakuraCordReleaseTrack" "$EXPECTED_RELEASE_TRACK"
+if plutil -extract "SUAllowsVersionDowngrades" raw -o - "$INFO_PLIST" \
+  >/dev/null 2>&1; then
+  echo "Packaged builds must keep Sparkle downgrade protection enabled." >&2
+  exit 1
+fi
 assert_plist_value "SUFeedURL" \
   "https://github.com/SakuraCordApp/SakuraCord/releases/latest/download/appcast.xml"
 assert_plist_value "SakuraCordNightlyFeedURL" \
-  "https://raw.githubusercontent.com/SakuraCordApp/SakuraCord/nightly-feed/appcast.xml"
+  "https://sakuracord.app/updates/appcast.xml"
 assert_plist_value "SUPublicEDKey" "$SPARKLE_ED_PUBLIC_KEY"
 assert_plist_value "SUEnableAutomaticChecks" "true"
 assert_plist_value "SUScheduledCheckInterval" "21600"

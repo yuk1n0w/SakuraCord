@@ -2,6 +2,19 @@ import AppKit
 import SakuraCordModels
 import SwiftUI
 
+nonisolated enum ChannelSidebarLayoutMetrics {
+    static let minimumRowHeight: CGFloat = 24
+}
+
+nonisolated enum SidebarAccountControlMetrics {
+    static let capsuleHeight: CGFloat = 48
+    static let cornerRadius = capsuleHeight / 2
+    static let contentInset: CGFloat = 8
+    static let avatarSize: CGFloat = 32
+    static let settingsDiameter: CGFloat = 28
+    static let surfaceSpacing: CGFloat = 6
+}
+
 @MainActor
 final class ChannelSidebarSelectionCommitter {
     private enum PendingSelection: Equatable {
@@ -160,6 +173,11 @@ struct ChannelSidebarView: View {
             }
             .zIndex(1)
         }
+        .font(.system(size: InterfaceTypographyMetrics.interfaceTextSize))
+        .environment(
+            \.defaultMinListRowHeight,
+            ChannelSidebarLayoutMetrics.minimumRowHeight
+        )
         .overlay {
             SidebarChromeSeparator(
                 cornerRadius: ChatChromeMetrics.sidebarContentCornerRadius,
@@ -279,6 +297,8 @@ private struct GuildChannelList: View, Equatable {
             }
         }
         .listStyle(.sidebar)
+        .font(.system(size: InterfaceTypographyMetrics.interfaceTextSize))
+        .environment(\.defaultMinListRowHeight, ChannelSidebarLayoutMetrics.minimumRowHeight)
         .scrollContentBackground(.hidden)
         .scrollClipDisabled()
         .padding(.top, ChatChromeMetrics.channelListTopPadding)
@@ -682,22 +702,16 @@ private struct AccountControlView: View {
     }
 
     private var displayName: String {
-        if isOfflineTesting {
-            return "Offline Testing"
-        }
-        return isAuthenticated
-            ? (user?.displayName ?? "Discord Account")
-            : "Connect Account"
+        user?.displayName ?? (isAuthenticated ? "Discord Account" : "Connect Account")
     }
 
     private var accountSubtitle: String {
-        if isOfflineTesting {
-            return "Mock data • networking disabled"
+        if user != nil {
+            return currentStatus.label
         }
-        if isAuthenticated {
-            return user.map { "@\($0.username)" } ?? connectionState.rawValue
-        }
-        return "Sign in to Discord"
+        return isOfflineTesting
+            ? "Mock data • networking disabled"
+            : (isAuthenticated ? connectionState.rawValue : "Sign in to Discord")
     }
 }
 
@@ -710,7 +724,7 @@ private struct AccountAvatar: View {
         ZStack(alignment: .bottomTrailing) {
             AvatarView(name: name, url: avatarURL, size: 34)
             Circle()
-                .fill(status.color)
+                .fill(status.presenceColor)
                 .frame(width: 9, height: 9)
                 .overlay(Circle().stroke(.background, lineWidth: 2))
         }
@@ -730,25 +744,470 @@ private struct AccountMenu: View {
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
-        ZStack {
+        Menu {
+            if isOfflineTesting {
+                Text("Discord networking is disabled")
+            } else if isAuthenticated {
+                Menu("Set Status") {
+                    ForEach(PresenceStatus.allCases.filter { $0 != .offline }, id: \.self) { status in
+                        Button {
+                            Task { await updateStatus(status) }
+                        } label: {
+                            if status == currentStatus {
+                                Label(status.label, systemImage: "checkmark")
+                            } else {
+                                Text(status.label)
+                            }
+                        }
+                    }
+                }
+                Menu("Switch Account") {
+                    ForEach(savedAccounts, id: \.accountID) { account in
+                        Button {
+                            Task { _ = await switchAccount(account.accountID) }
+                        } label: {
+                            if account.accountID == activeAccountID {
+                                Label(account.resolvedDisplayName, systemImage: "checkmark")
+                            } else {
+                                Text(account.resolvedDisplayName)
+                            }
+                        }
+                    }
+                    Divider()
+                    Button("Manage Accounts…", action: manageAccounts)
+                }
+            } else {
+                Button("Connect Discord Account…", action: manageAccounts)
+            }
+            Divider()
+            Button("Settings…") { openSettings() }
+        } label: {
             Image(systemName: "gearshape.fill")
-                .font(.body)
                 .foregroundStyle(.secondary)
-                .allowsHitTesting(false)
-            NativeAccountMenuButton(
-                isAuthenticated: isAuthenticated,
-                isOfflineTesting: isOfflineTesting,
-                currentStatus: currentStatus,
-                savedAccounts: savedAccounts,
-                activeAccountID: activeAccountID,
-                manageAccounts: manageAccounts,
-                switchAccount: switchAccount,
-                updateStatus: updateStatus,
-                openSettings: { openSettings() }
-            )
         }
+        .menuStyle(.borderlessButton)
         .frame(width: 28, height: 28)
         .help("Account and Settings")
+    }
+}
+
+private extension PresenceStatus {
+    var presenceColor: Color {
+        switch self {
+        case .online: .green
+        case .idle: .orange
+        case .dnd: .red
+        case .invisible, .offline: .gray
+        }
+    }
+}
+
+private struct CurrentUserCapsule: View {
+    let model: AppModel
+    let user: User?
+    let displayName: String
+    let subtitle: String
+    let currentStatus: PresenceStatus
+    let isAuthenticated: Bool
+    let isOfflineTesting: Bool
+    let connectAccount: () -> Void
+    let updateStatus: (PresenceStatus) async -> Void
+
+    @Environment(\.openSettings) private var openSettings
+    @State private var isMainHovering = false
+    @State private var isSettingsHovering = false
+    @State private var isYouPopoverPresented = false
+    @State private var profileRequestID: UUID?
+
+    var body: some View {
+        ZStack {
+            if let nameplate = user?.nameplate {
+                NameplateBackground(
+                    nameplate: nameplate,
+                    isAnimated: isProfileHovering
+                )
+                .opacity(
+                    NameplatePresentationPolicy.opacity(
+                        isHovered: isProfileHovering
+                    )
+                )
+            }
+
+            Color.primary.opacity(isProfileHovering ? 0.09 : 0)
+                .allowsHitTesting(false)
+
+            Button(action: presentYouPopover) {
+                HStack(spacing: 8) {
+                    accountAvatar
+
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(displayName)
+                            .font(.system(
+                                size: InterfaceTypographyMetrics.interfaceTextSize,
+                                weight: .semibold
+                            ))
+                            .lineLimit(1)
+                        Text(subtitle)
+                            .font(.system(
+                                size: max(
+                                    10,
+                                    InterfaceTypographyMetrics.interfaceTextSize - 2
+                                )
+                            ))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 4)
+                }
+                .padding(.leading, SidebarAccountControlMetrics.contentInset)
+                .padding(.trailing, 42)
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: SidebarAccountControlMetrics.capsuleHeight,
+                    alignment: .leading
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onHover { isMainHovering = $0 }
+            .stableMemberProfilePopover(isPresented: $isYouPopoverPresented) {
+                youPopover
+            }
+
+            HoverActionButton(
+                systemImage: "gearshape.fill",
+                help: "Settings",
+                diameter: SidebarAccountControlMetrics.settingsDiameter,
+                onHoverChanged: { isSettingsHovering = $0 },
+                action: { openSettings() }
+            )
+            .padding(.trailing, 7)
+            .frame(
+                maxWidth: .infinity,
+                maxHeight: .infinity,
+                alignment: .trailing
+            )
+        }
+        .frame(height: SidebarAccountControlMetrics.capsuleHeight)
+        .clipShape(
+            ConcentricRectangle(
+                cornerRadius: SidebarAccountControlMetrics.cornerRadius,
+                style: .continuous
+            )
+        )
+        .contentShape(
+            ConcentricRectangle(
+                cornerRadius: SidebarAccountControlMetrics.cornerRadius,
+                style: .continuous
+            )
+        )
+        .glassEffect(
+            .regular,
+            in: ConcentricRectangle(
+                cornerRadius: SidebarAccountControlMetrics.cornerRadius,
+                style: .continuous
+            )
+        )
+        .animation(.snappy(duration: 0.16), value: isProfileHovering)
+        .onChange(of: isYouPopoverPresented) { _, isPresented in
+            guard !isPresented, let profileRequestID else { return }
+            model.dismissContextualProfile(requestID: profileRequestID)
+            self.profileRequestID = nil
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var isProfileHovering: Bool {
+        isMainHovering && !isSettingsHovering
+    }
+
+    private var accountAvatar: some View {
+        AvatarPresenceView(
+            status: currentStatus,
+            avatarSize: SidebarAccountControlMetrics.avatarSize,
+            indicatorSize: 10
+        ) {
+            DecoratedAvatarView(
+                name: displayName,
+                avatarURL: user?.avatarURL,
+                decorationURL: user?.avatarDecorationURL,
+                size: SidebarAccountControlMetrics.avatarSize,
+                animatesDecoration: isProfileHovering
+            )
+        }
+        .frame(
+            width: SidebarAccountControlMetrics.avatarSize,
+            height: SidebarAccountControlMetrics.avatarSize
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(displayName), \(currentStatus.label)")
+    }
+
+    @ViewBuilder
+    private var youPopover: some View {
+        if let profileRequestID,
+           let presentation = model.contextualProfilePresentation,
+           presentation.requestID == profileRequestID
+        {
+            ProfilePresentationContent(
+                presentation: presentation,
+                maximumPopoverHeight: 720,
+                showsRoles: false
+            ) {
+                YouPopoverOptions(
+                    currentStatus: currentStatus,
+                    isStatusEnabled: isAuthenticated && !isOfflineTesting,
+                    isAccountSwitchingEnabled: !isOfflineTesting,
+                    savedAccounts: model.savedAccounts,
+                    activeAccountID: model.activeAccountID,
+                    updateStatus: updateStatus,
+                    switchAccount: { accountID in
+                        await model.switchAccount(to: accountID)
+                    },
+                    manageAccounts: {
+                        isYouPopoverPresented = false
+                        connectAccount()
+                    },
+                    accountActivated: {
+                        isYouPopoverPresented = false
+                    }
+                )
+            }
+        } else {
+            ProgressView("Loading profile…")
+                .padding(24)
+                .frame(width: MemberProfilePopover<EmptyView>.preferredWidth)
+        }
+    }
+
+    private func presentYouPopover() {
+        if isYouPopoverPresented {
+            isYouPopoverPresented = false
+            return
+        }
+        guard let user else {
+            connectAccount()
+            return
+        }
+        var member = model.membersByID[user.id]
+            ?? Member(user: user, roleName: "You", status: currentStatus)
+        member.status = currentStatus
+        profileRequestID = model.presentProfile(
+            for: member,
+            destination: .contextual
+        )
+        isYouPopoverPresented = true
+    }
+}
+
+private struct YouPopoverOptions: View {
+    let currentStatus: PresenceStatus
+    let isStatusEnabled: Bool
+    let isAccountSwitchingEnabled: Bool
+    let savedAccounts: [SavedAccount]
+    let activeAccountID: String?
+    let updateStatus: (PresenceStatus) async -> Void
+    let switchAccount: (String) async -> Bool
+    let manageAccounts: () -> Void
+    let accountActivated: () -> Void
+
+    @State private var isStatusPopoverPresented = false
+    @State private var isAccountPopoverPresented = false
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Divider()
+                .padding(.horizontal, 8)
+                .padding(.bottom, 4)
+
+            Button {
+                isStatusPopoverPresented.toggle()
+            } label: {
+                HStack(spacing: 10) {
+                    PresenceIndicator(status: currentStatus, size: 13)
+                        .frame(width: 18)
+                    Text(currentStatus.label)
+                    Spacer(minLength: 24)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 8)
+                .frame(maxWidth: .infinity)
+                .frame(height: 38)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .screenSharePopoverHoverEffect()
+            .disabled(!isStatusEnabled)
+            .opacity(isStatusEnabled ? 1 : 0.45)
+            .popover(isPresented: $isStatusPopoverPresented, arrowEdge: .trailing) {
+                StatusSelectionPopover(
+                    currentStatus: currentStatus,
+                    updateStatus: updateStatus
+                )
+            }
+
+            Button {
+                isAccountPopoverPresented.toggle()
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "person.crop.circle")
+                        .frame(width: 18)
+                    Text("Switch Accounts")
+                    Spacer(minLength: 24)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 8)
+                .frame(maxWidth: .infinity)
+                .frame(height: 38)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .screenSharePopoverHoverEffect()
+            .disabled(!isAccountSwitchingEnabled)
+            .opacity(isAccountSwitchingEnabled ? 1 : 0.45)
+            .popover(isPresented: $isAccountPopoverPresented, arrowEdge: .trailing) {
+                AccountSelectionPopover(
+                    savedAccounts: savedAccounts,
+                    activeAccountID: activeAccountID,
+                    switchAccount: switchAccount,
+                    manageAccounts: manageAccounts,
+                    accountActivated: accountActivated
+                )
+            }
+        }
+        .font(.callout)
+        .padding(.horizontal, 10)
+        .padding(.top, 2)
+    }
+}
+
+private struct StatusSelectionPopover: View {
+    let currentStatus: PresenceStatus
+    let updateStatus: (PresenceStatus) async -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 4) {
+            ForEach(PresenceStatus.allCases.filter { $0 != .offline }, id: \.self) { status in
+                Button {
+                    Task {
+                        await updateStatus(status)
+                        dismiss()
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        PresenceIndicator(status: status, size: 13)
+                            .frame(width: 18)
+                        Text(status.label)
+                        Spacer()
+                        if status == currentStatus {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(SakuraCordAccentColor.color)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 34)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .screenSharePopoverHoverEffect()
+            }
+        }
+        .font(.callout)
+        .padding(12)
+        .frame(width: 220)
+    }
+}
+
+private struct AccountSelectionPopover: View {
+    let savedAccounts: [SavedAccount]
+    let activeAccountID: String?
+    let switchAccount: (String) async -> Bool
+    let manageAccounts: () -> Void
+    let accountActivated: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var switchingAccountID: String?
+
+    var body: some View {
+        VStack(spacing: 4) {
+            if savedAccounts.isEmpty {
+                Text("No saved accounts")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+                    .padding(.horizontal, 8)
+            } else {
+                ForEach(savedAccounts) { account in
+                    accountButton(account)
+                }
+                Divider().padding(.horizontal, 8)
+            }
+
+            Button {
+                dismiss()
+                manageAccounts()
+            } label: {
+                Label("Manage Accounts…", systemImage: "person.crop.circle")
+                    .padding(.horizontal, 8)
+                    .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .screenSharePopoverHoverEffect()
+        }
+        .font(.callout)
+        .padding(12)
+        .frame(width: 250)
+    }
+
+    private func accountButton(_ account: SavedAccount) -> some View {
+        Button {
+            guard switchingAccountID == nil,
+                  account.accountID != activeAccountID
+            else { return }
+            switchingAccountID = account.accountID
+            Task {
+                let switched = await switchAccount(account.accountID)
+                switchingAccountID = nil
+                guard switched else { return }
+                dismiss()
+                accountActivated()
+            }
+        } label: {
+            HStack(spacing: 9) {
+                AvatarView(
+                    name: account.resolvedDisplayName,
+                    url: account.avatarURL,
+                    size: 20,
+                    maximumPixelDimension: 40,
+                    animates: false
+                )
+                Text(account.username ?? account.resolvedDisplayName)
+                    .lineLimit(1)
+                Spacer()
+                if switchingAccountID == account.accountID {
+                    ProgressView().controlSize(.small)
+                } else if account.accountID == activeAccountID {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(SakuraCordAccentColor.color)
+                }
+            }
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity)
+            .frame(height: 36)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .screenSharePopoverHoverEffect()
+        .disabled(switchingAccountID != nil)
     }
 }
 
@@ -760,15 +1219,6 @@ private extension PresenceStatus {
         case .dnd: "Do Not Disturb"
         case .invisible: "Invisible"
         case .offline: "Offline"
-        }
-    }
-
-    var color: Color {
-        switch self {
-        case .online: .green
-        case .idle: .orange
-        case .dnd: .red
-        case .invisible, .offline: .gray
         }
     }
 }

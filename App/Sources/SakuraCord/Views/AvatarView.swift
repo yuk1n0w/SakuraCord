@@ -28,7 +28,7 @@ struct AvatarView: View {
                     .resizable()
                     .scaledToFill()
             } else if showsFallback {
-                Circle().fill(Color.accentColor.gradient)
+                Circle().fill(SakuraCordAccentColor.color.gradient)
                 fallback
             }
             if let url {
@@ -39,7 +39,8 @@ struct AvatarView: View {
                     AnimatedRemoteImage(
                         url: url,
                         maximumPixelDimension: requestedPixelDimension,
-                        contentMode: .fill
+                        contentMode: .fill,
+                        accessibilityCategory: .avatar
                     )
                 } else {
                     StaticRemoteImage(

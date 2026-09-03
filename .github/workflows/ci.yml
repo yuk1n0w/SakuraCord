@@ -18,22 +18,50 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
       - name: Toolchain
+        id: toolchain
         run: |
-          sw_vers
-          xcodebuild -version
-          swift --version
-          xcrun --sdk macosx --show-sdk-version
+          toolchain="$({
+            sw_vers
+            xcodebuild -version
+            swift --version
+            xcrun --sdk macosx --show-sdk-version
+            printf 'Workspace: %s\n' "${GITHUB_WORKSPACE:-$(pwd -P)}"
+          })"
+          printf '%s\n' "$toolchain"
+          fingerprint="$(printf '%s' "$toolchain" | shasum -a 256 | awk '{print $1}')"
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
       - name: Cache SwiftPM dependencies
         if: github.event_name != 'workflow_dispatch' && !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .codex-runtime/swiftpm-cache
           key: swiftpm-${{ runner.os }}-${{ runner.arch }}-xcode-27-${{ hashFiles('App/Package.resolved', 'App/Package.swift', 'Packages/**/Package.swift') }}
           restore-keys: |
             swiftpm-${{ runner.os }}-${{ runner.arch }}-xcode-27-
+      - name: Restore SwiftPM build artifacts
+        id: swiftpm-build-cache
+        if: github.event_name != 'workflow_dispatch' && !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+        uses: actions/cache/restore@v5
+        with:
+          path: App/.build/out
+          key: swiftpm-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.fingerprint }}-${{ hashFiles('App/Package.resolved', 'App/Package.swift', 'Packages/**/Package.swift', 'script/ci.sh', 'script/runtime.sh') }}-${{ github.sha }}
+          restore-keys: |
+            swiftpm-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.fingerprint }}-${{ hashFiles('App/Package.resolved', 'App/Package.swift', 'Packages/**/Package.swift', 'script/ci.sh', 'script/runtime.sh') }}-
       - name: Build
         if: github.event_name != 'workflow_dispatch' && !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
         run: ./script/ci.sh
+      - name: Report SwiftPM build cache
+        if: github.event_name != 'workflow_dispatch' && !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+        run: |
+          echo "Exact cache hit: ${{ steps.swiftpm-build-cache.outputs.cache-hit }}"
+          echo "Matched cache key: ${{ steps.swiftpm-build-cache.outputs.cache-matched-key }}"
+          du -sh App/.build/out
+      - name: Save SwiftPM build artifacts
+        if: success() && github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v') && steps.swiftpm-build-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: App/.build/out
+          key: ${{ steps.swiftpm-build-cache.outputs.cache-primary-key }}
       - name: Validate release sources
         if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
         run: ./script/ci.sh checks
@@ -53,7 +81,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
       - name: Restore SwiftPM dependencies
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: .codex-runtime/swiftpm-cache
           key: swiftpm-${{ runner.os }}-${{ runner.arch }}-xcode-27-${{ hashFiles('App/Package.resolved', 'App/Package.swift', 'Packages/**/Package.swift') }}
@@ -126,6 +154,7 @@ jobs:
         run: |
           published=false
           announced=false
+          announcement_message_id=""
           if gh release view "$SAKURACORD_RELEASE_TAG" >/dev/null 2>&1; then
             release_state="$(gh release view "$SAKURACORD_RELEASE_TAG" --json isDraft,isPrerelease)"
             is_draft="$(jq -r .isDraft <<< "$release_state")"
@@ -145,11 +174,21 @@ jobs:
             mkdir -p "$checkpoint_dir"
             if gh release download "$SAKURACORD_RELEASE_TAG" \
               --pattern discord-announcement.json --dir "$checkpoint_dir" >/dev/null 2>&1; then
+              checkpoint_file="$checkpoint_dir/discord-announcement.json"
+              if ! jq -e \
+                --arg tag "$SAKURACORD_RELEASE_TAG" \
+                '.schemaVersion == 1 and .tagName == $tag and (.messageId | test("^[0-9]{17,20}$"))' \
+                "$checkpoint_file" >/dev/null; then
+                echo "Existing Discord announcement checkpoint is invalid." >&2
+                exit 1
+              fi
               announced=true
+              announcement_message_id="$(jq -r .messageId "$checkpoint_file")"
             fi
           fi
           echo "published=$published" >> "$GITHUB_OUTPUT"
           echo "announced=$announced" >> "$GITHUB_OUTPUT"
+          echo "announcement_message_id=$announcement_message_id" >> "$GITHUB_OUTPUT"
       - name: Validate Sparkle release secrets
         if: steps.existing_release.outputs.published != 'true'
         env:
@@ -238,11 +277,6 @@ jobs:
           curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 \
             --output "$published_dmg" "$enclosure_url"
           cmp "$SAKURACORD_DMG_PATH" "$published_dmg"
-      - name: Publish the signed nightly feed
-        if: steps.existing_release.outputs.published != 'true' && env.SAKURACORD_RELEASE_TRACK == 'nightly'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: ./script/publish_nightly_appcast.sh dist/appcast.xml
       - name: Resolve the published release
         id: published_release
         env:
@@ -268,8 +302,7 @@ jobs:
           fi
           echo "id=$(jq -r .databaseId <<< "$release_json")" >> "$GITHUB_OUTPUT"
           echo "url=$(jq -r .url <<< "$release_json")" >> "$GITHUB_OUTPUT"
-      - name: Send the pre-made Discord release announcement
-        if: steps.existing_release.outputs.announced != 'true'
+      - name: Send or update the pre-made Discord release announcement
         env:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DISCORD_RELEASE_CHANNEL_ID: ${{ secrets.DISCORD_RELEASE_CHANNEL_ID }}
@@ -281,6 +314,21 @@ jobs:
           if [[ "$SAKURACORD_RELEASE_TRACK" == "nightly" ]]; then
             export DISCORD_RELEASE_CHANNEL_ID="$DISCORD_NIGHTLY_RELEASE_CHANNEL_ID"
             export DISCORD_UPDATES_ROLE_ID="$DISCORD_NIGHTLY_UPDATES_ROLE_ID"
+          fi
+          if [[ "${{ steps.existing_release.outputs.announced }}" == "true" ]]; then
+            message_id="${{ steps.existing_release.outputs.announcement_message_id }}"
+            updated_id="$(node "$SAKURACORD_RELEASE_CONTROL_ROOT/script/release_automation.mjs" edit-discord \
+              --input dist/release-copy.json \
+              --repo "$GITHUB_REPOSITORY" \
+              --release-id "${{ steps.published_release.outputs.id }}" \
+              --release-url "${{ steps.published_release.outputs.url }}" \
+              --message-id "$message_id" \
+              | sed -n 's/^Discord release announcement updated: //p')"
+            if [[ "$updated_id" != "$message_id" ]]; then
+              echo "Discord did not update the expected announcement message." >&2
+              exit 1
+            fi
+            exit 0
           fi
           message_id="$(node "$SAKURACORD_RELEASE_CONTROL_ROOT/script/release_automation.mjs" announce-discord \
             --input dist/release-copy.json \

@@ -1,5 +1,6 @@
 import AppKit
 import MessageRendering
+import Observation
 import SakuraCordModels
 import SwiftUI
 
@@ -18,6 +19,34 @@ enum ComposerAutocompleteCommand {
     case nextField
     case advance
     case removeField
+}
+
+@MainActor
+@Observable
+final class ComposerDropInteractionState {
+    private(set) var destination: MessageComposerDestination?
+    private(set) var isInstant = false
+
+    var isTargeted: Bool { destination != nil }
+
+    func update(
+        isTargeted: Bool,
+        destination: MessageComposerDestination,
+        isInstant: Bool
+    ) {
+        self.destination = isTargeted ? destination : nil
+        self.isInstant = isTargeted && isInstant
+    }
+
+    func clear(destination: MessageComposerDestination) {
+        guard self.destination == destination else { return }
+        self.destination = nil
+        isInstant = false
+    }
+}
+
+extension EnvironmentValues {
+    @Entry var composerDropInteraction: ComposerDropInteractionState?
 }
 
 nonisolated enum ComposerLatestMessageEditingPolicy {
@@ -228,8 +257,8 @@ enum ComposerEmojiAttributedText {
     }
 
     private static func placeholderImage(name: String, size: CGFloat) -> NSImage {
-        let image = NSImage(
-            systemSymbolName: "face.smiling",
+        let image = SakuraCordSystemSymbol.image(
+            named: SakuraCordSystemSymbol.emojiFaceGrinning,
             accessibilityDescription: name
         )?.withSymbolConfiguration(
             NSImage.SymbolConfiguration(pointSize: size, weight: .regular)
@@ -243,6 +272,7 @@ struct ComposerTextView: NSViewRepresentable {
     let text: String
     let placeholder: String
     let sendWithReturn: Bool
+    var chatSettings: ChatSettingsSnapshot = .defaults
     var mentionPresentations: [String: MentionPresentation] = [:]
     let onTextChange: (String) -> Void
     let onSubmit: () -> Void
@@ -251,7 +281,10 @@ struct ComposerTextView: NSViewRepresentable {
     var onNavigateReplySelection: (MessageReplyNavigationDirection) -> Bool = { _ in false }
     var onAutocompleteCommand: (ComposerAutocompleteCommand) -> Bool = { _ in false }
     var onPasteAttachments: (([URL]) -> Void)?
+    var onDropTargetChanged: ((_ isTargeted: Bool, _ isInstant: Bool) -> Void)?
+    var onDropAttachments: ((_ urls: [URL], _ isInstant: Bool) -> Bool)?
     var capturesUnfocusedTyping = false
+    var verticalContentInset: CGFloat = 0
     var maximumHeight: CGFloat = 150
     @Binding var selection: NSRange?
     @Binding var isFocused: Bool
@@ -279,13 +312,16 @@ struct ComposerTextView: NSViewRepresentable {
         textView.isSelectable = true
         textView.isRichText = true
         textView.importsGraphics = false
-        // Let the workspace-level file destination own file drags. NSTextView's
-        // default destination otherwise inserts a dropped file path as text.
+        // NSTextView is the AppKit drag destination inside the SwiftUI
+        // workspace. Own file URLs here so AppKit cannot fall back to inserting
+        // their paths into the message text.
         textView.unregisterDraggedTypes()
+        textView.registerForDraggedTypes([.fileURL])
         textView.drawsBackground = false
         textView.isHorizontallyResizable = false
         textView.isVerticallyResizable = true
-        textView.textContainerInset = .zero
+        textView.allowsUndo = true
+        textView.textContainerInset = NSSize(width: 0, height: verticalContentInset)
         textView.minSize = .zero
         textView.maxSize = NSSize(
             width: CGFloat.greatestFiniteMagnitude,
@@ -294,12 +330,14 @@ struct ComposerTextView: NSViewRepresentable {
         textView.autoresizingMask = [.width]
         textView.font = font
         textView.textColor = .labelColor
+        textView.applySakuraCordTextSelectionAppearance()
         textView.plainTypingAttributes = textAttributes
         textView.restorePlainTypingAttributes()
         textView.setAccessibilityLabel(placeholder)
         textView.onReturn = { [weak coordinator = context.coordinator] event in
             coordinator?.handleReturn(event) ?? false
         }
+        textView.onSubmit = onSubmit
         textView.onAutocompleteCommand = { [weak coordinator = context.coordinator] command in
             coordinator?.parent.onAutocompleteCommand(command) ?? false
         }
@@ -313,7 +351,10 @@ struct ComposerTextView: NSViewRepresentable {
             coordinator?.parent.onNavigateReplySelection(direction) ?? false
         }
         textView.onPasteAttachments = onPasteAttachments
+        textView.onDropTargetChanged = onDropTargetChanged
+        textView.onDropAttachments = onDropAttachments
         textView.capturesUnfocusedTyping = capturesUnfocusedTyping
+        ComposerTextCheckingConfiguration.apply(chatSettings, to: textView)
 
         let scrollView = NSScrollView()
         scrollView.documentView = textView
@@ -330,10 +371,13 @@ struct ComposerTextView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? ComposerNSTextView else { return }
         context.coordinator.parent = self
+        textView.applySakuraCordTextSelectionAppearance()
+        textView.textContainerInset = NSSize(width: 0, height: verticalContentInset)
 
         textView.onReturn = { [weak coordinator = context.coordinator] event in
             coordinator?.handleReturn(event) ?? false
         }
+        textView.onSubmit = onSubmit
         textView.onAutocompleteCommand = { [weak coordinator = context.coordinator] command in
             coordinator?.parent.onAutocompleteCommand(command) ?? false
         }
@@ -347,7 +391,10 @@ struct ComposerTextView: NSViewRepresentable {
             coordinator?.parent.onNavigateReplySelection(direction) ?? false
         }
         textView.onPasteAttachments = onPasteAttachments
+        textView.onDropTargetChanged = onDropTargetChanged
+        textView.onDropAttachments = onDropAttachments
         textView.capturesUnfocusedTyping = capturesUnfocusedTyping
+        ComposerTextCheckingConfiguration.apply(chatSettings, to: textView)
         textView.setAccessibilityLabel(placeholder)
 
         if ComposerEmojiAttributedText.serialize(textView.attributedString()) != text
@@ -410,7 +457,10 @@ struct ComposerTextView: NSViewRepresentable {
         layoutManager.ensureLayout(for: textContainer)
 
         let lineHeight = layoutManager.defaultLineHeight(for: font)
-        let contentHeight = ceil(max(lineHeight, layoutManager.usedRect(for: textContainer).height))
+        let contentHeight = ceil(
+            max(lineHeight, layoutManager.usedRect(for: textContainer).height)
+                + textView.textContainerInset.height * 2
+        )
 
         return CGSize(width: proposedWidth, height: min(contentHeight, maximumHeight))
     }
@@ -648,12 +698,16 @@ final class ComposerEmojiImageStore {
 
 final class ComposerNSTextView: NSTextView {
     var onReturn: ((NSEvent) -> Bool)?
+    var onSubmit: (() -> Void)?
     var onEscape: (() -> Void)?
     var onEditLatestMessage: (() -> Bool)?
     var onNavigateReplySelection: ((MessageReplyNavigationDirection) -> Bool)?
     var onAutocompleteCommand: ((ComposerAutocompleteCommand) -> Bool)?
     var onPasteAttachments: (([URL]) -> Void)?
+    var onDropTargetChanged: ((_ isTargeted: Bool, _ isInstant: Bool) -> Void)?
+    var onDropAttachments: ((_ urls: [URL], _ isInstant: Bool) -> Bool)?
     var commandPasteboard = NSPasteboard.general
+    var shortcutSettings = KeyboardShortcutSettingsStore.shared
     var plainTypingAttributes: [NSAttributedString.Key: Any] = [:]
     var capturesUnfocusedTyping = false {
         didSet {
@@ -706,6 +760,45 @@ final class ComposerNSTextView: NSTextView {
         true
     }
 
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        updateAttachmentDropTarget(sender)
+    }
+
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        updateAttachmentDropTarget(sender)
+    }
+
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        onDropTargetChanged?(false, false)
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        let urls = ComposerPasteboardAttachments.fileURLs(
+            from: sender.draggingPasteboard
+        )
+        let isInstant = NSEvent.modifierFlags.contains(.shift)
+        let handled = !urls.isEmpty
+            && onDropAttachments?(urls, isInstant) == true
+        onDropTargetChanged?(false, false)
+        return handled
+    }
+
+    override func concludeDragOperation(_ sender: (any NSDraggingInfo)?) {
+        onDropTargetChanged?(false, false)
+    }
+
+    private func updateAttachmentDropTarget(
+        _ sender: any NSDraggingInfo
+    ) -> NSDragOperation {
+        let acceptsDrop = onDropAttachments != nil
+            && !ComposerPasteboardAttachments.fileURLs(
+                from: sender.draggingPasteboard
+            ).isEmpty
+        let isInstant = acceptsDrop && NSEvent.modifierFlags.contains(.shift)
+        onDropTargetChanged?(acceptsDrop, isInstant)
+        return acceptsDrop ? .copy : []
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         unfocusedTypingMonitor.synchronize(
@@ -735,6 +828,22 @@ final class ComposerNSTextView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if !hasMarkedText(),
+           let action = shortcutSettings.action(
+               matching: event
+           )
+        {
+            switch action {
+            case .sendMessage:
+                onSubmit?()
+                return
+            case .insertNewline:
+                insertNewline(nil)
+                return
+            default:
+                break
+            }
+        }
         let autocompleteCommand = autocompleteCommand(for: event)
         if let autocompleteCommand, onAutocompleteCommand?(autocompleteCommand) == true {
             return
@@ -843,22 +952,26 @@ final class ComposerNSTextView: NSTextView {
 
 @MainActor
 enum ComposerPasteboardAttachments {
-    static func urls(
-        from pasteboard: NSPasteboard,
-        fileManager: FileManager = .default
-    ) -> [URL] {
+    static func fileURLs(from pasteboard: NSPasteboard) -> [URL] {
         let objects = pasteboard.readObjects(
             forClasses: [NSURL.self],
             options: [.urlReadingFileURLsOnly: true]
         ) ?? []
         var seen: Set<URL> = []
-        let fileURLs = objects.compactMap { object -> URL? in
+        return objects.compactMap { object -> URL? in
             guard let url = (object as? NSURL)?.absoluteURL,
                   url.isFileURL,
                   seen.insert(url.standardizedFileURL).inserted
             else { return nil }
             return url
         }
+    }
+
+    static func urls(
+        from pasteboard: NSPasteboard,
+        fileManager: FileManager = .default
+    ) -> [URL] {
+        let fileURLs = fileURLs(from: pasteboard)
         if !fileURLs.isEmpty {
             return fileURLs
         }

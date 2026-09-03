@@ -1,0 +1,287 @@
+import SwiftUI
+import UniformTypeIdentifiers
+
+struct InterfaceSettingsPage: View {
+    let model: AppModel
+    let state: SettingsViewState
+
+    @State private var value = InterfaceSettingsSnapshot.defaults
+    @State private var appearanceValue = AppearanceSettingsSnapshot.defaults
+    @State private var exportedPreferences: SettingsPreferenceExportFile?
+    @State private var isExporting = false
+    @State private var confirmsReset = false
+    @State private var operationMessage: String?
+
+    var body: some View {
+        SettingsPageForm(page: .interface, state: state) {
+            InterfaceMessagesSection(
+                value: $appearanceValue,
+                reset: resetMessageAppearance,
+                state: state
+            )
+            InterfaceTimeSection(value: $value, state: state)
+            InterfaceVisibilitySection(value: $value, state: state)
+            Section {
+                InterfaceSettingsPreview(value: value)
+                    .settingsControlAnchor(.interfacePreview, state: state)
+            } header: {
+                Text("Preview", bundle: #bundle)
+            } footer: {
+                Text("Representative local samples only. The preview never reads Discord data.")
+            }
+            InterfaceLocalDataSection(
+                operationMessage: operationMessage,
+                export: exportPreferences,
+                requestReset: { confirmsReset = true },
+                state: state
+            )
+        }
+        .task {
+            value = model.interfaceSettings
+            appearanceValue = model.appearanceSettings
+        }
+        .onChange(of: value) { _, newValue in
+            model.applyInterfaceSettings(newValue)
+        }
+        .onChange(of: appearanceValue) { _, newValue in
+            model.applyAppearanceSettings(newValue)
+        }
+        .confirmationDialog(
+            "Reset Interface Settings?",
+            isPresented: $confirmsReset
+        ) {
+            Button("Reset Interface Settings", role: .destructive) {
+                resetPreferences()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "This restores only registered local Interface preferences. Credentials and Discord data are unchanged."
+            )
+        }
+        .fileExporter(
+            isPresented: $isExporting,
+            item: exportedPreferences,
+            contentTypes: [.json],
+            defaultFilename: "SakuraCord-Interface-Settings-v1"
+        ) { result in
+            switch result {
+            case .success:
+                operationMessage = "Exported Interface settings."
+            case let .failure(error):
+                operationMessage = "Export failed: \(error.localizedDescription)"
+            }
+            exportedPreferences = nil
+        } onCancellation: {
+            exportedPreferences = nil
+        }
+    }
+
+    private func exportPreferences() {
+        let export = SettingsPreferenceStore.shared.export(
+            scope: .appWide,
+            page: .interface
+        )
+        exportedPreferences = SettingsPreferenceExportFile(export: export)
+        isExporting = true
+    }
+
+    private func resetMessageAppearance() {
+        appearanceValue.messageAppearance = .defaultStyle
+        appearanceValue.messageSpacing =
+            AppearanceSettingsSnapshot.defaultMessageSpacing
+        appearanceValue.composerBarAppearance = .defaultStyle
+    }
+
+    private func resetPreferences() {
+        SettingsPreferenceStore.shared.reset(
+            scope: .appWide,
+            page: .interface
+        )
+        value = InterfaceSettingsStore.shared.load()
+        appearanceValue = AppearanceSettingsStore.shared.load()
+        operationMessage = "Restored Interface settings to their defaults."
+    }
+}
+
+private struct InterfaceMessagesSection: View {
+    @Binding var value: AppearanceSettingsSnapshot
+    let reset: () -> Void
+    let state: SettingsViewState
+
+    private var isUsingDefaults: Bool {
+        value.messageAppearance
+            == AppearanceSettingsSnapshot.defaults.messageAppearance
+            && value.messageSpacing
+                == AppearanceSettingsSnapshot.defaults.messageSpacing
+            && value.composerBarAppearance
+                == AppearanceSettingsSnapshot.defaults.composerBarAppearance
+    }
+
+    var body: some View {
+        Section {
+            LabeledContent("Messages") {
+                Picker("Messages", selection: $value.messageAppearance) {
+                    ForEach(MessageAppearance.allCases) { appearance in
+                        Text(appearance.title).tag(appearance)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.radioGroup)
+                .horizontalRadioGroupLayout()
+                .tint(SakuraCordAccentColor.color)
+            }
+            .settingsControlAnchor(.messageAppearance, state: state)
+
+            LabeledContent("Density") {
+                HStack {
+                    Slider(
+                        value: $value.messageSpacing,
+                        in: AppearanceSettingsSnapshot.messageSpacingRange,
+                        step: 1
+                    )
+                    .tint(SakuraCordAccentColor.color)
+                    .frame(minWidth: 220)
+                    Text("\(Int(value.messageSpacing)) pt")
+                        .monospacedDigit()
+                        .frame(width: 42, alignment: .trailing)
+                }
+            }
+            .accessibilityValue(
+                "\(Int(value.messageSpacing)) points between messages"
+            )
+            .settingsControlAnchor(.messageDensity, state: state)
+
+            LabeledContent("Input bar") {
+                Picker("Input bar", selection: $value.composerBarAppearance) {
+                    ForEach(ComposerBarAppearance.allCases) { appearance in
+                        Text(appearance.title).tag(appearance)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.radioGroup)
+                .horizontalRadioGroupLayout()
+                .tint(SakuraCordAccentColor.color)
+            }
+            .settingsControlAnchor(.composerBarAppearance, state: state)
+
+            Button("Reset to Defaults", action: reset)
+                .disabled(isUsingDefaults)
+                .settingsControlAnchor(.resetMessageAppearance, state: state)
+        } header: {
+            Text("Messages", bundle: #bundle)
+        }
+    }
+}
+
+private struct InterfaceTimeSection: View {
+    @Binding var value: InterfaceSettingsSnapshot
+    let state: SettingsViewState
+
+    var body: some View {
+        Section {
+            Picker("Timestamp format", selection: $value.timestampFormat) {
+                ForEach(InterfaceTimestampFormat.allCases) { format in
+                    Text(format.title).tag(format)
+                }
+            }
+            .settingsControlAnchor(.timestampFormat, state: state)
+
+            Toggle(
+                "Show seconds in full timestamps",
+                isOn: $value.includesTimestampSeconds
+            )
+            .tint(SakuraCordAccentColor.color)
+            .settingsControlAnchor(.timestampSeconds, state: state)
+
+            LabeledContent("Consecutive-message grouping") {
+                HStack {
+                    Slider(
+                        value: Binding(
+                            get: { Double(value.groupingIntervalMinutes) },
+                            set: { value.groupingIntervalMinutes = Int($0) }
+                        ),
+                        in: Double(InterfaceSettingsSnapshot.groupingIntervalRange.lowerBound)
+                            ... Double(InterfaceSettingsSnapshot.groupingIntervalRange.upperBound),
+                        step: 1
+                    )
+                    .tint(SakuraCordAccentColor.color)
+                    .frame(minWidth: 220)
+                    Text(value.groupingIntervalMinutes, format: .number)
+                        .monospacedDigit()
+                    Text("min", bundle: #bundle)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityValue("\(value.groupingIntervalMinutes) minutes")
+            .settingsControlAnchor(.groupingInterval, state: state)
+        } header: {
+            Text("Time and grouping", bundle: #bundle)
+        } footer: {
+            Text("System follows the current locale. Explicit 12- and 24-hour choices keep their selected clock.")
+        }
+    }
+}
+
+private struct InterfaceVisibilitySection: View {
+    @Binding var value: InterfaceSettingsSnapshot
+    let state: SettingsViewState
+
+    var body: some View {
+        Section {
+            Toggle("Underline links", isOn: $value.underlinesLinks)
+                .tint(SakuraCordAccentColor.color)
+                .settingsControlAnchor(.underlineLinks, state: state)
+            Toggle("Show member list", isOn: $value.showsMemberList)
+                .tint(SakuraCordAccentColor.color)
+                .settingsControlAnchor(.showMemberList, state: state)
+            Toggle(
+                "Show activity and presence details",
+                isOn: $value.showsActivityDetails
+            )
+            .tint(SakuraCordAccentColor.color)
+            .settingsControlAnchor(.showActivityDetails, state: state)
+            Picker(
+                "Message actions",
+                selection: $value.messageActionVisibility
+            ) {
+                ForEach(InterfaceMessageActionVisibility.allCases) { visibility in
+                    Text(visibility.title).tag(visibility)
+                }
+            }
+            .settingsControlAnchor(.messageActionVisibility, state: state)
+            Toggle("Show Discord role colors", isOn: $value.showsRoleColors)
+                .tint(SakuraCordAccentColor.color)
+                .settingsControlAnchor(.showRoleColors, state: state)
+        } header: {
+            Text("Visibility", bundle: #bundle)
+        }
+    }
+}
+
+private struct InterfaceLocalDataSection: View {
+    let operationMessage: String?
+    let export: () -> Void
+    let requestReset: () -> Void
+    let state: SettingsViewState
+
+    var body: some View {
+        Section {
+            HStack {
+                Button("Export Interface Settings…", action: export)
+                    .settingsControlAnchor(.exportInterfaceSettings, state: state)
+                Button("Reset Interface Settings…", role: .destructive, action: requestReset)
+                    .settingsControlAnchor(.resetInterfaceSettings, state: state)
+            }
+            if let operationMessage {
+                Text(operationMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Local data", bundle: #bundle)
+        } footer: {
+            Text("Reset and export cover only registered app-wide Interface preferences on this Mac.")
+        }
+    }
+}

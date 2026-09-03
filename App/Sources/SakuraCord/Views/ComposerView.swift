@@ -7,10 +7,11 @@ struct ComposerView: View {
     typealias Conversation = MessageComposerDestination
 
     let model: AppModel
+    @Environment(\.composerDropInteraction) private var composerDropInteraction
     let channelName: String
-    /// Passed in rather than read from the model. `selectedChannel` is a
-    /// stored `Channel?`, so each read copies the whole struct, and the DM
-    /// chrome is consulted several times per body evaluation.
+    /// Passed in rather than repeatedly copying `selectedChannel` while the
+    /// text view invalidates. Direct messages keep the compact custom bar
+    /// regardless of the optional server-composer appearance.
     var isDirectMessage = false
     var conversation: Conversation = .channel
     var onEditMessage: (MessageID) -> Void = { _ in }
@@ -27,217 +28,223 @@ struct ComposerView: View {
     @State private var isAutocompleteDismissed = false
     @State private var commandSuggestionIndex = 0
     @State private var isCommandSuggestionsDismissed = false
-    @AppStorage("sendWithReturn") private var sendWithReturn = true
+    @State private var pendingDiscard: ComposerDiscardRequest?
 
     var body: some View {
         @Bindable var model = model
-        GlassEffectContainer(spacing: 8) {
-            VStack(alignment: .leading, spacing: 0) {
-                if !hasActiveCommand, let reply = activeReply {
-                    let author = model.authorPresentation(for: reply)
-                    ComposerReplyHeader(
-                        authorName: author.user.displayName,
-                        avatarURL: author.user.avatarURL,
-                        roleColorHex: author.roleColorHex,
-                        mentionsAuthor: activeReplyMentionsAuthor,
-                        canMentionAuthor: author.user.id != model.snapshot?.currentUser.id,
-                        toggleMention: toggleReplyMention,
-                        cancel: cancelReply
-                    )
-                    Divider()
-                }
-                if !hasActiveCommand, !attachments.isEmpty {
-                    ComposerAttachmentTray(
-                        attachments: attachments,
-                        toggleSpoiler: {
-                            model.toggleComposerAttachmentSpoiler($0, in: conversation)
-                        },
-                        update: {
-                            model.updateComposerAttachment($0, in: conversation)
-                        },
-                        remove: {
-                            model.removeComposerAttachment($0, from: conversation)
-                        }
-                    )
-                    Divider()
-                        .padding(.horizontal, 11)
-                }
-                HStack(alignment: .bottom, spacing: 9) {
-                        if !hasActiveCommand {
-                            ComposerActionButton(
-                                icon: Image(systemName: "plus"),
-                                help: "Add attachments",
-                                iconSize: 19,
-                                iconWeight: .regular
-                            ) {
-                                showFileImporter = true
+        let appearance: ComposerBarAppearance = isDirectMessage
+            ? .legacy
+            : model.appearanceSettings.composerBarAppearance
+        let accessoryButtonSize = appearance == .defaultStyle
+            ? ChatChromeMetrics.composerAccessoryButtonSize
+            : ChatChromeMetrics.composerControlHeight
+        let chrome = ComposerChromeLayout(
+            appearance: appearance,
+            usesDirectMessageChrome: isDirectMessage,
+            focus: { isFocused = true },
+            header: {
+                VStack(alignment: .leading, spacing: 0) {
+                    if !hasActiveCommand, let reply = activeReply {
+                        let author = model.authorPresentation(for: reply)
+                        ComposerReplyHeader(
+                            authorName: author.user.displayName,
+                            avatarURL: author.user.avatarURL,
+                            roleColorHex: author.roleColorHex,
+                            mentionsAuthor: activeReplyMentionsAuthor,
+                            canMentionAuthor: author.user.id != model.snapshot?.currentUser.id,
+                            toggleMention: toggleReplyMention,
+                            cancel: cancelReply
+                        )
+                        Divider()
+                    }
+                    if !hasActiveCommand, !attachments.isEmpty {
+                        ComposerAttachmentTray(
+                            attachments: attachments,
+                            open: openComposerAttachment,
+                            toggleSpoiler: {
+                                model.toggleComposerAttachmentSpoiler($0, in: conversation)
+                            },
+                            update: {
+                                model.updateComposerAttachment($0, in: conversation)
+                            },
+                            remove: {
+                                model.removeComposerAttachment($0, from: conversation)
                             }
+                        )
+                        Divider()
+                            .padding(.horizontal, 11)
+                    }
+                }
+            },
+            leading: {
+                Group {
+                    if !hasActiveCommand {
+                        ComposerActionButton(
+                            icon: Image(systemName: "plus"),
+                            help: "Add attachments",
+                            iconSize: 19,
+                            iconWeight: .regular,
+                            showsHoverBackground: appearance == .legacy,
+                            appearance: appearance
+                        ) {
+                            showFileImporter = true
                         }
-                        if hasActiveCommand {
-                            ApplicationCommandInlineInput(
-                                composer: model.commandComposer,
-                                roles: model.guildRoles,
-                                sendWithReturn: sendWithReturn,
-                                onTextChange: { option, text in
-                                    updateCommandField(text, for: option)
+                    }
+                }
+            },
+            input: {
+                Group {
+                    if hasActiveCommand {
+                        ApplicationCommandInlineInput(
+                            composer: model.commandComposer,
+                            roles: model.guildRoles,
+                            sendWithReturn: model.chatSettings.sendsWithReturn,
+                            chatSettings: model.chatSettings,
+                            onTextChange: { option, text in
+                                updateCommandField(text, for: option)
+                            },
+                            onSubmit: submitComposer,
+                            onKeyboardCommand: handleAutocomplete,
+                            cancel: cancelCommand,
+                            isFocused: $isFocused
+                        )
+                    } else {
+                        ZStack(alignment: .bottomTrailing) {
+                            ComposerTextView(
+                                text: draft,
+                                placeholder: composerPlaceholder,
+                                sendWithReturn: model.chatSettings.sendsWithReturn,
+                                chatSettings: model.chatSettings,
+                                mentionPresentations: composerMentionPresentations,
+                                onTextChange: updateDraft,
+                                onSubmit: send,
+                                onEscape: handleEscapeCommand,
+                                onEditLatestMessage: editLatestMessage,
+                                onNavigateReplySelection: { direction in
+                                    model.navigateReplySelection(
+                                        in: conversation,
+                                        direction: direction
+                                    )
                                 },
-                                onSubmit: submitComposer,
-                                onKeyboardCommand: handleAutocomplete,
-                                cancel: cancelCommand,
+                                onAutocompleteCommand: handleAutocomplete,
+                                onPasteAttachments: addPastedAttachments,
+                                onDropTargetChanged: { targeted, instant in
+                                    composerDropInteraction?.update(
+                                        isTargeted: targeted,
+                                        destination: conversation,
+                                        isInstant: instant
+                                    )
+                                },
+                                onDropAttachments: handleDroppedAttachments,
+                                capturesUnfocusedTyping:
+                                    model.chatSettings.focusesComposerOnTyping
+                                        && !showEmojiPicker
+                                        && !showGIFPicker,
+                                verticalContentInset: appearance == .defaultStyle
+                                    ? ChatChromeMetrics.composerTextVerticalInset
+                                    : 0,
+                                selection: $draftSelection,
                                 isFocused: $isFocused
                             )
-                            .frame(
-                                minHeight: composerInputMinimumHeight,
-                                alignment: composerInputAlignment
-                            )
-                            .layoutPriority(1)
-                        } else {
-                            ZStack(alignment: .leading) {
-                                ComposerTextView(
-                                    text: draft,
-                                    placeholder: composerPlaceholder,
-                                    sendWithReturn: sendWithReturn,
-                                    mentionPresentations: composerMentionPresentations,
-                                    onTextChange: updateDraft,
-                                    onSubmit: send,
-                                    onEscape: handleEscapeCommand,
-                                    onEditLatestMessage: editLatestMessage,
-                                    onNavigateReplySelection: { direction in
-                                        model.navigateReplySelection(
-                                            in: conversation,
-                                            direction: direction
+                            if draft.isEmpty {
+                                Text(composerPlaceholder)
+                                    .foregroundStyle(.tertiary)
+                                    .font(
+                                        .system(
+                                            size: 15,
+                                            design: isDirectMessage ? .monospaced : .default
                                         )
-                                    },
-                                    onAutocompleteCommand: handleAutocomplete,
-                                    onPasteAttachments: addPastedAttachments,
-                                    capturesUnfocusedTyping: true,
-                                    selection: $draftSelection,
-                                    isFocused: $isFocused
-                                )
-                                if draft.isEmpty {
-                                    Text(composerPlaceholder)
-                                        .foregroundStyle(.tertiary)
-                                        .font(
-                                            .system(
-                                                size: 15,
-                                                design: usesConversationChrome
-                                                    ? .monospaced
-                                                    : .default
-                                            )
-                                        )
-                                        .lineLimit(1)
-                                        .truncationMode(.tail)
-                                        .allowsHitTesting(false)
-                                        .accessibilityHidden(true)
-                                }
+                                    )
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                    .allowsHitTesting(false)
+                                    .accessibilityHidden(true)
+                                    .frame(
+                                        maxWidth: .infinity,
+                                        maxHeight: .infinity,
+                                        alignment: .leading
+                                    )
                             }
-                            .frame(
-                                minHeight: composerInputMinimumHeight,
-                                alignment: composerInputAlignment
-                            )
-                            .layoutPriority(1)
-                        }
-                        if showsComposerSendButton {
-                            HStack(spacing: 1) {
-                                if !hasActiveCommand, showsComposerPickers {
-                                    if model.supportedCapabilities.contains(.gifs) {
-                                        ComposerActionButton(
-                                            icon: Image("gif.square", bundle: .module),
-                                            help: "Choose GIF",
-                                            iconSize: 20,
-                                            iconWeight: .medium
-                                        ) {
-                                            toggleGIFPicker()
-                                        }
-                                        .fixedSize()
-                                        .background {
-                                            StableReactionPickerPresenter(
-                                                isPresented: $showGIFPicker,
-                                                preferredEdge: .maxY,
-                                                accessibilityIdentifier: "composer-gif-picker"
-                                            ) {
-                                                composerGIFPicker
-                                            }
-                                            .frame(width: 36, height: 36)
-                                        }
-                                    }
-                                    ComposerActionButton(
-                                        icon: Image(systemName: "face.smiling.inverse"),
-                                        help: "Choose emoji",
-                                        iconSize: 19,
-                                        iconWeight: .medium
-                                    ) {
-                                        toggleEmojiPicker()
-                                    }
-                                    .fixedSize()
-                                    .background {
-                                        StableReactionPickerPresenter(
-                                            isPresented: $showEmojiPicker,
-                                            preferredEdge: .maxY,
-                                            accessibilityIdentifier: "composer-emoji-picker"
-                                        ) {
-                                            composerEmojiPicker
-                                        }
-                                        .frame(width: 36, height: 36)
-                                    }
-                                }
-                                if showsComposerPickers {
-                                    Capsule()
-                                        .fill(.primary.opacity(0.16))
-                                        .frame(width: 1, height: 16)
-                                        .frame(width: 9, height: 36)
-                                        .accessibilityHidden(true)
-                                }
-                                ComposerSendButton(action: submitComposer)
-                                    .disabled(!composerCanSubmit)
+                            if ChatCharacterLimitPolicy.shouldShowCounter(
+                                characterCount: draft.count,
+                                premiumType: model.snapshot?.currentUser.premiumType
+                            ) {
+                                ComposerCharacterCounter(
+                                    characterCount: draft.count,
+                                    premiumType: model.snapshot?.currentUser.premiumType
+                                )
                             }
                         }
                     }
-                    .padding(.horizontal, 11)
-                    .padding(.vertical, usesDirectMessageChrome ? 8 : 6)
-                    .frame(minHeight: ChatChromeMetrics.controlHeight)
-            }
-                .background {
-                    ComposerFocusSurface { isFocused = true }
                 }
-                .glassEffect(
-                    usesDirectMessageChrome
-                        ? .clear.tint(Color.black.opacity(0.20))
-                        : .regular.interactive(),
-                    in: ConcentricRectangle(
-                        corners: .concentric(
-                            minimum: .fixed(
-                                usesDirectMessageChrome
-                                    ? 28
-                                    : ChatChromeMetrics.composerMinimumCornerRadius
-                            )
-                        ),
-                        isUniform: true
-                    )
-                )
-                .overlay(alignment: .top) {
-                    composerOverlay
-                        .alignmentGuide(.top) { dimensions in
-                            dimensions[.bottom] + 7
+                .frame(minHeight: ChatChromeMetrics.composerControlHeight)
+                .layoutPriority(1)
+            },
+            accessories: {
+                HStack(spacing: 1) {
+                    if !isDirectMessage, !hasActiveCommand {
+                        if model.supportedCapabilities.contains(.gifs) {
+                            ComposerActionButton(
+                                icon: Image("gif.square", bundle: .module),
+                                help: "Choose GIF",
+                                iconSize: 20,
+                                iconWeight: .medium,
+                                size: accessoryButtonSize,
+                                appearance: appearance
+                            ) {
+                                toggleGIFPicker()
+                            }
+                            .fixedSize()
+                            .background {
+                                StableReactionPickerPresenter(
+                                    isPresented: $showGIFPicker,
+                                    preferredEdge: .maxY,
+                                    accessibilityIdentifier: "composer-gif-picker"
+                                ) {
+                                    composerGIFPicker
+                                }
+                                .frame(width: accessoryButtonSize, height: accessoryButtonSize)
+                            }
                         }
-                        .zIndex(10)
+                        ComposerActionButton(
+                            icon: SakuraCordSystemSymbol.emojiFaceGrinningImage,
+                            help: "Choose emoji",
+                            iconSize: 19,
+                            iconWeight: .medium,
+                            size: accessoryButtonSize,
+                            appearance: appearance
+                        ) {
+                            toggleEmojiPicker()
+                        }
+                        .fixedSize()
+                        .background {
+                            StableReactionPickerPresenter(
+                                isPresented: $showEmojiPicker,
+                                preferredEdge: .maxY,
+                                accessibilityIdentifier: "composer-emoji-picker"
+                            ) {
+                                composerEmojiPicker
+                            }
+                            .frame(width: accessoryButtonSize, height: accessoryButtonSize)
+                        }
+                    }
                 }
-        }
-        .fixedSize(horizontal: false, vertical: true)
-        .padding(
-            .horizontal,
-            usesDirectMessageChrome ? 18 : ChatChromeMetrics.composerWindowInset
+                .frame(height: ChatChromeMetrics.composerControlHeight)
+            },
+            send: {
+                Group {
+                    if !isDirectMessage || !model.chatSettings.sendsWithReturn {
+                        ComposerSendButton(
+                            action: submitComposer,
+                            appearance: appearance
+                        )
+                        .disabled(!composerCanSubmit)
+                    }
+                }
+            },
+            overlay: { composerOverlay }
         )
-        .padding(
-            .bottom,
-            usesDirectMessageChrome ? 14 : ChatChromeMetrics.composerWindowInset
-        )
-        .frame(maxWidth: .infinity)
-        .frame(
-            maxWidth: usesDirectMessageChrome
-                ? ChatChromeMetrics.directMessageContentMaximumWidth
-                : .infinity
-        )
+        chrome
         .fileImporter(
             isPresented: $showFileImporter,
             allowedContentTypes: [.item],
@@ -256,14 +263,16 @@ struct ComposerView: View {
                 model.addComposerAttachments(urls, to: conversation)
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .sakuracordFocusComposer)) { note in
-            if let destination = note.object as? MessageComposerDestination,
-               destination != conversation
-            {
-                return
-            }
-            isFocused = true
-        }
+        .composerDiscardConfirmation(
+            request: $pendingDiscard,
+            discard: performPendingDiscard
+        )
+        .composerShortcutCommands(
+            conversation: conversation,
+            focus: { isFocused = true },
+            editLatest: { if !hasActiveCommand { _ = editLatestMessage() } },
+            chooseAttachment: { if !hasActiveCommand { showFileImporter = true } }
+        )
         .onChange(of: showEmojiPicker) { wasPresented, isPresented in
             if wasPresented, !isPresented {
                 emojiPickerDismissedAt = ProcessInfo.processInfo.systemUptime
@@ -294,6 +303,9 @@ struct ComposerView: View {
             commandSuggestionIndex = 0
             isCommandSuggestionsDismissed = false
             isFocused = hasActiveCommand
+        }
+        .onDisappear {
+            composerDropInteraction?.clear(destination: conversation)
         }
         .task(id: composerPresentationID) {
             draftSelection = nil
@@ -382,43 +394,37 @@ struct ComposerView: View {
     private var composerEmojiPicker: some View {
         EmojiPickerView(
             model: model,
-            allowsPersistentSelection: true
-        ) { activation in
-            let replacementSelection =
-                selectionBeforeEmojiPicker
-                    ?? NSRange(location: draft.utf16.count, length: 0)
-            let restoredSelection: NSRange
-            switch activation.selection {
-            case let .native(value):
-                restoredSelection = insertInDraft(value, replacing: replacementSelection)
-            case let .custom(emoji):
-                ComposerEmojiImageStore.shared.register(emoji)
-                let value = model.composerText(for: emoji)
-                restoredSelection = applyDraftEdit(
-                    ComposerDraftEditing.insertCustomEmoji(
-                        value,
-                        into: draft,
-                        replacing: replacementSelection
+            allowsPersistentSelection: true,
+            dismiss: dismissEmojiPicker,
+            select: { activation in
+                let replacementSelection =
+                    selectionBeforeEmojiPicker
+                        ?? NSRange(location: draft.utf16.count, length: 0)
+                let restoredSelection: NSRange
+                switch activation.selection {
+                case let .native(value):
+                    restoredSelection = insertInDraft(value, replacing: replacementSelection)
+                case let .custom(emoji):
+                    ComposerEmojiImageStore.shared.register(emoji)
+                    let value = model.composerText(for: emoji)
+                    restoredSelection = applyDraftEdit(
+                        ComposerDraftEditing.insertCustomEmoji(
+                            value,
+                            into: draft,
+                            replacing: replacementSelection
+                        )
                     )
-                )
+                }
+                if activation.keepsPickerPresented {
+                    selectionBeforeEmojiPicker = restoredSelection
+                    draftSelection = restoredSelection
+                    return
+                }
+                showEmojiPicker = false
+                selectionBeforeEmojiPicker = nil
+                restoreComposerFocus(selection: restoredSelection)
             }
-            if activation.keepsPickerPresented {
-                selectionBeforeEmojiPicker = restoredSelection
-                draftSelection = restoredSelection
-                return
-            }
-            showEmojiPicker = false
-            selectionBeforeEmojiPicker = nil
-            Task { @MainActor in
-                await Task.yield()
-                isFocused = true
-                await Task.yield()
-                draftSelection = restoredSelection
-            }
-        }
-        .onExitCommand {
-            handleEscapeCommand()
-        }
+        )
     }
 
     private var composerGIFPicker: some View {
@@ -433,14 +439,23 @@ struct ComposerView: View {
 
     private func handleEscapeCommand() {
         guard !model.consumeEscapeForMediaViewer() else { return }
+        guard !model.consumeEscapeForPinnedMessages() else { return }
         guard !model.consumeEscapeForUnfocusedMessageSearch() else { return }
         if model.consumeEscapeForReply(in: conversation) {
             return
         } else if showGIFPicker {
             showGIFPicker = false
         } else if showEmojiPicker {
-            showEmojiPicker = false
-        } else if model.consumeEscapeForComposerAttachments(in: conversation) {
+            dismissEmojiPicker()
+        } else if !attachments.isEmpty {
+            if GeneralComposerDiscardPolicy.shouldConfirmUnsentContent(
+                isEnabled: confirmsDiscardComposer,
+                itemCount: attachments.count
+            ) {
+                pendingDiscard = .attachments
+            } else {
+                _ = model.consumeEscapeForComposerAttachments(in: conversation)
+            }
             return
         } else if model.consumeEscapeForSupplementaryConversation() {
             return
@@ -448,6 +463,23 @@ struct ComposerView: View {
             model.completeConversationReadingAndAdvance(
                 channelID: conversationID
             )
+        }
+    }
+
+    private func dismissEmojiPicker() {
+        guard showEmojiPicker else { return }
+        let restoredSelection = selectionBeforeEmojiPicker
+        showEmojiPicker = false
+        selectionBeforeEmojiPicker = nil
+        restoreComposerFocus(selection: restoredSelection)
+    }
+
+    private func restoreComposerFocus(selection: NSRange?) {
+        Task { @MainActor in
+            await Task.yield()
+            isFocused = true
+            await Task.yield()
+            draftSelection = selection
         }
     }
 
@@ -503,18 +535,59 @@ struct ComposerView: View {
                     url.stopAccessingSecurityScopedResource()
                 }
             }
-            let didSend = switch conversation {
+            let result = switch conversation {
             case .channel:
-                await model.sendComposerMessage(attachments: staged)
+                await model.submitComposerMessage(attachments: staged)
             case .thread:
-                await model.sendThreadComposerMessage(attachments: staged)
+                await model.submitThreadComposerMessage(attachments: staged)
             }
-            if !didSend, activeConversationID == conversationID {
+            if !result.consumedComposer, activeConversationID == conversationID {
                 model.restoreComposerAttachments(staged, to: conversation)
             }
             isSubmitting = false
             isFocused = true
         }
+    }
+
+    private func handleDroppedAttachments(
+        _ urls: [URL],
+        isInstant: Bool
+    ) -> Bool {
+        guard !urls.isEmpty else { return false }
+        if !isInstant {
+            return model.addComposerAttachments(urls, to: conversation)
+        }
+        let acceptedURLs = model.attachmentURLsWithinDiscordLimit(
+            urls,
+            offeringExternalUploadFor: conversation
+        )
+        guard !acceptedURLs.isEmpty else { return true }
+        Task {
+            let scopedURLs = acceptedURLs.filter {
+                $0.startAccessingSecurityScopedResource()
+            }
+            defer {
+                for url in scopedURLs {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
+            await model.sendAttachmentsImmediately(
+                acceptedURLs.map { ForumPostAttachment(url: $0) },
+                to: conversation
+            )
+        }
+        return true
+    }
+
+    private func openComposerAttachment(_ id: UUID) {
+        guard let currentUser = model.snapshot?.currentUser,
+              let presentation = NativeTimelineMediaViewerPlan.composerAttachments(
+                  attachments,
+                  selectedAttachmentID: id,
+                  author: currentUser
+              )
+        else { return }
+        model.mediaViewerPresentation = presentation
     }
 
     private var autocompleteContext: ColonAutocompleteContext? {
@@ -636,6 +709,9 @@ struct ComposerView: View {
         return !isSubmitting
             && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || !attachments.isEmpty)
+            && draft.count <= ChatCharacterLimitPolicy.limit(
+                premiumType: model.snapshot?.currentUser.premiumType
+            )
     }
 
     private var autocompleteSuggestions: [ColonAutocompleteSuggestion] {
@@ -649,7 +725,6 @@ struct ComposerView: View {
             customEmojis: model.orderedCustomEmojis,
             customValue: model.composerText(for:),
             customSource: { model.serverRailGuildsByID[$0.guildID]?.name },
-            favoriteKeys: model.favoriteEmojiKeys,
             discordFavoriteKeys: Set(model.discordFavoriteEmojiKeys),
             usageCounts: model.emojiUsageCounts,
             discordUsageScores: model.discordEmojiUsageScores,
@@ -715,10 +790,39 @@ struct ComposerView: View {
     }
 
     private func cancelCommand() {
+        if GeneralComposerDiscardPolicy.shouldConfirmUnsentContent(
+            isEnabled: confirmsDiscardComposer,
+            itemCount: model.commandComposer.hasMeaningfulDraft ? 1 : 0
+        ) {
+            pendingDiscard = .command
+            return
+        }
+        discardCommand()
+    }
+
+    private func discardCommand() {
         model.commandComposer.cancelActiveCommand()
         commandSuggestionIndex = 0
         isCommandSuggestionsDismissed = false
         isFocused = true
+    }
+
+    private var confirmsDiscardComposer: Bool {
+        SettingsPreferenceStore.shared.value(for: .confirmDiscardComposer)
+            != .bool(false)
+    }
+
+    private func performPendingDiscard() {
+        let request = pendingDiscard
+        pendingDiscard = nil
+        switch request {
+        case .attachments:
+            _ = model.consumeEscapeForComposerAttachments(in: conversation)
+        case .command:
+            discardCommand()
+        case nil:
+            break
+        }
     }
 
     private func submitComposer() {
@@ -938,40 +1042,6 @@ struct ComposerView: View {
         conversation == .channel && model.commandComposer.activeCommand != nil
     }
 
-    private var usesDirectMessageChrome: Bool {
-        conversation == .channel && isDirectMessage
-    }
-
-    private var composerInputMinimumHeight: CGFloat {
-        36
-    }
-
-    private var composerInputAlignment: Alignment {
-        .center
-    }
-
-    private var usesConversationChrome: Bool {
-        ComposerControlPolicy.usesConversationChrome(
-            channelKind: model.selectedChannel?.kind,
-            destination: conversation
-        )
-    }
-
-    private var showsComposerPickers: Bool {
-        ComposerControlPolicy.showsPickers(
-            channelKind: model.selectedChannel?.kind,
-            destination: conversation
-        )
-    }
-
-    private var showsComposerSendButton: Bool {
-        ComposerControlPolicy.showsSendButton(
-            channelKind: model.selectedChannel?.kind,
-            destination: conversation,
-            sendsWithReturn: sendWithReturn
-        )
-    }
-
     private var composerPlaceholder: String {
         ComposerPlaceholderPolicy.text(
             channelName: channelName,
@@ -1024,7 +1094,7 @@ struct ComposerView: View {
         case .channel:
             model.updateDraft(value)
         case .thread:
-            model.threadDraft = value
+            model.updateThreadDraft(value)
         }
     }
 
@@ -1680,7 +1750,6 @@ enum ColonAutocompleteSuggestionFactory {
         customEmojis: [DiscordEmoji],
         customValue: (DiscordEmoji) -> String,
         customSource: (DiscordEmoji) -> String? = { _ in nil },
-        favoriteKeys: Set<String> = [],
         discordFavoriteKeys: Set<String> = [],
         usageCounts: [String: Int] = [:],
         discordUsageScores: [String: Int] = [:],
@@ -1744,9 +1813,9 @@ enum ColonAutocompleteSuggestionFactory {
             ?? !discordUsageScores.isEmpty
         let boundaryExpression = DiscordEmojiAutocompleteRanking.boundaryExpression(query: query)
         let ranked = values.map { suggestion in
-            let isFavorite = usesDiscordSettings
-                ? suggestion.discordUsageKeys.contains(where: discordFavoriteKeys.contains)
-                : favoriteKeys.contains(suggestion.usageKey)
+            let isFavorite = suggestion.discordUsageKeys.contains(
+                where: discordFavoriteKeys.contains
+            )
             let frecency = usesDiscordSettings
                 ? suggestion.discordUsageKeys.compactMap { discordUsageScores[$0] }.max()
                 : nil
@@ -1801,7 +1870,7 @@ struct EmojiAutocompleteList: View {
     }
 }
 
-private struct ComposerAutocompletePanel<Content: View>: View {
+struct ComposerAutocompletePanel<Content: View>: View {
     let heading: String
     let count: Int
     @ViewBuilder let content: () -> Content
@@ -1839,36 +1908,5 @@ private struct ComposerAutocompletePanel<Content: View>: View {
                 style: .continuous
             )
         )
-    }
-}
-
-struct MentionAutocompleteList: View {
-    let heading: String
-    let suggestions: [MentionAutocompleteSuggestion]
-    let selectedIndex: Int
-    let highlight: (Int) -> Void
-    let select: (MentionAutocompleteSuggestion) -> Void
-
-    var body: some View {
-        ComposerAutocompletePanel(heading: heading, count: suggestions.count) {
-            LazyVStack(spacing: 2) {
-                ForEach(suggestions.enumerated(), id: \.element.id) { index, suggestion in
-                    if index > 0,
-                       case .role = suggestion.target,
-                       case .user = suggestions[index - 1].target
-                    {
-                        Divider()
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 3)
-                    }
-                    MentionAutocompleteRow(
-                        suggestion: suggestion,
-                        isSelected: index == selectedIndex,
-                        select: { select(suggestion) },
-                        highlight: { highlight(index) }
-                    )
-                }
-            }
-        }
     }
 }

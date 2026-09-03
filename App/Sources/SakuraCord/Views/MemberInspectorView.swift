@@ -68,6 +68,7 @@ struct MemberInspectorView: View {
     let dismissProfile: () -> Void
     let viewportIdentity: ChannelID?
     let updateViewport: (ClosedRange<Int>) -> Void
+    var presentation = NativeMemberListPresentation()
 
     init(
         sections: [MemberSection],
@@ -78,6 +79,7 @@ struct MemberInspectorView: View {
         selectMember: @escaping (Member) -> Void,
         dismissProfile: @escaping () -> Void,
         viewportIdentity: ChannelID? = nil,
+        presentation: NativeMemberListPresentation = .init(),
         updateViewport: @escaping (ClosedRange<Int>) -> Void = { _ in }
     ) {
         self.sections = sections
@@ -88,6 +90,7 @@ struct MemberInspectorView: View {
         self.selectMember = selectMember
         self.dismissProfile = dismissProfile
         self.viewportIdentity = viewportIdentity
+        self.presentation = presentation
         self.updateViewport = updateViewport
     }
 
@@ -102,6 +105,7 @@ struct MemberInspectorView: View {
             dismissProfile: dismissProfile,
             runsPerformanceAutoScroll: runsPerformanceAutoScroll,
             viewportIdentity: viewportIdentity,
+            presentation: presentation,
             onViewportRange: updateViewport
         )
     }
@@ -364,24 +368,31 @@ private struct MemberSectionHeader: View {
     let section: MemberSection
 
     var body: some View {
-        Text("\(section.title) — \(section.totalCount)")
-            .font(.body.weight(.semibold))
-            .foregroundStyle(section.colorHex.map(Color.init(hex:)) ?? .secondary)
+        HStack(spacing: 6) {
+            if case .role = section.id {
+                RoleColorIndicator(colorHex: section.colorHex, size: 8)
+            }
+            Text("\(section.title) — \(section.totalCount)")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(headerColor)
+        }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
             .padding(.top, 12)
             .padding(.bottom, 5)
+    }
+
+    private var headerColor: Color {
+        guard case .role = section.id else { return .secondary }
+        return SakuraCordAccentColor.color(forRoleColorHex: section.colorHex)
     }
 }
 
 struct MemberRow: View {
     let member: Member
     let isSelected: Bool
-    let isProfilePresented: Bool
-    let profilePresentation: ProfilePresentationState?
     var showsContents = true
     let select: () -> Void
-    let dismissProfile: () -> Void
     @State private var isHovered = false
 
     var body: some View {
@@ -448,22 +459,6 @@ struct MemberRow: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
-        .popover(
-            isPresented: Binding(
-                get: { isSelected && isProfilePresented },
-                set: {
-                    if !$0 {
-                        dismissProfile()
-                    }
-                }
-            ),
-            attachmentAnchor: .rect(.bounds),
-            arrowEdge: .trailing
-        ) {
-            if let profilePresentation {
-                ProfilePresentationContent(presentation: profilePresentation)
-            }
-        }
         .help(member.user.username)
     }
 
@@ -476,16 +471,17 @@ struct MemberAvatar: View {
     let member: Member
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
+        AvatarPresenceView(
+            status: member.status,
+            avatarSize: 34,
+            indicatorSize: 11
+        ) {
             DecoratedAvatarView(
                 name: member.user.displayName,
                 avatarURL: member.guildAvatarURL ?? member.user.avatarURL,
                 decorationURL: member.user.avatarDecorationURL,
                 size: 34
             )
-            PresenceIndicator(status: member.status, size: 11)
-                .overlay(Circle().stroke(Color(nsColor: .controlBackgroundColor), lineWidth: 2))
-                .offset(x: 1, y: 1)
         }
     }
 }
@@ -504,7 +500,8 @@ struct DecoratedAvatarView: View {
                 AnimatedRemoteImage(
                     url: decorationURL,
                     animates: animatesDecoration,
-                    maximumPixelDimension: decorationPixelDimension
+                    maximumPixelDimension: decorationPixelDimension,
+                    accessibilityCategory: .decoration
                 )
                     .frame(width: size * 1.22, height: size * 1.22)
                     .allowsHitTesting(false)
@@ -515,36 +512,6 @@ struct DecoratedAvatarView: View {
 
     var decorationPixelDimension: Int {
         max(1, Int((size * 1.22 * 2).rounded(.up)))
-    }
-}
-
-struct PresenceIndicator: View {
-    let status: PresenceStatus
-    let size: CGFloat
-
-    var body: some View {
-        Circle()
-            .fill(color)
-            .frame(width: size, height: size)
-            .overlay {
-                if status == .dnd {
-                    Capsule().fill(.white).frame(width: size * 0.55, height: 2)
-                } else if status == .idle {
-                    Circle()
-                        .fill(Color(nsColor: .controlBackgroundColor))
-                        .frame(width: size * 0.62, height: size * 0.62)
-                        .offset(x: -size * 0.18, y: -size * 0.18)
-                }
-            }
-    }
-
-    private var color: Color {
-        switch status {
-        case .online: Color(hex: 0x23A55A)
-        case .idle: Color(hex: 0xF0B232)
-        case .dnd: Color(hex: 0xF23F43)
-        case .invisible, .offline: Color(hex: 0x80848E)
-        }
     }
 }
 
@@ -576,7 +543,7 @@ nonisolated enum NameplatePresentationPolicy {
     }
 }
 
-private struct NameplateBackground: View {
+struct NameplateBackground: View {
     let nameplate: Nameplate
     let isAnimated: Bool
     @Environment(\.colorScheme) private var colorScheme
@@ -589,7 +556,8 @@ private struct NameplateBackground: View {
                 AnimatedRemoteImage(
                     url: url,
                     maximumPixelDimension: 512,
-                    contentMode: .fill
+                    contentMode: .fill,
+                    accessibilityCategory: .decoration
                 )
             }
         }

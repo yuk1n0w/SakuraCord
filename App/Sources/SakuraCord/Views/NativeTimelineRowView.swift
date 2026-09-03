@@ -62,8 +62,17 @@ nonisolated enum NativeTimelineMarkdownChromeMetrics {
 }
 
 enum NativeTimelineTimestamp {
-    static func text(for date: Date) -> String {
-        date.formatted(.dateTime.hour().minute())
+    static func text(
+        for date: Date,
+        settings: InterfaceSettingsSnapshot = .defaults,
+        includesSeconds: Bool? = nil
+    ) -> String {
+        InterfaceTimestampFormatter.text(
+            for: date,
+            format: settings.timestampFormat,
+            includesSeconds: includesSeconds
+                ?? settings.includesTimestampSeconds
+        )
     }
 
     /// The bracketed twenty-four hour stamp every IRC client printed at the
@@ -169,6 +178,8 @@ struct NativeTimelineRowActions {
     var edit: (Message, String) -> Void
     var markUnread: (Message) -> Void
     var delete: (Message) -> Void
+    var togglePin: (Message) -> Void
+    var discardFailed: (Message) -> Void
     var react: (String, Message) -> Void
     var openThread: (MessageThreadSummary) -> Void
     var submitComponent: (
@@ -177,6 +188,8 @@ struct NativeTimelineRowActions {
         ComponentInteractionKind,
         [String]
     ) -> Void
+    var checkForUpdates: () -> Void
+    var applyTheme: (SakuraCordSharedTheme) -> Void
 
     init(
         loadEarlier: @escaping () -> Void,
@@ -188,6 +201,7 @@ struct NativeTimelineRowActions {
         edit: @escaping (Message, String) -> Void,
         markUnread: @escaping (Message) -> Void,
         delete: @escaping (Message) -> Void,
+        togglePin: @escaping (Message) -> Void = { _ in },
         react: @escaping (String, Message) -> Void,
         openThread: @escaping (MessageThreadSummary) -> Void,
         submitComponent: @escaping (
@@ -195,7 +209,10 @@ struct NativeTimelineRowActions {
             String,
             ComponentInteractionKind,
             [String]
-        ) -> Void
+        ) -> Void,
+        discardFailed: @escaping (Message) -> Void = { _ in },
+        checkForUpdates: @escaping () -> Void = {},
+        applyTheme: @escaping (SakuraCordSharedTheme) -> Void = { _ in }
     ) {
         self.loadEarlier = loadEarlier
         self.openMessage = openMessage
@@ -206,9 +223,13 @@ struct NativeTimelineRowActions {
         self.edit = edit
         self.markUnread = markUnread
         self.delete = delete
+        self.togglePin = togglePin
+        self.discardFailed = discardFailed
         self.react = react
         self.openThread = openThread
         self.submitComponent = submitComponent
+        self.checkForUpdates = checkForUpdates
+        self.applyTheme = applyTheme
     }
 }
 
@@ -456,36 +477,6 @@ enum NativeTimelineReactionFonts {
 }
 
 struct NativeTimelineRowLayout {
-    struct SearchSectionRegion {
-        let frame: CGRect
-        let iconFrame: CGRect
-        let titleFrame: CGRect
-        let subtitleFrame: CGRect?
-    }
-
-    struct ForwardedSourceRegion {
-        let frame: CGRect
-        let label: String
-        let iconURL: URL?
-        let channelID: ChannelID
-        let guildID: GuildID?
-        let messageID: MessageID?
-        let timestamp: Date
-    }
-
-    struct CommandInvocationRegion {
-        let frame: CGRect
-        let connectorFrame: CGRect
-        let avatarFrame: CGRect?
-        let fallbackAvatarFrame: CGRect?
-        let profileFrame: CGRect
-        let userFrame: CGRect
-        let usedFrame: CGRect
-        let pillFrame: CGRect
-        let commandSymbolFrame: CGRect
-        let commandFrame: CGRect
-    }
-
     struct EphemeralRegion {
         let frame: CGRect
         let eyeFrame: CGRect
@@ -521,6 +512,7 @@ struct NativeTimelineRowLayout {
     struct EmbedRegion {
         enum Kind: Equatable {
             case bareMedia
+            case bubbleIntegratedCard
             case card
         }
 
@@ -548,6 +540,19 @@ struct NativeTimelineRowLayout {
         let mediaIsVideo: Bool
         let mediaAutoplaysInline: Bool
         let accentColor: UInt32?
+        let drawsTopSeparator: Bool
+    }
+
+    struct SakuraCordDeepLinkRegion {
+        let action: SakuraCordDeepLinkAction
+        let componentID: String
+        let frame: CGRect
+        let cardFrame: CGRect
+        let symbolBackgroundFrame: CGRect
+        let symbolFrame: CGRect
+        let titleFrame: CGRect
+        let paletteFrames: [CGRect]
+        let buttonFrame: CGRect
     }
 
     let height: CGFloat
@@ -555,6 +560,7 @@ struct NativeTimelineRowLayout {
     let beginningLayout: NativeTimelineBeginningLayout?
     let searchSectionRegion: SearchSectionRegion?
     let searchCardFrame: CGRect?
+    let bubbleRegion: NativeTimelineBubbleRegion?
     let highlightFrame: CGRect?
 
     /// Where a mention or selection highlight is painted.
@@ -613,6 +619,7 @@ struct NativeTimelineRowLayout {
     let attachmentRegions: [AttachmentRegion]
     let embedFrames: [CGRect]
     let embedRegions: [EmbedRegion]
+    let sakuraCordDeepLinkRegions: [SakuraCordDeepLinkRegion]
     let componentFrames: [CGRect]
     let componentLayouts: [NativeTimelineComponentLayout]
     let stickerFrames: [CGRect]
@@ -621,6 +628,7 @@ struct NativeTimelineRowLayout {
     let addReactionFrame: CGRect?
     let ephemeralRegion: EphemeralRegion?
     let failedFrame: CGRect?
+    let pinnedAtFrame: CGRect?
 
     static func make(
         item: NativeMessageTimelineItem,
@@ -684,6 +692,7 @@ struct NativeTimelineRowLayout {
             beginningLayout: beginningLayout,
             searchSectionRegion: nil,
             searchCardFrame: nil,
+            bubbleRegion: nil,
             highlightFrame: nil,
             messageBubbleFrame: nil,
             messageBubbleIsOutgoing: false,
@@ -710,6 +719,7 @@ struct NativeTimelineRowLayout {
             attachmentRegions: [],
             embedFrames: [],
             embedRegions: [],
+            sakuraCordDeepLinkRegions: [],
             componentFrames: [],
             componentLayouts: [],
             stickerFrames: [],
@@ -717,7 +727,8 @@ struct NativeTimelineRowLayout {
             reactionRegions: [],
             addReactionFrame: nil,
             ephemeralRegion: nil,
-            failedFrame: nil
+            failedFrame: nil,
+            pinnedAtFrame: nil
         )
     }
 
@@ -733,55 +744,59 @@ extension NativeTimelineRowLayout {
         var layout: NativeTimelineRowLayout {
         let message = row.message
         let searchContext = row.searchContext
-        let horizontalInset: CGFloat = searchContext == nil ? 14 : 22
-        let avatarWidth: CGFloat = 38
-        let columnGap: CGFloat = 12
-        let ordinaryContentX = horizontalInset + avatarWidth + columnGap
+        let bubbleContext = NativeTimelineBubbleLayout.context(
+            for: message,
+            model: model
+        )
+        let usesBubbles = bubbleContext.isEnabled
+        let isOutgoingBubble = bubbleContext.isOutgoing
+        let messageSpacing = CGFloat(model?.appearanceSettings.messageSpacing ?? AppearanceSettingsSnapshot.defaultMessageSpacing)
+        let horizontalInset: CGFloat = searchContext == nil
+            ? MessageRowLayoutMetrics.horizontalInset
+            : 22
+        let avatarWidth = MessageRowLayoutMetrics.avatarDiameter
+        let columnGap = MessageRowLayoutMetrics.avatarColumnGap
+        let usesComponentsV2 = message.flags.contains(.isComponentsV2)
+        let chatSettings = model?.chatSettings ?? .defaults
+        let unstyledContentPresentation = NativeTimelineTextPresentation.make(
+            row: row,
+            model: model
+        )
+        let contentPresentation = isOutgoingBubble
+            ? NativeTimelineTextPresentation.outgoingBubble(
+                unstyledContentPresentation
+            )
+            : unstyledContentPresentation
+        let preferredBubbleContentWidth =
+            NativeTimelineBubbleLayout.preferredContentWidth(
+                for: message,
+                row: row,
+                content: contentPresentation,
+                availableWidth: width,
+                isEnabled: usesBubbles
+            )
+        let isGenerated = message.type.hasGeneratedContent
+        let bubbleColumn = NativeTimelineBubbleLayout.column(
+            availableWidth: width,
+            horizontalInset: horizontalInset,
+            avatarWidth: avatarWidth,
+            columnGap: columnGap,
+            isGenerated: isGenerated,
+            context: bubbleContext,
+            preferredContentWidth: preferredBubbleContentWidth
+        )
+        let contentX = bubbleColumn.contentX
+        let contentWidth = bubbleColumn.contentWidth
         let ordinaryContentWidth = max(
             80,
-            width - ordinaryContentX - horizontalInset
+            width - contentX - horizontalInset
         )
-        let isGenerated = message.type.hasGeneratedContent
-        let contentX: CGFloat = isGenerated ? horizontalInset + 58 : ordinaryContentX
-        let contentWidth = max(80, width - contentX - horizontalInset)
-        var prefixHeight: CGFloat = 0
-
-        var searchSectionRegion: SearchSectionRegion?
-        if let searchContext, searchContext.showsSectionHeader {
-            let sectionFrame = CGRect(
-                x: 14,
-                y: 8,
-                width: max(1, width - 28),
-                height: searchContext.sectionSubtitle == nil ? 24 : 34
-            )
-            let iconFrame = CGRect(
-                x: sectionFrame.minX,
-                y: sectionFrame.minY + 2,
-                width: 20,
-                height: 20
-            )
-            let titleFrame = CGRect(
-                x: iconFrame.maxX + 7,
-                y: sectionFrame.minY,
-                width: max(1, sectionFrame.maxX - iconFrame.maxX - 7),
-                height: 18
-            )
-            let subtitleFrame = searchContext.sectionSubtitle.map { _ in
-                CGRect(
-                    x: titleFrame.minX,
-                    y: titleFrame.maxY,
-                    width: titleFrame.width,
-                    height: 14
-                )
-            }
-            searchSectionRegion = SearchSectionRegion(
-                frame: sectionFrame,
-                iconFrame: iconFrame,
-                titleFrame: titleFrame,
-                subtitleFrame: subtitleFrame
-            )
-            prefixHeight = sectionFrame.maxY + 4
-        }
+        let searchPrefix = NativeTimelineSearchPrefixLayout.make(
+            context: searchContext,
+            width: width
+        )
+        let searchSectionRegion = searchPrefix.region
+        var prefixHeight = searchPrefix.height
 
         var daySeparatorFrame: CGRect?
         if row.startsDay {
@@ -807,12 +822,14 @@ extension NativeTimelineRowLayout {
 
         let highlightInsets = MessageRowLayoutMetrics.highlightInsets(
             hasReplyPreview: row.replyMessageID != nil,
-            isEditing: false
+            isEditing: false,
+            messageSpacing: messageSpacing
         )
         let externalTopSeparation = MessageRowLayoutMetrics.separation(
             startsGroup: row.startsGroup,
             followsTimelineSeparator: row.startsDay || isUnreadBoundary,
-            highlightTopInset: highlightInsets.top
+            highlightTopInset: highlightInsets.top,
+            messageSpacing: messageSpacing
         )
         let highlightMinY = prefixHeight
             + (searchContext == nil ? externalTopSeparation : 4)
@@ -854,7 +871,20 @@ extension NativeTimelineRowLayout {
         var timestampFrame: CGRect?
         var editedFrame: CGRect?
         var loadingIndicatorFrame: CGRect?
-        if row.startsGroup, !isGenerated {
+        let showsIncomingIdentity = !usesBubbles || bubbleContext.showsAvatar
+        let showsIncomingAvatar = !isGenerated
+            && !isOutgoingBubble
+            && showsIncomingIdentity
+            && (usesBubbles ? row.endsGroup : row.startsGroup)
+        if showsIncomingAvatar {
+            avatarFrame = CGRect(
+                origin: CGPoint(x: horizontalInset, y: verticalOffset),
+                size: CGSize(width: avatarWidth, height: avatarWidth)
+            )
+        }
+        if row.startsGroup, !isGenerated, !isOutgoingBubble,
+           showsIncomingIdentity
+        {
             let author = model.map {
                 $0.authorPresentation(for: message).user
             } ?? message.author
@@ -865,12 +895,6 @@ extension NativeTimelineRowLayout {
             let authorWidth = min(
                 ordinaryContentWidth,
                 NativeTimelineRowLayout.measuredTextWidth(author.displayName, font: authorFont)
-            )
-            avatarFrame = CGRect(
-                x: horizontalInset,
-                y: verticalOffset,
-                width: avatarWidth,
-                height: avatarWidth
             )
             authorFrame = CGRect(
                 x: contentX,
@@ -902,7 +926,10 @@ extension NativeTimelineRowLayout {
             }
             headerX += 7
             let timestampFont = NSFont.preferredFont(forTextStyle: .caption1)
-            let timestamp = NativeTimelineTimestamp.text(for: message.timestamp)
+            let timestamp = NativeTimelineTimestamp.text(
+                for: message.timestamp,
+                settings: model?.interfaceSettings ?? .defaults
+            )
             let timestampWidth = NativeTimelineRowLayout.measuredTextWidth(
                 timestamp,
                 font: timestampFont
@@ -914,7 +941,9 @@ extension NativeTimelineRowLayout {
                 height: 13
             )
             headerX = timestampFrame?.maxX ?? headerX
-            if message.editedTimestamp != nil {
+            if message.editedTimestamp != nil,
+               model?.chatSettings.showsEditedMarkers != false
+            {
                 headerX += 7
                 let editedFont = NSFont.preferredFont(forTextStyle: .caption2)
                 editedFrame = CGRect(
@@ -947,7 +976,9 @@ extension NativeTimelineRowLayout {
                 + MessageRowLayoutMetrics.authorToContentSpacing(
                     isCommandResponse: message.type == .chatInputCommand
                 )
-        } else if !isGenerated {
+        } else if !isGenerated, !isOutgoingBubble, showsIncomingIdentity,
+                  !showsIncomingAvatar
+        {
             compactTimestampFrame = CGRect(
                 x: horizontalInset,
                 y: verticalOffset,
@@ -964,6 +995,11 @@ extension NativeTimelineRowLayout {
                 width: 16,
                 height: MessageRowLayoutMetrics.compactContentHeight
             )
+        }
+
+        let bubbleStartY = verticalOffset
+        if usesBubbles {
+            verticalOffset += 8
         }
 
         var forwardedHeaderFrame: CGRect?
@@ -983,24 +1019,10 @@ extension NativeTimelineRowLayout {
 
         var contentFrame: CGRect?
         var hasRichContent = false
-        let usesComponentsV2 = message.flags.contains(.isComponentsV2)
-        let textPlan =
-            if message.type == .call {
-                NativeTimelineTextPlan.make(
-                    for: message,
-                    currentUserID: model?.snapshot?.currentUser.id
-                )
-            } else {
-                row.textPlan
-            }
-        let contentPresentation =
-            usesComponentsV2
-                ? NativeTimelineTextPresentation.empty
-                : NativeTimelineTextPresentation.make(
-                    message: message,
-                    plan: textPlan,
-                    model: model
-                )
+        let inlineMediaMaximumWidth = min(
+            contentWidth,
+            chatSettings.inlineMediaSize.maximumWidth
+        )
         if let attributedContent = contentPresentation.attributedContent {
             let textHeight = NativeTimelineRowLayout.measuredTextHeight(
                 contentPresentation.framesetter,
@@ -1020,7 +1042,7 @@ extension NativeTimelineRowLayout {
             }
             let plan = InlineWrappingLayoutPlan.frames(
                 sizes: contentPresentation.linkedImages.map { $0.displaySize },
-                maximumWidth: contentWidth,
+                maximumWidth: inlineMediaMaximumWidth,
                 horizontalSpacing: 4,
                 verticalSpacing: 4
             )
@@ -1042,7 +1064,7 @@ extension NativeTimelineRowLayout {
             if hasRichContent {
                 verticalOffset += 8
             }
-            let galleryWidth = min(500, max(180, contentWidth))
+            let galleryWidth = min(500, max(180, inlineMediaMaximumWidth))
             let galleryFrames = MediaGalleryPlan.frames(
                 count: message.attachments.count,
                 width: galleryWidth,
@@ -1081,9 +1103,29 @@ extension NativeTimelineRowLayout {
         }
 
         var embedRegions: [EmbedRegion] = []
-        if !usesComponentsV2 {
+        var sakuraCordDeepLinkRegions: [SakuraCordDeepLinkRegion] = []
+        if !usesComponentsV2, chatSettings.expandsEmbedsByDefault,
+           chatSettings.showsAutomaticLinkPreviews {
+            for (index, deepLink) in row.sakuraCordDeepLinks.enumerated() {
+                let deepLinkY = verticalOffset + (hasRichContent ? 8 : 0)
+                let region = NativeTimelineSakuraCordDeepLinkLayout.make(
+                    deepLink,
+                    componentIndex: index,
+                    origin: CGPoint(x: contentX, y: deepLinkY),
+                    maximumWidth: inlineMediaMaximumWidth
+                )
+                sakuraCordDeepLinkRegions.append(region)
+                verticalOffset = region.frame.maxY
+                hasRichContent = true
+            }
+        }
+        if !usesComponentsV2, chatSettings.expandsEmbedsByDefault {
             let visibleEmbeds =
-                MessageEmbedPresentation.visibleEmbeds(for: message)
+                MessageEmbedPresentation.visibleEmbeds(
+                    for: message,
+                    showsAutomaticLinkPreviews:
+                        chatSettings.showsAutomaticLinkPreviews
+                )
             embedRegions.reserveCapacity(visibleEmbeds.count)
             for embed in visibleEmbeds {
                 let embedY = verticalOffset + (hasRichContent ? 8 : 0)
@@ -1093,7 +1135,9 @@ extension NativeTimelineRowLayout {
                     model: model,
                     attachments: message.attachments,
                     origin: CGPoint(x: contentX, y: embedY),
-                    maximumWidth: min(contentWidth, 520)
+                    maximumWidth: inlineMediaMaximumWidth,
+                    integratesWithBubble: usesBubbles,
+                    drawsTopSeparator: usesBubbles && hasRichContent
                 ) else { continue }
                 embedRegions.append(region)
                 verticalOffset = region.frame.maxY
@@ -1108,7 +1152,9 @@ extension NativeTimelineRowLayout {
             message: message,
             model: model,
             origin: CGPoint(x: contentX, y: componentY),
-            maximumWidth: min(contentWidth, 520)
+            maximumWidth: inlineMediaMaximumWidth,
+            integratesWithBubble: usesBubbles,
+            drawsTopSeparator: usesBubbles && hasRichContent
         ) {
             componentLayouts.append(componentLayout)
             verticalOffset = componentLayout.frame.maxY
@@ -1216,6 +1262,21 @@ extension NativeTimelineRowLayout {
             hasRichContent = true
         }
 
+        var bubbleRegion: NativeTimelineBubbleRegion?
+        if usesBubbles, hasRichContent {
+            verticalOffset += 8
+            let region = NativeTimelineBubbleLayout.region(
+                contentX: contentX,
+                contentWidth: contentWidth,
+                minY: bubbleStartY,
+                maxY: verticalOffset,
+                isOutgoing: isOutgoingBubble,
+                showsTail: row.endsGroup
+            )
+            bubbleRegion = region
+            avatarFrame = NativeTimelineBubbleLayout.bottomAlignedAvatarFrame(avatarFrame, to: region)
+        }
+
         var reactionRegions: [ReactionRegion] = []
         var addReactionFrame: CGRect?
         let presentedReactions = MessageReactionPresentation.items(
@@ -1227,7 +1288,9 @@ extension NativeTimelineRowLayout {
             }
             let sizes = presentedReactions.map { reactionSize($0) }
                 + [CGSize(
-                    width: ReactionActionMenuPresentation.inline.width,
+                    width: ReactionActionMenuPresentation.inline.width(
+                        enlarged: false
+                    ),
                     height: MessageReactionMetrics.pillHeight
                 )]
             let wrapping = InlineWrappingLayoutPlan.frames(
@@ -1280,6 +1343,20 @@ extension NativeTimelineRowLayout {
             verticalOffset += 14
         }
 
+        var pinnedAtFrame: CGRect?
+        if row.pinnedAt != nil {
+            if hasRichContent || !presentedReactions.isEmpty || ephemeralRegion != nil {
+                verticalOffset += 6
+            }
+            pinnedAtFrame = CGRect(
+                x: contentX,
+                y: verticalOffset,
+                width: contentWidth,
+                height: 16
+            )
+            verticalOffset += 16
+        }
+
         let visibleContentMaxY = max(
             verticalOffset,
             avatarFrame?.maxY ?? 0,
@@ -1291,7 +1368,7 @@ extension NativeTimelineRowLayout {
                 visibleContentMaxY + highlightInsets.bottom,
                 highlightMinY
                     + highlightInsets.top
-                    + (row.startsGroup && !isGenerated
+                    + (showsIncomingAvatar
                         ? MessageRowLayoutMetrics.avatarDiameter
                         : MessageRowLayoutMetrics.compactContentHeight)
                     + highlightInsets.bottom
@@ -1305,11 +1382,14 @@ extension NativeTimelineRowLayout {
                 height: max(0, rowHeight - highlightMinY - searchBottomInset)
             )
         }
-        let highlightFrame = CGRect(
-            x: searchCardFrame?.minX ?? 0,
-            y: highlightMinY,
-            width: searchCardFrame?.width ?? width,
-            height: searchCardFrame?.height ?? max(0, rowHeight - highlightMinY)
+        let highlightFrame = NativeTimelineBubbleLayout.highlightFrame(
+            isEnabled: usesBubbles,
+            bubbleRegion: bubbleRegion,
+            stickerFrames: stickerFrames,
+            searchCardFrame: searchCardFrame,
+            highlightMinY: highlightMinY,
+            rowHeight: rowHeight,
+            width: width
         )
 
         return NativeTimelineRowLayout(
@@ -1318,6 +1398,7 @@ extension NativeTimelineRowLayout {
             beginningLayout: nil,
             searchSectionRegion: searchSectionRegion,
             searchCardFrame: searchCardFrame,
+            bubbleRegion: bubbleRegion,
             highlightFrame: highlightFrame,
             messageBubbleFrame: nil,
             messageBubbleIsOutgoing: false,
@@ -1344,6 +1425,7 @@ extension NativeTimelineRowLayout {
             attachmentRegions: attachmentRegions,
             embedFrames: embedFrames,
             embedRegions: embedRegions,
+            sakuraCordDeepLinkRegions: sakuraCordDeepLinkRegions,
             componentFrames: componentFrames,
             componentLayouts: componentLayouts,
             stickerFrames: stickerFrames,
@@ -1351,7 +1433,8 @@ extension NativeTimelineRowLayout {
             reactionRegions: reactionRegions,
             addReactionFrame: addReactionFrame,
             ephemeralRegion: ephemeralRegion,
-            failedFrame: failedFrame
+            failedFrame: failedFrame,
+            pinnedAtFrame: pinnedAtFrame
         )
         }
     }
@@ -1714,4 +1797,36 @@ extension NativeTimelineRowLayout {
         return ceil(CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)))
     }
 
+}
+
+extension NativeTimelineRowLayout {
+    struct SearchSectionRegion {
+        let frame: CGRect
+        let iconFrame: CGRect
+        let titleFrame: CGRect
+        let subtitleFrame: CGRect?
+    }
+
+    struct ForwardedSourceRegion {
+        let frame: CGRect
+        let label: String
+        let iconURL: URL?
+        let channelID: ChannelID
+        let guildID: GuildID?
+        let messageID: MessageID?
+        let timestamp: Date
+    }
+
+    struct CommandInvocationRegion {
+        let frame: CGRect
+        let connectorFrame: CGRect
+        let avatarFrame: CGRect?
+        let fallbackAvatarFrame: CGRect?
+        let profileFrame: CGRect
+        let userFrame: CGRect
+        let usedFrame: CGRect
+        let pillFrame: CGRect
+        let commandSymbolFrame: CGRect
+        let commandFrame: CGRect
+    }
 }

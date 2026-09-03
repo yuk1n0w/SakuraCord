@@ -146,10 +146,7 @@ struct SelectableMessageTextView: NSViewRepresentable {
             .foregroundColor: NSColor.linkColor,
             .underlineStyle: 0
         ]
-        textView.selectedTextAttributes = [
-            .backgroundColor: NSColor.selectedTextBackgroundColor,
-            .foregroundColor: NSColor.selectedTextColor
-        ]
+        textView.applySakuraCordTextSelectionAppearance()
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         textView.onMentionClick = onMentionClick
         textView.onURLClick = onURLClick
@@ -162,6 +159,7 @@ struct SelectableMessageTextView: NSViewRepresentable {
         textView.onURLClick = onURLClick
         textView.model = model
         textView.isSelectable = isSelectable
+        textView.applySakuraCordTextSelectionAppearance()
         configureTextContainer(textView.textContainer)
         let signature = RichMessageRenderSignature(
             source: source,
@@ -244,9 +242,21 @@ struct SelectableMessageTextView: NSViewRepresentable {
             guard let richTextView = textView as? RichMessageNSTextView else {
                 return false
             }
+            var linkRange = NSRange(location: 0, length: 0)
+            richTextView.attributedString().attribute(
+                .link,
+                at: charIndex,
+                effectiveRange: &linkRange
+            )
+            let displayedText = linkRange.length > 0
+                ? richTextView.attributedString().attributedSubstring(
+                    from: linkRange
+                ).string
+                : nil
             return MessageLinkActivator.activate(
                 url,
                 model: richTextView.model,
+                displayedText: displayedText,
                 customHandler: richTextView.onURLClick
             )
         }
@@ -439,7 +449,10 @@ nonisolated enum RichMessageAttributedText {
     ) -> NSAttributedString {
         let attachment = NSTextAttachment()
         let image = ComposerEmojiImageStore.shared.cachedImage(for: emoji.rawToken)
-            ?? NSImage(systemSymbolName: "face.smiling", accessibilityDescription: emoji.name)
+            ?? SakuraCordSystemSymbol.image(
+                named: SakuraCordSystemSymbol.emojiFaceGrinning,
+                accessibilityDescription: emoji.name
+            )
         attachment.image = image
         attachment.bounds = CGRect(
             x: 0,

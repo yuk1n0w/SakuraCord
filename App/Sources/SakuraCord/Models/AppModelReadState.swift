@@ -133,19 +133,27 @@ extension AppModel {
     }
 
     func refreshDockBadge() {
+        let count: Int? = switch notificationPreferences.dockBadgeStyle {
+        case .mentions: readState.totalMentions
+        case .unreadConversations:
+            readState.unreadPresentationProjection().unreadByChannelID.values.count { $0 }
+        case .off: nil
+        }
         notificationService.setDockBadge(
-            readState.totalMentions,
-            enabled: notificationPreferences.showsDockBadge
+            count ?? 0,
+            enabled: count != nil
         )
     }
 
     func acknowledgeIfEligible(channelID: ChannelID) {
         guard let target = readState.updatePresentation(channelID: channelID) else { return }
-        scheduleAcknowledgement(channelID: channelID, messageID: target)
+        scheduleAutomaticAcknowledgement(channelID: channelID, messageID: target)
     }
 
     func acknowledgeForumVisitIfNeeded(channelID: ChannelID, now: Date = .now) {
-        guard !runsChatPerformanceBenchmark else { return }
+        guard !runsChatPerformanceBenchmark,
+              chatSettings.readAcknowledgementMode == .automatic
+        else { return }
         guard selectedChannelID == channelID,
               selectedChannel?.kind == .forum,
               readState.shouldAcknowledgeForumVisit(channelID: channelID),
@@ -208,6 +216,28 @@ extension AppModel {
                 return
             }
         }
+    }
+
+    func scheduleAutomaticAcknowledgement(
+        channelID: ChannelID,
+        messageID: MessageID
+    ) {
+        guard chatSettings.readAcknowledgementMode == .automatic else { return }
+        scheduleAcknowledgement(channelID: channelID, messageID: messageID)
+    }
+
+    func cancelScheduledAutomaticAcknowledgements() {
+        for (channelID, task) in acknowledgementTasks {
+            task.cancel()
+            if let pending = readState.entries[channelID]?.pendingAcknowledgementID {
+                readState.failAcknowledgement(
+                    channelID: channelID,
+                    messageID: pending
+                )
+            }
+        }
+        acknowledgementTasks.removeAll()
+        refreshUnreadPresentation()
     }
 
     func enqueueAcknowledgement(

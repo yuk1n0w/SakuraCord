@@ -863,6 +863,7 @@ extension NativeMessageTimelineCoordinator {
                 resolvedRow = MessageRowPresentation(
                     message: row.message,
                     startsGroup: row.startsGroup,
+                    endsGroup: row.endsGroup,
                     startsDay: startsDay,
                     replyPreview: row.replyPreview,
                     isReplyAvailable: row.isReplyAvailable,
@@ -945,6 +946,15 @@ extension NativeMessageTimelineCoordinator {
                 ) { [weak self] _ in
                     MainActor.assumeIsolated {
                         self?.scheduleModelRowsUpdate()
+                    }
+                },
+                center.addObserver(
+                    forName: .sakuraCordThemeDidCommit,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.canvas?.invalidatePresentationCaches()
                     }
                 },
             ]
@@ -1114,7 +1124,7 @@ extension NativeMessageTimelineCoordinator {
         }
 
         func contentOriginY(viewportHeight: CGFloat) -> CGFloat {
-            let topInset = if parent.conversation == .search {
+            let topInset = if parent.conversation.alignsUnderfilledContentToTop {
                 ChatDetailLayoutPolicy.timelineTopPadding
             } else {
                 NativeMessageTimelineLayoutPolicy.shortContentTopInset(
@@ -1613,11 +1623,15 @@ extension NativeMessageTimelineCoordinator {
                 // spacer before telemetry and live-arrival stress begin.
                 handoffPhase = "position-shift"
                 let initialRect = scrollView.contentView.bounds
+                let scrollsTowardLater =
+                    parent.conversation.loaderKind == .pins
+                let positionShift =
+                    bottomInset + min(160, initialRect.height * 0.25)
                 scroll(
                     toDocumentY:
-                        initialRect.minY
-                        - bottomInset
-                        - min(160, initialRect.height * 0.25),
+                        scrollsTowardLater
+                            ? initialRect.minY + positionShift
+                            : initialRect.minY - positionShift,
                     scrollView: scrollView
                 )
                 handoffPhase = "settling"
@@ -1652,7 +1666,9 @@ extension NativeMessageTimelineCoordinator {
                 // Exercise native pagination directly. This synthetic workload
                 // must never invoke the user-interaction callback: that callback
                 // deliberately unblocks read acknowledgements for real input.
-                beginPerformanceBenchmarkPaginationIntent()
+                beginPerformanceBenchmarkPaginationIntent(
+                    towardLater: scrollsTowardLater
+                )
                 let signpost = Self.performanceSignposter.beginInterval(
                     "MessageTimelineAutoScrollBenchmark"
                 )
@@ -1773,7 +1789,9 @@ extension NativeMessageTimelineCoordinator {
                         "\(summary, privacy: .public)"
                     )
                     self?.isPreparingOrRunningPerformanceBenchmark = false
-                    self?.endPerformanceBenchmarkPaginationIntent()
+                    self?.endPerformanceBenchmarkPaginationIntent(
+                        towardLater: scrollsTowardLater
+                    )
                     self?.performanceDisplayLinkTicker = nil
                     self?.performanceBenchmarkFinish = nil
                     self?.finishScrollActivity()
@@ -1825,15 +1843,23 @@ extension NativeMessageTimelineCoordinator {
                         NativeTimelineBenchmarkScrollPolicy.distance(
                             tickInterval: tickInterval
                         )
+                    let targetDocumentY = scrollsTowardLater
+                        ? visibleRect.minY + scrollDistance
+                        : visibleRect.minY - scrollDistance
                     scroll(
-                        toDocumentY:
-                            visibleRect.minY - scrollDistance,
+                        toDocumentY: targetDocumentY,
                         scrollView: scrollView
                     )
                     let didAdvance =
-                        scrollView.contentView.bounds.minY
-                        < visibleRect.minY - 0.5
-                    if !didAdvance, parent.hasMoreMessages {
+                        scrollsTowardLater
+                            ? scrollView.contentView.bounds.minY
+                                > visibleRect.minY + 0.5
+                            : scrollView.contentView.bounds.minY
+                                < visibleRect.minY - 0.5
+                    let hasMoreHistory = scrollsTowardLater
+                        ? parent.hasMoreLaterMessages
+                        : parent.hasMoreMessages
+                    if !didAdvance, hasMoreHistory {
                         historyStarvedTicks += 1
                         consecutiveHistoryStarvedTicks += 1
                         maximumHistoryStarvedTicks = max(
@@ -1849,10 +1875,18 @@ extension NativeMessageTimelineCoordinator {
                     )
                     switch benchmarkController.recordTick(
                         uptime: tickUptime,
-                        previousDocumentY: visibleRect.minY,
-                        currentDocumentY: scrollView.contentView.bounds.minY,
-                        hasMoreMessages: parent.hasMoreMessages,
-                        paginationFailed: parent.earlierHistoryLoadFailed
+                        previousDocumentY:
+                            scrollsTowardLater
+                                ? -visibleRect.minY : visibleRect.minY,
+                        currentDocumentY:
+                            scrollsTowardLater
+                                ? -scrollView.contentView.bounds.minY
+                                : scrollView.contentView.bounds.minY,
+                        hasMoreMessages: hasMoreHistory,
+                        paginationFailed:
+                            scrollsTowardLater
+                                ? parent.laterHistoryLoadFailed
+                                : parent.earlierHistoryLoadFailed
                     ) {
                     case .continueBenchmark:
                         break
@@ -1873,14 +1907,25 @@ extension NativeMessageTimelineCoordinator {
             performanceAutoScrollStartOperation()
         }
 
-        func beginPerformanceBenchmarkPaginationIntent() {
-            isEarlierHistoryScrollGestureActive = true
-            hasEarlierHistoryScrollIntent = true
-            hasIssuedEarlierHistoryRequest = parent.isLoadingEarlier
+        func beginPerformanceBenchmarkPaginationIntent(towardLater: Bool) {
+            if towardLater {
+                isLaterHistoryScrollGestureActive = true
+                hasLaterHistoryScrollIntent = true
+                hasIssuedLaterHistoryRequest = parent.isLoadingLater
+            } else {
+                isEarlierHistoryScrollGestureActive = true
+                hasEarlierHistoryScrollIntent = true
+                hasIssuedEarlierHistoryRequest = parent.isLoadingEarlier
+            }
         }
 
-        func endPerformanceBenchmarkPaginationIntent() {
-            isEarlierHistoryScrollGestureActive = false
-            hasEarlierHistoryScrollIntent = false
+        func endPerformanceBenchmarkPaginationIntent(towardLater: Bool) {
+            if towardLater {
+                isLaterHistoryScrollGestureActive = false
+                hasLaterHistoryScrollIntent = false
+            } else {
+                isEarlierHistoryScrollGestureActive = false
+                hasEarlierHistoryScrollIntent = false
+            }
         }
 }

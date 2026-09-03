@@ -197,6 +197,10 @@ private struct ChatWorkspaceSupplementaryContent: View {
                     selectMember: model.selectMember,
                     dismissProfile: model.dismissInspectorProfile,
                     viewportIdentity: model.selectedChannelID,
+                    presentation: NativeMemberListPresentation(
+                        showsActivityDetails: model.interfaceSettings.showsActivityDetails,
+                        showsRoleColors: model.interfaceSettings.showsRoleColors
+                    ),
                     updateViewport: model.updateMemberListViewport
                 )
                 .frame(width: ChatChromeMetrics.memberListWidth)
@@ -208,7 +212,7 @@ private struct ChatWorkspaceSupplementaryContent: View {
         case .messageSearch:
             if toolbarSearchFieldMetrics.isValid {
                 MessageSearchPanelView(model: model)
-                    .frame(width: toolbarSearchFieldMetrics.panelWidth)
+                    .frame(width: ChatChromeMetrics.memberListWidth)
                     .frame(maxHeight: .infinity)
             }
         }

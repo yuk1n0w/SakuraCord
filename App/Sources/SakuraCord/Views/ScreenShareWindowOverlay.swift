@@ -11,6 +11,7 @@ struct CommunicationWindowOverlays: View {
     var body: some View {
         ZStack {
             ForwardMessageWindowOverlay(model: model)
+            MessageSearchFiltersWindowOverlay(model: model)
             ScreenShareWindowOverlay(model: model)
         }
     }
@@ -185,7 +186,7 @@ private struct ScreenSharePreviewSurface: View {
         .buttonStyle(.plain)
         .foregroundStyle(.white)
         .glassEffect(
-            .regular.tint(Color.accentColor).interactive(),
+            .regular.tint(SakuraCordAccentColor.color).interactive(),
             in: Capsule()
         )
         .disabled(model.isStartingScreenShare)
@@ -337,7 +338,7 @@ private struct ScreenSharePreviewFooter: View {
             .foregroundStyle(canStartSharing ? Color.white : Color.secondary)
             .glassEffect(
                 canStartSharing
-                    ? .regular.tint(Color.accentColor).interactive()
+                    ? .regular.tint(SakuraCordAccentColor.color).interactive()
                     : .regular,
                 in: Capsule()
             )
@@ -381,7 +382,7 @@ struct ScreenShareFrameRatePopover: View {
                         Spacer()
                         if model.screenShareSettings.frameRate == frameRate {
                             Image(systemName: "checkmark")
-                                .foregroundStyle(Color.accentColor)
+                                .foregroundStyle(SakuraCordAccentColor.color)
                         }
                     }
                     .padding(.horizontal, 8)

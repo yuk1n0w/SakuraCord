@@ -11,9 +11,9 @@ source "$ROOT_DIR/script/release_metadata.sh"
 source "$ROOT_DIR/script/debug_credentials_config.sh"
 
 case "$MODE" in
-  package|package-release|run|run-release|--offline|--offline-long-server-list|--offline-forum-performance|--offline-chat-performance|--offline-chat-performance-autoscroll|--offline-chat-performance-live-autoscroll|--offline-chat-media-performance-autoscroll|--offline-incoming-private-call|--media-viewer-benchmark|--verify|--debug|--logs|--telemetry) ;;
+  package|package-release|run|run-release|--offline|--offline-long-server-list|--offline-forum-performance|--offline-chat-performance|--offline-chat-performance-autoscroll|--offline-chat-performance-live-autoscroll|--offline-chat-media-performance-autoscroll|--offline-pins-performance-autoscroll|--offline-incoming-private-call|--media-viewer-benchmark|--verify|--debug|--logs|--telemetry) ;;
   *)
-    echo "usage: $0 [package|package-release|run|run-release|--offline|--offline-long-server-list|--offline-forum-performance|--offline-chat-performance|--offline-chat-performance-autoscroll|--offline-chat-performance-live-autoscroll|--offline-chat-media-performance-autoscroll|--offline-incoming-private-call|--media-viewer-benchmark|--verify|--debug|--logs|--telemetry]" >&2
+    echo "usage: $0 [package|package-release|run|run-release|--offline|--offline-long-server-list|--offline-forum-performance|--offline-chat-performance|--offline-chat-performance-autoscroll|--offline-chat-performance-live-autoscroll|--offline-chat-media-performance-autoscroll|--offline-pins-performance-autoscroll|--offline-incoming-private-call|--media-viewer-benchmark|--verify|--debug|--logs|--telemetry]" >&2
     exit 2
     ;;
 esac
@@ -30,6 +30,9 @@ FRAMEWORKS="$CONTENTS/Frameworks"
 RESOURCES="$CONTENTS/Resources"
 PRODUCT_NAME="$SAKURACORD_PRODUCT_NAME"
 BUNDLE_SHORT_VERSION="$(sakuracord_release_version "$ROOT_DIR")"
+BUNDLE_DISPLAY_VERSION="$(
+  sakuracord_bundle_display_version "$ROOT_DIR" "$BUNDLE_SHORT_VERSION"
+)"
 BUNDLE_BUILD_VERSION="${SAKURACORD_BUILD_NUMBER:-1}"
 if [[ ! "$BUNDLE_BUILD_VERSION" =~ ^[0-9]+$ ]]; then
   echo "SAKURACORD_BUILD_NUMBER must be an integer." >&2
@@ -38,6 +41,11 @@ fi
 UPDATES_ENABLED="${SAKURACORD_ENABLE_UPDATES:-0}"
 if [[ "$UPDATES_ENABLED" != "0" && "$UPDATES_ENABLED" != "1" ]]; then
   echo "SAKURACORD_ENABLE_UPDATES must be 0 or 1." >&2
+  exit 2
+fi
+RELEASE_TRACK="${SAKURACORD_RELEASE_TRACK:-regular}"
+if [[ "$RELEASE_TRACK" != "regular" && "$RELEASE_TRACK" != "nightly" ]]; then
+  echo "SAKURACORD_RELEASE_TRACK must be regular or nightly." >&2
   exit 2
 fi
 sakuracord_resolve_insecure_debug_credentials "$ROOT_DIR"
@@ -156,10 +164,13 @@ done
 cp "$ROOT_DIR/docs/THIRD_PARTY_NOTICES.md" "$RESOURCES/THIRD_PARTY_NOTICES.md"
 if ! grep -Fq "## Zstandard" "$RESOURCES/THIRD_PARTY_NOTICES.md" \
   || ! grep -Fq "Copyright (c) Meta Platforms, Inc. and affiliates." \
-    "$RESOURCES/THIRD_PARTY_NOTICES.md"; then
-  echo "packaged third-party notices are missing the Zstandard license" >&2
+    "$RESOURCES/THIRD_PARTY_NOTICES.md" \
+  || ! grep -Fq "## SocialSymbols" "$RESOURCES/THIRD_PARTY_NOTICES.md" \
+  || ! grep -Fq "Apache License" "$RESOURCES/THIRD_PARTY_NOTICES.md"; then
+  echo "packaged third-party notices are missing a required license" >&2
   exit 1
 fi
+ditto "$ROOT_DIR/Releases" "$RESOURCES/Releases"
 
 if [[ ! -d "$APP_ICON" ]]; then
   echo "missing app icon: $APP_ICON" >&2
@@ -191,6 +202,7 @@ cat >"$CONTENTS/Info.plist" <<PLIST
   <key>CFBundleIconName</key><string>$APP_ICON_NAME</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$BUNDLE_SHORT_VERSION</string>
+  <key>SakuraCordReleaseDisplayVersion</key><string>$BUNDLE_DISPLAY_VERSION</string>
   <key>CFBundleVersion</key><string>$BUNDLE_BUILD_VERSION</string>
   <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>NSPrincipalClass</key><string>NSApplication</string>
@@ -205,10 +217,13 @@ PLIST
 if [[ "$UPDATES_ENABLED" == "1" ]]; then
   /usr/libexec/PlistBuddy -c "Add :SakuraCordUpdatesEnabled bool true" "$CONTENTS/Info.plist"
   /usr/libexec/PlistBuddy -c \
+    "Add :SakuraCordReleaseTrack string $RELEASE_TRACK" \
+    "$CONTENTS/Info.plist"
+  /usr/libexec/PlistBuddy -c \
     "Add :SUFeedURL string https://github.com/SakuraCordApp/SakuraCord/releases/latest/download/appcast.xml" \
     "$CONTENTS/Info.plist"
   /usr/libexec/PlistBuddy -c \
-    "Add :SakuraCordNightlyFeedURL string https://raw.githubusercontent.com/SakuraCordApp/SakuraCord/nightly-feed/appcast.xml" \
+    "Add :SakuraCordNightlyFeedURL string https://sakuracord.app/updates/appcast.xml" \
     "$CONTENTS/Info.plist"
   /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string $SPARKLE_ED_PUBLIC_KEY" "$CONTENTS/Info.plist"
   /usr/libexec/PlistBuddy -c "Add :SUEnableAutomaticChecks bool true" "$CONTENTS/Info.plist"
@@ -255,6 +270,9 @@ open_offline_chat_performance_live_autoscroll() {
 open_offline_chat_media_performance_autoscroll() {
   open_app --args --offline-chat-media-performance-autoscroll
 }
+open_offline_pins_performance_autoscroll() {
+  open_app --args --offline-pins-performance-autoscroll
+}
 open_offline_incoming_private_call() {
   open_app --args --offline-incoming-private-call
 }
@@ -291,6 +309,7 @@ case "$MODE" in
   --offline-chat-performance-autoscroll) open_offline_chat_performance_autoscroll ;;
   --offline-chat-performance-live-autoscroll) open_offline_chat_performance_live_autoscroll ;;
   --offline-chat-media-performance-autoscroll) open_offline_chat_media_performance_autoscroll ;;
+  --offline-pins-performance-autoscroll) open_offline_pins_performance_autoscroll ;;
   --offline-incoming-private-call) open_offline_incoming_private_call ;;
   --media-viewer-benchmark) open_media_viewer_benchmark ;;
 esac

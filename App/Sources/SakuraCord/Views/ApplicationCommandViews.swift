@@ -429,6 +429,7 @@ private struct ApplicationCommandEditorFooter: View {
                 Label("Run command", systemImage: "paperplane.fill")
             }
             .buttonStyle(.borderedProminent)
+            .tint(SakuraCordAccentColor.color)
             .controlSize(.small)
             .disabled(!composer.canSubmit || composer.executionProgress != nil)
             .keyboardShortcut(.return, modifiers: [.command])
@@ -812,6 +813,7 @@ private struct CommandTextOptionEditor: View {
 
     var body: some View {
         TextField(placeholder, text: $text)
+            .tint(SakuraCordAccentColor.color)
             .textFieldStyle(.plain)
             .padding(.horizontal, 8)
             .frame(minHeight: 30)
@@ -931,6 +933,7 @@ private struct CommandEntityResolver: View {
             Text("Choose \(title)")
                 .font(.headline)
             TextField("Search", text: $query)
+                .tint(SakuraCordAccentColor.color)
                 .textFieldStyle(.roundedBorder)
                 .focused($searchFocused)
                 .onMoveCommand { direction in
@@ -1111,7 +1114,10 @@ struct CommandApplicationIcon: View {
     var body: some View {
         Group {
             if let url = application?.iconURL ?? application?.bot?.avatarURL {
-                AnimatedRemoteImage(url: url)
+                AnimatedRemoteImage(
+                    url: url,
+                    accessibilityCategory: .avatar
+                )
             } else {
                 ZStack {
                     Circle().fill(Color.secondary.opacity(0.18))

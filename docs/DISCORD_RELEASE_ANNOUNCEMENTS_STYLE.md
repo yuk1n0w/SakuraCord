@@ -12,7 +12,7 @@ copy:
 
 - the updates-role mention;
 - the embed title, derived from `tagName` (for example,
-  `v0.1.5-Beta-1` becomes `SakuraCord v0.1.5 Beta 1 🌙`); and
+  `v0.1.5-Beta-1` becomes `SakuraCord v0.1.5 Beta 1`); and
 - the **View release** button and its GitHub Release URL.
 
 Only the embed description belongs in `discordAnnouncement`.
@@ -51,9 +51,10 @@ For a nightly tag, replace only that headline emoji with the moon:
 - [User-facing feature or outcome]
 ```
 
-The action also gives nightly embeds a distinct indigo color and routes them to
-the nightly channel with the nightly updates-role mention. Keep the authored
-copy free of role, user, `@here`, and `@everyone` mentions for both tracks.
+The custom headline is the only place the nightly moon appears. The action also
+gives nightly embeds a distinct indigo color and routes them to the nightly
+channel with the nightly updates-role mention. Keep the authored copy free of
+role, user, `@here`, and `@everyone` mentions for both tracks.
 
 ## Headline guidance
 
@@ -62,12 +63,16 @@ Good headlines are concrete, for example:
 
 - `**Message forwarding, GIFs, and a new media viewer 🌸**`
 - `**Discord forum channels have arrived! 🌸**`
-- `**Message forwarding and GIF fixes are ready to test 🌙**` (nightly only)
+- `**Message forwarding and GIF fixes 🌙**` (nightly only)
 
 Do not use generic promotional phrases that could describe any release, such
 as `More ways to connect, share, and explore`, `Something for everyone`,
 `Better than ever`, or `A new update is available`. Avoid hype, filler, and
 unsupported superlatives.
+
+Never use `ready to test` in a headline. The nightly moon and generated release
+framing already communicate that the release is a test build, so the headline
+should use that space to name its defining features or fixes.
 
 The headline and bullets must pass this specificity test: do not replace
 clearly nameable features with an abstract description of what those features

@@ -9,11 +9,18 @@ private let voiceAudioLogger = Logger(subsystem: "dev.sakuracord.SakuraCord", ca
 public struct CapturedOpusFrame: Sendable {
     public var data: Data
     public var containsVoice: Bool
+    public var containsMicrophoneVoice: Bool
     public var sampleOffset: UInt64
 
-    public init(data: Data, containsVoice: Bool, sampleOffset: UInt64 = 0) {
+    public init(
+        data: Data,
+        containsVoice: Bool,
+        sampleOffset: UInt64 = 0,
+        containsMicrophoneVoice: Bool? = nil
+    ) {
         self.data = data
         self.containsVoice = containsVoice
+        self.containsMicrophoneVoice = containsMicrophoneVoice ?? containsVoice
         self.sampleOffset = sampleOffset
     }
 }
@@ -23,6 +30,9 @@ public final class VoiceAudioEngine {
     public private(set) var isRunning = false
     public private(set) var inputDeviceID: AudioDeviceID?
     public private(set) var outputDeviceID: AudioDeviceID?
+    public var inputLevelHandler: (@Sendable (Float) -> Void)? {
+        didSet { captureEncoder.levelHandler = inputLevelHandler }
+    }
     public var inputVolume: Float = 1 {
         didSet { captureEncoder.inputVolume = min(max(inputVolume, 0), 2) }
     }
@@ -407,6 +417,7 @@ public final class VoiceAudioEngine {
             }
             captureSession.commitConfiguration()
         }
+        captureEncoder.reset()
     }
 
     private func tearDownPlaybackGraph() {
@@ -584,6 +595,11 @@ final class OpusSampleBufferEncoder: NSObject,
         set { lock.withLock { _isMuted = newValue } }
     }
 
+    var levelHandler: (@Sendable (Float) -> Void)? {
+        get { lock.withLock { _levelHandler } }
+        set { lock.withLock { _levelHandler = newValue } }
+    }
+
     private let codec: OpusCodec
     private let activityThreshold: Float
     private let lock = NSLock()
@@ -593,6 +609,7 @@ final class OpusSampleBufferEncoder: NSObject,
     private var bufferedSampleOffset = 0
     private var encodedSampleOffset: UInt64 = 0
     private var _handler: (@Sendable (CapturedOpusFrame) -> Void)?
+    private var _levelHandler: (@Sendable (Float) -> Void)?
     private var _inputVolume: Float = 1
     private var _isMuted = false
 
@@ -636,7 +653,6 @@ final class OpusSampleBufferEncoder: NSObject,
             frameCount: Int32(frameCount),
             into: buffer.mutableAudioBufferList
         ) == noErr else { return }
-        do { try configure(inputFormat: format) } catch { return }
         process(buffer)
     }
 
@@ -663,12 +679,16 @@ final class OpusSampleBufferEncoder: NSObject,
         }
     }
 
-    private func process(_ input: AVAudioPCMBuffer) {
-        let frames: [CapturedOpusFrame] = lock.withLock {
-            guard let converter else { return [] }
+    func process(_ input: AVAudioPCMBuffer) {
+        do { try configure(inputFormat: input.format) } catch { return }
+        let result: (frames: [CapturedOpusFrame], level: Float) = lock.withLock {
+            guard let converter else { return ([], 0) }
             let ratio = OpusCodec.sampleRate / input.format.sampleRate
             let capacity = AVAudioFrameCount(ceil(Double(input.frameLength) * ratio)) + 32
-            guard let converted = AVAudioPCMBuffer(pcmFormat: OpusCodec.pcmFormat, frameCapacity: capacity) else { return [] }
+            guard let converted = AVAudioPCMBuffer(
+                pcmFormat: OpusCodec.pcmFormat,
+                frameCapacity: capacity
+            ) else { return ([], 0) }
             var supplied = false
             var error: NSError?
             _ = converter.convert(to: converted, error: &error) { _, status in
@@ -682,11 +702,12 @@ final class OpusSampleBufferEncoder: NSObject,
             }
             guard error == nil,
                   let channels = converted.floatChannelData,
-                  converted.frameLength > 0 else { return [] }
+                  converted.frameLength > 0 else { return ([], 0) }
             left.append(contentsOf: UnsafeBufferPointer(start: channels[0], count: Int(converted.frameLength)))
             right.append(contentsOf: UnsafeBufferPointer(start: channels[1], count: Int(converted.frameLength)))
 
             var output: [CapturedOpusFrame] = []
+            var maximumLevel: Float = 0
             let frameCount = Int(OpusCodec.frameSamples)
             while left.count - bufferedSampleOffset >= frameCount,
                   right.count - bufferedSampleOffset >= frameCount
@@ -694,33 +715,43 @@ final class OpusSampleBufferEncoder: NSObject,
                 guard let pcm = AVAudioPCMBuffer(pcmFormat: OpusCodec.pcmFormat, frameCapacity: OpusCodec.frameSamples),
                       let outputChannels = pcm.floatChannelData else { break }
                 pcm.frameLength = OpusCodec.frameSamples
-                var energy: Float = 0
+                var microphoneEnergy: Float = 0
                 for index in 0 ..< frameCount {
                     let bufferedIndex = bufferedSampleOffset + index
                     let leftSample = _isMuted ? 0 : left[bufferedIndex] * _inputVolume
                     let rightSample = _isMuted ? 0 : right[bufferedIndex] * _inputVolume
                     outputChannels[0][index] = leftSample
                     outputChannels[1][index] = rightSample
-                    energy += leftSample * leftSample + rightSample * rightSample
+                    microphoneEnergy += leftSample * leftSample + rightSample * rightSample
                 }
                 bufferedSampleOffset += frameCount
                 if let packet = try? codec.encode(pcm) {
                     encodedSampleOffset &+= UInt64(frameCount)
-                    let rms = sqrt(energy / Float(frameCount * 2))
+                    let rms = sqrt(microphoneEnergy / Float(frameCount * 2))
+                    let containsMicrophoneVoice = !_isMuted && rms > activityThreshold
+                    maximumLevel = max(maximumLevel, Self.normalizedLevel(rms: rms))
                     output.append(CapturedOpusFrame(
                         data: packet,
-                        containsVoice: !_isMuted && rms > activityThreshold,
-                        sampleOffset: encodedSampleOffset
+                        containsVoice: containsMicrophoneVoice,
+                        sampleOffset: encodedSampleOffset,
+                        containsMicrophoneVoice: containsMicrophoneVoice
                     ))
                 }
             }
             compactBufferedSamples(frameCount: frameCount)
-            return output
+            return (output, maximumLevel)
         }
         let handler = handler
-        for frame in frames {
+        for frame in result.frames {
             handler?(frame)
         }
+        levelHandler?(result.level)
+    }
+
+    private static func normalizedLevel(rms: Float) -> Float {
+        guard rms > 0 else { return 0 }
+        let decibels = 20 * log10(rms)
+        return min(max((decibels + 60) / 60, 0), 1)
     }
 
     private func compactBufferedSamples(frameCount: Int) {

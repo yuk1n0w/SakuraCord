@@ -41,6 +41,7 @@ public protocol ChatProvider: Sendable {
     func profile(for userID: UserID, in guildID: GuildID?) async throws -> UserProfile
     func emojis(in guildID: GuildID) async throws -> [DiscordEmoji]
     func emojiUserSettings() async throws -> EmojiUserSettings
+    func setEmojiFavorite(_ key: String, isFavorite: Bool) async throws -> EmojiUserSettings
     func currentStatus() async -> PresenceStatus
     func updateStatus(_ status: PresenceStatus) async throws
     func messages(in channelID: ChannelID, before: MessageID?, limit: Int) async throws -> MessagePage
@@ -55,6 +56,16 @@ public protocol ChatProvider: Sendable {
         limit: Int
     ) async throws -> MessagePage
     func searchMessages(_ query: MessageSearchQuery) async throws -> MessageSearchPage
+    func pinnedMessages(
+        in channelID: ChannelID,
+        before: Date?,
+        limit: Int
+    ) async throws -> PinnedMessagePage
+    func setMessagePinned(
+        _ isPinned: Bool,
+        messageID: MessageID,
+        channelID: ChannelID
+    ) async throws
     func forumPosts(in channelID: ChannelID, query: ForumPostQuery) async throws -> ForumPostPage
     func forumPost(threadID: ChannelID) async throws -> ForumPost
     func createForumPost(
@@ -217,6 +228,22 @@ public protocol PendingCredentialChatProvider: ChatProvider {
 
 public extension ChatProvider {
     func prepareAuthentication() async throws {}
+
+    func pinnedMessages(
+        in _: ChannelID,
+        before _: Date?,
+        limit _: Int
+    ) async throws -> PinnedMessagePage {
+        throw ChatProviderError.unauthenticated
+    }
+
+    func setMessagePinned(
+        _: Bool,
+        messageID _: MessageID,
+        channelID _: ChannelID
+    ) async throws {
+        throw ChatProviderError.unauthenticated
+    }
 
     func updateClientAppState(isFocused: Bool) async {}
 
@@ -490,6 +517,12 @@ public extension ChatProvider {
 
     func emojiUserSettings() async throws -> EmojiUserSettings {
         EmojiUserSettings()
+    }
+
+    func setEmojiFavorite(_ key: String, isFavorite: Bool) async throws -> EmojiUserSettings {
+        throw ChatProviderError.invalidRequest(
+            "Emoji favorite updates are unavailable for this provider."
+        )
     }
 
     func sendTyping(in channelID: ChannelID) async throws {}

@@ -10,6 +10,7 @@ struct SakuraCordApp: App {
     @State private var model: AppModel
     private let opensForumPerformanceFixture: Bool
     private let opensChatPerformanceFixture: Bool
+    private let opensPinsPerformanceFixture: Bool
     private let runsChatLiveArrivalStress: Bool
     private let runsAuthenticatedNavigationBenchmark: Bool
     private let runsAuthenticatedAccountSwitchBenchmark: Bool
@@ -41,6 +42,7 @@ struct SakuraCordApp: App {
         let configuration = AppLaunchConfiguration(arguments: ProcessInfo.processInfo.arguments)
         opensForumPerformanceFixture = configuration.includesForumPerformanceFixture
         opensChatPerformanceFixture = configuration.includesChatPerformanceFixture
+        opensPinsPerformanceFixture = configuration.includesPinsPerformanceFixture
         runsChatLiveArrivalStress = configuration.runsChatLiveArrivalStress
         runsAuthenticatedNavigationBenchmark =
             configuration.runsAuthenticatedNavigationBenchmark
@@ -71,6 +73,7 @@ struct SakuraCordApp: App {
                 includesLongServerList: configuration.includesLongServerList,
                 forumPostCount: configuration.includesForumPerformanceFixture ? 5_000 : nil,
                 timelineMessageCount: configuration.includesChatPerformanceFixture ? 5_000 : nil,
+                pinnedMessageCount: configuration.includesPinsPerformanceFixture ? 5_000 : nil,
                 timelineIncludesAnimatedMedia:
                     configuration.includesChatMediaPerformanceFixture,
                 includesIncomingPrivateCall:
@@ -87,12 +90,24 @@ struct SakuraCordApp: App {
             configuration.mode == .offlineTesting
             ? NoopAppSoundPlayer()
             : MacAppSoundPlayer()
-        _model = State(initialValue: AppModel(
+        let appModel = AppModel(
             launchMode: configuration.mode,
             provider: provider,
             notificationService: notificationService,
             soundPlayer: soundPlayer
-        ))
+        )
+        if SettingsPreferenceStore.shared.value(
+            for: .rememberMemberListVisibility
+        ) == .bool(true) {
+            appModel.showInspector = GeneralWindowRestorationStore.shared
+                .memberListIsVisible
+        }
+        appModel.interfaceSettings.showsMemberList = appModel.showInspector
+        AppAppearanceController.shared.apply(
+            appModel.appearanceSettings.colorScheme
+        )
+        SakuraCordRuntimeModelHolder.shared.model = appModel
+        _model = State(initialValue: appModel)
     }
 
     var body: some Scene {
@@ -102,10 +117,11 @@ struct SakuraCordApp: App {
             RootView(model: model)
                 .frame(minWidth: 860, minHeight: 560)
                 .onAppear {
+                    appDelegate.model = model
                     AppPerformanceSignposts.reportRootViewAppeared()
                 }
                 .task {
-                    await model.start()
+                    await appDelegate.startSession(for: model)
 #if DEBUG
                     if runsAuthenticatedNavigationBenchmark {
                         await model.runAuthenticatedNavigationPerformanceBenchmark()
@@ -144,6 +160,12 @@ struct SakuraCordApp: App {
                         model.selectedChannelID = ChannelID(rawValue: 220)
                     } else if opensChatPerformanceFixture {
                         model.selectedChannelID = ChannelID(rawValue: 210)
+                    }
+                    if opensPinsPerformanceFixture {
+                        await model.channelLoadTask?.value
+                        model.presentPinnedMessages(channelID: ChannelID(rawValue: 210))
+                        await model.pinnedMessages.loadTask?.value
+                        await model.preparePinnedMessagesPerformanceBenchmark()
                     }
                     if runsChatLiveArrivalStress {
                         await NativeTimelinePerformanceBenchmarkGate.shared
@@ -189,11 +211,10 @@ struct SakuraCordApp: App {
                     }
                 }
         }
-        .defaultLaunchBehavior(.presented)
+        .defaultLaunchBehavior(mainWindowLaunchBehavior)
         .defaultSize(width: 1280, height: 780)
         .windowBackgroundDragBehavior(.disabled)
         .commands {
-            SidebarCommands()
             SakuraCordCommands(
                 model: model,
                 updateController: appDelegate.updateController
@@ -206,12 +227,26 @@ struct SakuraCordApp: App {
                 updateController: appDelegate.updateController
             )
         }
+        .defaultSize(width: 980, height: 700)
+        .windowResizability(.contentMinSize)
+        .windowManagerRole(.associated)
+        .restorationBehavior(.disabled)
+    }
+
+    private var mainWindowLaunchBehavior: SceneLaunchBehavior {
+        guard model.launchMode == .normal else { return .presented }
+        return SettingsPreferenceStore.shared.value(
+            for: .showMainWindowAtLaunch
+        ) == .bool(false) ? .suppressed : .presented
     }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let updateController = AppUpdateController()
+    weak var model: AppModel?
     private let notificationCenterDelegate = SakuraCordNotificationCenterDelegate()
+    private var terminationPromptIsPresented = false
+    private var sessionStartTask: Task<Void, Never>?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().delegate = notificationCenterDelegate
@@ -220,7 +255,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateController.start()
         AppMemoryPressureResponder.shared.start()
         AppPerformanceDiagnostics.shared.start()
+        if let model = SakuraCordRuntimeModelHolder.shared.model {
+            self.model = model
+            Task { await startSession(for: model) }
+        }
     }
+
+    func startSession(for model: AppModel) async {
+        self.model = model
+        if sessionStartTask == nil {
+            sessionStartTask = Task { await model.start() }
+        }
+        await sessionStartTask?.value
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let confirmsActiveWork = SettingsPreferenceStore.shared.value(
+            for: .confirmQuitActiveWork
+        ) != .bool(false)
+        let activities = model?.generalQuitActivities ?? []
+        guard GeneralQuitConfirmationPolicy.shouldConfirm(
+            isEnabled: confirmsActiveWork,
+            activities: activities
+        ) else { return .terminateNow }
+        guard !terminationPromptIsPresented else { return .terminateLater }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Quit SakuraCord?"
+        alert.informativeText = quitConfirmationMessage(for: activities)
+        alert.addButton(withTitle: "Quit")
+        alert.addButton(withTitle: "Cancel")
+
+        if let window = sender.keyWindow ?? sender.mainWindow {
+            terminationPromptIsPresented = true
+            alert.beginSheetModal(for: window) { [weak self] response in
+                self?.terminationPromptIsPresented = false
+                sender.reply(toApplicationShouldTerminate: response == .alertFirstButtonReturn)
+            }
+            return .terminateLater
+        }
+        return alert.runModal() == .alertFirstButtonReturn
+            ? .terminateNow
+            : .terminateCancel
+    }
+
+    private func quitConfirmationMessage(
+        for activities: [GeneralQuitActivity]
+    ) -> String {
+        let descriptions = activities.map(\.title)
+        let joined = ListFormatter.localizedString(byJoining: descriptions)
+        return "SakuraCord is handling \(joined). Quitting will stop this activity immediately."
+    }
+}
+
+@MainActor
+private final class SakuraCordRuntimeModelHolder {
+    static let shared = SakuraCordRuntimeModelHolder()
+    weak var model: AppModel?
 }
 
 final class SakuraCordNotificationCenterDelegate: NSObject {}

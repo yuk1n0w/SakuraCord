@@ -29,10 +29,24 @@ extension NativeTimelineCanvasView {
         reconcileAnimatedMedia(allowsScrolling: true)
         let reduceMotion =
             NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-            || UserDefaults.standard.bool(forKey: "reduceAnimatedMedia")
+            || (model?.accessibilitySettings.reducesAllOptionalMotion(
+                systemReduceMotion: false
+            ) ?? false)
+            || (model?.chatSettings.reducesAnimatedMedia
+                ?? UserDefaults.standard.bool(forKey: "reduceAnimatedMedia"))
             || !permitsAnimatedMediaPlayback
-        reconcileInlineVideoOverlays(plays: !reduceMotion)
-        reconcileLottieStickerOverlays(reduceMotion: reduceMotion)
+        reconcileInlineVideoOverlays(
+            plays: !reduceMotion
+                && (model?.chatSettings.autoplaysInlineVideos ?? true)
+        )
+        reconcileLottieStickerOverlays(
+            reduceMotion: reduceMotion
+                || (model?.accessibilitySettings.reducesAnimation(
+                    .sticker,
+                    systemReduceMotion: false
+                ) ?? false)
+                || !(model?.chatSettings.autoplaysAnimatedStickers ?? true)
+        )
     }
 
     func scheduleAnimatedMediaReconciliation() {
@@ -71,7 +85,11 @@ extension NativeTimelineCanvasView {
         guard !suppressesHoverPresentation else { return }
         let reduceMotion =
             NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-            || UserDefaults.standard.bool(forKey: "reduceAnimatedMedia")
+            || (model?.accessibilitySettings.reducesAllOptionalMotion(
+                systemReduceMotion: false
+            ) ?? false)
+            || (model?.chatSettings.reducesAnimatedMedia
+                ?? UserDefaults.standard.bool(forKey: "reduceAnimatedMedia"))
             || !permitsAnimatedMediaPlayback
         guard !items.isEmpty,
               var index = rowIndex(at: max(0, visibleRect.minY))
@@ -108,7 +126,10 @@ extension NativeTimelineCanvasView {
             index += 1
         }
         inlineVideoRows = rows
-        reconcileInlineVideoOverlays(plays: !reduceMotion)
+        reconcileInlineVideoOverlays(
+            plays: !reduceMotion
+                && (model?.chatSettings.autoplaysInlineVideos ?? true)
+        )
     }
 
     struct DesiredAnimatedMediaOverlay {
@@ -150,6 +171,23 @@ extension NativeTimelineCanvasView {
             fillsFrame: Bool = false,
             allowsStaticImage: Bool = false
         ) {
+            let settings = model?.chatSettings ?? .defaults
+            let accessibility = model?.accessibilitySettings ?? .defaults
+            let categoryAllowsPlayback: Bool = switch role {
+            case .attachment, .linkedImage, .embedImage, .embedMedia,
+                 .componentImage, .componentMedia:
+                settings.autoplaysGIFs
+            case .sticker:
+                settings.autoplaysAnimatedStickers
+            default:
+                true
+            }
+            guard categoryAllowsPlayback,
+                  !accessibility.reducesAnimation(
+                      role.accessibilityCategory,
+                      systemReduceMotion: false
+                  )
+            else { return }
             let image = allowsStaticImage
                 ? NativeTimelineMediaStore.shared.decodedImage(for: media)
                 : NativeTimelineMediaStore.shared
@@ -373,7 +411,7 @@ extension NativeTimelineCanvasView {
                     frame: drawingFrame,
                     selectionRange:
                         textSelection?.itemIdentifier
-                            == .message(row.message.id)
+                            == identifier
                             && textSelection?.region == .content
                             ? textSelection?.range
                             : nil
@@ -431,7 +469,7 @@ extension NativeTimelineCanvasView {
                         frame: drawingFrame,
                         selectionRange:
                             textSelection?.itemIdentifier
-                                == .message(row.message.id)
+                                == identifier
                                 && textSelection?.region == .embed(
                                     embedID: embed.embedID,
                                     textIndex: textIndex
@@ -503,7 +541,7 @@ extension NativeTimelineCanvasView {
                         frame: drawingFrame,
                         selectionRange:
                             textSelection?.itemIdentifier
-                                == .message(row.message.id)
+                                == identifier
                                 && textSelection?.region == .component(
                                     layoutIndex: componentIndex,
                                     textIndex: textIndex
@@ -690,7 +728,11 @@ extension NativeTimelineCanvasView {
         guard !animatedMediaOverlays.isEmpty else { return }
         let reduceMotion =
             NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-            || UserDefaults.standard.bool(forKey: "reduceAnimatedMedia")
+            || (model?.accessibilitySettings.reducesAllOptionalMotion(
+                systemReduceMotion: false
+            ) ?? false)
+            || (model?.chatSettings.reducesAnimatedMedia
+                ?? UserDefaults.standard.bool(forKey: "reduceAnimatedMedia"))
         reconcileAnimatedMediaOverlays(reduceMotion: reduceMotion)
     }
 
@@ -1057,8 +1099,7 @@ extension NativeTimelineCanvasView {
                     append(
                         key,
                         frame: container.frame,
-                        cornerRadius:
-                            DiscordRichMessageMetrics.cardCornerRadius,
+                        cornerRadius: container.cornerRadius,
                         rowOrigin: rowOrigin
                     )
                 }

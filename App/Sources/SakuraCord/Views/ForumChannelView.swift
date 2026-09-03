@@ -259,6 +259,7 @@ private struct ForumBrowseHeader: View {
                     HStack(spacing: 10) {
                         Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                         TextField("Search posts", text: $searchText)
+                            .tint(SakuraCordAccentColor.color)
                             .textFieldStyle(.plain)
                             .focused($isSearchFocused)
                             .onChange(of: searchText) { _, value in model.updateForumSearch(value) }
@@ -636,7 +637,7 @@ private struct ForumTagButton: View {
         .buttonStyle(.plain)
         .glassEffect(
             isSelected
-                ? .regular.tint(Color.accentColor.opacity(0.28)).interactive()
+                ? .regular.tint(SakuraCordAccentColor.color.opacity(0.28)).interactive()
                 : .regular.interactive(),
             in: Capsule()
         )
@@ -655,7 +656,8 @@ private struct ForumTagEmoji: View {
             AnimatedRemoteImage(
                 url: url,
                 fallbackSystemImage: "tag",
-                maximumPixelDimension: max(1, Int(((size + 4) * 2).rounded(.up)))
+                maximumPixelDimension: max(1, Int(((size + 4) * 2).rounded(.up))),
+                accessibilityCategory: .emoji
             )
             .frame(width: size, height: size)
             .frame(width: size + 4, height: size + 4)
@@ -990,7 +992,7 @@ private struct ForumPostAuthorName: View {
     }
 
     private var nameColor: Color {
-        if presentation.user.isBot { return .accentColor }
+        if presentation.user.isBot { return SakuraCordAccentColor.color }
         return presentation.roleColorHex.map(Color.init(hex:)) ?? .primary
     }
 }
@@ -1010,7 +1012,7 @@ private struct ForumPostStarterExcerpt: View {
     }
 
     private var nameColor: Color {
-        if presentation.user.isBot { return .accentColor }
+        if presentation.user.isBot { return SakuraCordAccentColor.color }
         return presentation.roleColorHex.map(Color.init(hex:)) ?? .primary
     }
 }
@@ -1114,7 +1116,7 @@ private struct ForumPostMessageCount: View {
             if unreadCount > 0 {
                 Text("(\(unreadCount.formatted()) New)")
                     .fontWeight(.semibold)
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(SakuraCordAccentColor.color)
             }
         }
         .allowsHitTesting(false)
@@ -1504,8 +1506,10 @@ private struct ForumPostComposer: View {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Posting Guidelines").font(.title.bold())
                 ScrollView {
-                    Text(channel.topic ?? "").textSelection(.enabled).frame(
-                        maxWidth: .infinity, alignment: .leading)
+                    Text(channel.topic ?? "")
+                        .textSelection(.enabled)
+                        .tint(SakuraCordAccentColor.color)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 HStack {
                     Spacer()
@@ -1547,6 +1551,7 @@ private struct ForumPostComposer: View {
 
                 VStack(alignment: .leading, spacing: 4) {
                     TextField("Title", text: $title)
+                        .tint(SakuraCordAccentColor.color)
                         .font(.title2.weight(.bold))
                         .textFieldStyle(.plain)
                         .focused($isTitleFocused)
@@ -1603,7 +1608,7 @@ private struct ForumPostComposer: View {
                 selectionBeforeEmojiPicker = contentSelection
                 showsEmojiPicker.toggle()
             } label: {
-                Image(systemName: "face.smiling.inverse")
+                SakuraCordSystemSymbol.emojiFaceGrinningImage
                     .environment(\.symbolVariants, .none)
                     .symbolRenderingMode(.monochrome)
                     .font(.system(size: 18, weight: .regular))
@@ -1619,10 +1624,14 @@ private struct ForumPostComposer: View {
                     preferredEdge: .maxY,
                     accessibilityIdentifier: "forum-post-emoji-picker"
                 ) {
-                    EmojiPickerView(model: model, allowsPersistentSelection: true) { activation in
-                        insertEmoji(activation)
-                    }
-                    .onExitCommand { showsEmojiPicker = false }
+                    EmojiPickerView(
+                        model: model,
+                        allowsPersistentSelection: true,
+                        dismiss: { showsEmojiPicker = false },
+                        select: { activation in
+                            insertEmoji(activation)
+                        }
+                    )
                 }
                 .frame(width: 28, height: 28)
             }
@@ -1649,6 +1658,7 @@ private struct ForumPostComposer: View {
             }
             Button("Post", systemImage: "paperplane") { submit() }
                 .buttonStyle(.borderedProminent)
+                .tint(SakuraCordAccentColor.color)
                 .keyboardShortcut(.defaultAction)
                 .disabled(!isValid || isSubmitting)
         }

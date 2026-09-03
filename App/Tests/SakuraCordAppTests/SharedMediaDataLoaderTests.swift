@@ -206,6 +206,10 @@ import Testing
     #expect(await first.value != nil)
     #expect(await second.value != nil)
     #expect(await probe.fetchCount == 1)
+    #expect(decodedLoader.cachedImage(
+        for: url,
+        maximumPixelDimension: 32
+    ) != nil)
     await decodeScheduler.releasePermitForTesting(priority: .visible)
 }
 
@@ -243,7 +247,10 @@ import Testing
     store.request(
         key,
         owner: UUID(),
-        subscriber: .message(MessageID(rawValue: 1)),
+        subscriber: .message(.server(
+            channelID: ChannelID(rawValue: 1),
+            messageID: MessageID(rawValue: 1)
+        )),
         priority: .prefetch
     ) { outcome in
         outcomes.append(outcome)
@@ -253,7 +260,10 @@ import Testing
     store.request(
         key,
         owner: UUID(),
-        subscriber: .message(MessageID(rawValue: 2)),
+        subscriber: .message(.server(
+            channelID: ChannelID(rawValue: 1),
+            messageID: MessageID(rawValue: 2)
+        )),
         priority: .visible
     ) { outcome in
         outcomes.append(outcome)
@@ -297,7 +307,10 @@ import Testing
     store.request(
         key,
         owner: UUID(),
-        subscriber: .message(MessageID(rawValue: 1)),
+        subscriber: .message(.server(
+            channelID: ChannelID(rawValue: 1),
+            messageID: MessageID(rawValue: 1)
+        )),
         priority: .prefetch
     ) { _ in }
     await probe.waitForCall(to: primaryURL)
@@ -305,7 +318,10 @@ import Testing
     store.request(
         key,
         owner: UUID(),
-        subscriber: .message(MessageID(rawValue: 2)),
+        subscriber: .message(.server(
+            channelID: ChannelID(rawValue: 1),
+            messageID: MessageID(rawValue: 2)
+        )),
         priority: .visible
     ) { _ in }
     await probe.finish(primaryURL, image: nil)
@@ -336,7 +352,10 @@ import Testing
     store.request(
         key,
         owner: owner,
-        subscriber: .message(MessageID(rawValue: 98_111)),
+        subscriber: .message(.server(
+            channelID: ChannelID(rawValue: 1),
+            messageID: MessageID(rawValue: 98_111)
+        )),
         priority: .visible
     ) { outcome in
         outcomes.append(outcome)
@@ -362,7 +381,10 @@ import Testing
     let firstOwner = UUID()
     let secondOwner = UUID()
     let sharedRow = NativeMessageTimelineItem.Identifier.message(
-        MessageID(rawValue: 98_113)
+        .server(
+            channelID: ChannelID(rawValue: 1),
+            messageID: MessageID(rawValue: 98_113)
+        )
     )
     var callbackOutcomes:
         [UUID: [NativeTimelineStaticMediaLoadOutcome]] = [:]

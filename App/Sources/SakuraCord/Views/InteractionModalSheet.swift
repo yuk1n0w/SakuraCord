@@ -35,9 +35,11 @@ struct InteractionModalSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") { model.dismissInteractionModal() }.keyboardShortcut(.cancelAction)
-                Button("Submit") { submit() }.buttonStyle(.borderedProminent).keyboardShortcut(
-                    .defaultAction
-                ).disabled(isSubmitting)
+                Button("Submit") { submit() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(SakuraCordAccentColor.color)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(isSubmitting)
             }
         }
         .padding(20).frame(minWidth: 480, idealWidth: 540, minHeight: 300, idealHeight: 460)
@@ -84,8 +86,10 @@ struct InteractionModalSheet: View {
                         TextField(placeholder ?? "", text: textBinding(customID), axis: .vertical).lineLimit(
                             3 ... 10
                         )
+                        .tint(SakuraCordAccentColor.color)
                     } else {
                         TextField(placeholder ?? "", text: textBinding(customID))
+                            .tint(SakuraCordAccentColor.color)
                     }
                 }
                 .textFieldStyle(.roundedBorder)
@@ -111,7 +115,9 @@ struct InteractionModalSheet: View {
             AnyView(
                 Picker("Choice", selection: textBinding(customID)) {
                     ForEach(options) { Text($0.label).tag($0.value) }
-                }.pickerStyle(.radioGroup)
+                }
+                .pickerStyle(.radioGroup)
+                .tint(SakuraCordAccentColor.color)
             )
         case let .checkboxGroup(_, customID, options, _, _):
             AnyView(
@@ -120,9 +126,13 @@ struct InteractionModalSheet: View {
                         Toggle(option.label, isOn: membershipBinding(customID, value: option.value))
                     }
                 }
+                .tint(SakuraCordAccentColor.color)
             )
         case let .checkbox(_, customID, label, _):
-            AnyView(Toggle(label, isOn: boolBinding(customID)))
+            AnyView(
+                Toggle(label, isOn: boolBinding(customID))
+                    .tint(SakuraCordAccentColor.color)
+            )
         case let .unsupported(_, type):
             AnyView(
                 Label("Unsupported form control \(type)", systemImage: "questionmark.square.dashed")

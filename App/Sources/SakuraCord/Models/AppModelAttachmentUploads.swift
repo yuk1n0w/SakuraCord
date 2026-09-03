@@ -56,6 +56,16 @@ extension AppModel {
         }
 
         guard !oversized.isEmpty else { return accepted }
+        if privacySafetySettings.externalUploaderOfferPolicy == .never {
+            if let first = oversized.first {
+                errorMessage = oversizedAttachmentExplanation(
+                    fileName: first.0.lastPathComponent,
+                    fileSize: first.1,
+                    limit: limit
+                ) + " External upload services are disabled in Privacy & Safety."
+            }
+            return accepted
+        }
         if let destination,
            let channelID = conversationChannelID(for: destination)
         {
@@ -206,6 +216,11 @@ extension AppModel {
                 oversizedAttachmentPrompt.fileURL.standardizedFileURL
             )
         }
+        retainedFileURLs.formUnion(
+            outgoingMessages.draftsByNonce.values.lazy
+                .flatMap(\.attachmentURLs)
+                .map(\.standardizedFileURL)
+        )
         retainedFileURLs.formUnion(promisedAttachmentFilesInFlight)
 
         let staleFileURLs = promisedAttachmentDirectoryByFileURL.keys.filter {
@@ -315,7 +330,7 @@ extension AppModel {
         let maximum: String
         switch limit {
         case DiscordAttachmentUploadPolicy.baseLimit:
-            maximum = "10 MB"
+            maximum = "20 MB"
         case DiscordAttachmentUploadPolicy.basicAndClassicLimit:
             maximum = "50 MB"
         case DiscordAttachmentUploadPolicy.nitroLimit:

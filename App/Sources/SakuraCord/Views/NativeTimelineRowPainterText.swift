@@ -34,9 +34,17 @@ extension NativeTimelineRowPainter {
     }
 
     static var textDrawOperation:
-        @MainActor (String, CGRect, NSFont, NSColor, NSTextAlignment, NSLineBreakMode) -> Void
+        @MainActor (
+            String,
+            CGRect,
+            NSFont,
+            NSColor,
+            NSTextAlignment,
+            NSLineBreakMode,
+            Bool
+        ) -> Void
     {
-        { value, frame, font, color, alignment, lineBreakMode in
+        { value, frame, font, color, alignment, lineBreakMode, isInteractiveHovered in
         guard frame.width > 0, frame.height > 0 else { return }
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         var textAlignment: CTTextAlignment = switch alignment {
@@ -75,14 +83,19 @@ extension NativeTimelineRowPainter {
         // `fontName` turns system fonts into `.SFNS-*` names, which
         // CoreText explicitly rejects and may substitute with Times New Roman.
         let coreFont = font as CTFont
+        var attributes: [CFString: Any] = [
+            kCTFontAttributeName: coreFont,
+            kCTForegroundColorAttributeName: color.cgColor,
+            kCTParagraphStyleAttributeName: paragraph,
+        ]
+        if isInteractiveHovered {
+            attributes[kCTUnderlineStyleAttributeName] =
+                NativeTimelineLinkAppearance.hoverUnderlineStyle
+        }
         let attributed = CFAttributedStringCreate(
             nil,
             value as CFString,
-            [
-                kCTFontAttributeName: coreFont,
-                kCTForegroundColorAttributeName: color.cgColor,
-                kCTParagraphStyleAttributeName: paragraph,
-            ] as CFDictionary
+            attributes as CFDictionary
         )!
         let sourceLine = CTLineCreateWithAttributedString(attributed)
         let sourceWidth = CGFloat(CTLineGetTypographicBounds(
@@ -177,9 +190,18 @@ extension NativeTimelineRowPainter {
         font: NSFont,
         color: NSColor,
         alignment: NSTextAlignment = .left,
-        lineBreakMode: NSLineBreakMode = .byTruncatingTail
+        lineBreakMode: NSLineBreakMode = .byTruncatingTail,
+        isInteractiveHovered: Bool = false
     ) {
-        textDrawOperation(value, frame, font, color, alignment, lineBreakMode)
+        textDrawOperation(
+            value,
+            frame,
+            font,
+            color,
+            alignment,
+            lineBreakMode,
+            isInteractiveHovered
+        )
     }
 
     static func attributedText(
@@ -270,25 +292,30 @@ extension NativeTimelineRowPainter {
                     .discordMarkdownSpoiler,
                     range: range
                 )
-                revealed.addAttribute(
-                    .foregroundColor,
-                    value: revealed.attribute(
+                let foregroundColor =
+                    value.attribute(
+                        .foregroundColor,
+                        at: range.location,
+                        effectiveRange: nil
+                    ) as? NSColor
+                    ?? (value.attribute(
                         .link,
                         at: range.location,
                         effectiveRange: nil
-                    ) == nil
-                        ? NSColor.labelColor
-                        : NSColor.linkColor,
+                    ) == nil ? NSColor.labelColor : NSColor.linkColor)
+                revealed.addAttribute(
+                    .foregroundColor,
+                    value: foregroundColor,
                     range: range
                 )
                 revealed.addAttribute(
                     .underlineColor,
-                    value: NSColor.labelColor,
+                    value: foregroundColor,
                     range: range
                 )
                 revealed.addAttribute(
                     .strikethroughColor,
-                    value: NSColor.labelColor,
+                    value: foregroundColor,
                     range: range
                 )
             }
@@ -780,11 +807,11 @@ extension NativeTimelineRowPainter {
     }
 
     static var textSelectionHighlightColor: NSColor {
-        NSColor.selectedTextBackgroundColor
+        NSColor.sakuraCordTextSelectionBackgroundColor
     }
 
     static var attachmentSelectionHighlightColor: NSColor {
-        NSColor.selectedTextBackgroundColor.withAlphaComponent(0.5)
+        NSColor.sakuraCordTextSelectionBackgroundColor.withAlphaComponent(0.5)
     }
 
     static func drawMention(
@@ -792,16 +819,26 @@ extension NativeTimelineRowPainter {
         in frame: CGRect,
         isHovered: Bool
     ) {
-        let color = roleColor(presentation.colorHex) ?? .controlAccentColor
+        let color = roleColor(presentation.colorHex) ?? .sakuraCordAccentColor
+        let shape = NSBezierPath(
+            concentricRoundedRect: frame,
+            cornerRadius: 5.5
+        )
         color.withAlphaComponent(
             NativeTimelineMentionAppearance.backgroundAlpha(
                 isHovered: isHovered
             )
         ).setFill()
-        NSBezierPath(
-            concentricRoundedRect: frame,
-            cornerRadius: 5.5
-        ).fill()
+        shape.fill()
+        if case .role = presentation.target,
+           SakuraCordAccentColor.usesAccentFallback(
+               forRoleColorHex: presentation.colorHex
+           )
+        {
+            color.withAlphaComponent(isHovered ? 0.9 : 0.7).setStroke()
+            shape.lineWidth = 1
+            shape.stroke()
+        }
 
         var labelX = frame.minX + 6
         if let systemImage = presentation.systemImage {

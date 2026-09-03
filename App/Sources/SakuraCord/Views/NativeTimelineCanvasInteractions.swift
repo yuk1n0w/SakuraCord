@@ -87,7 +87,7 @@ extension NativeTimelineCanvasView {
             }
         }
         if let model {
-            for token in row.textPlan.preparedText?.tokens ?? [] {
+            for token in presentedTextPlan(for: row).preparedText?.tokens ?? [] {
                 guard case let .customEmoji(emoji) = token else { continue }
                 let reference = EmojiReference(rawToken: emoji.rawToken)
                 guard reference.isAnimated,
@@ -355,21 +355,27 @@ extension NativeTimelineCanvasView {
             useCase: .reaction(
                 guildID: message.guildID ?? model.selectedGuildID
             ),
-            allowsPersistentSelection: true
-        ) { [weak self] activation in
-            guard let self else { return }
-            let value = switch activation.selection {
-            case let .native(value): value
-            case let .custom(emoji): emoji.messageToken
-            }
-            self.actions?.react(value, message)
-            if !activation.keepsPickerPresented {
-                self.reactionPickerCoordinator.close(
-                    notifyBinding: false
-                )
+            allowsPersistentSelection: true,
+            dismiss: { [weak self] in
+                guard let self else { return }
+                self.reactionPickerCoordinator.close(notifyBinding: false)
                 self.reactionPickerSource.frame = .zero
+            },
+            select: { [weak self] activation in
+                guard let self else { return }
+                let value = switch activation.selection {
+                case let .native(value): value
+                case let .custom(emoji): emoji.messageToken
+                }
+                self.actions?.react(value, message)
+                if !activation.keepsPickerPresented {
+                    self.reactionPickerCoordinator.close(
+                        notifyBinding: false
+                    )
+                    self.reactionPickerSource.frame = .zero
+                }
             }
-        }
+        )
         reactionPickerCoordinator.update(
             sourceView: reactionPickerSource,
             isPresented: true,
@@ -441,10 +447,9 @@ extension NativeTimelineCanvasView {
             for region in componentLayout.selects
             where region.frame.contains(point) {
                 guard !region.isDisabled else { return true }
-                showMenu(
+                showComponentChoicePicker(
                     for: region,
-                    message: message,
-                    rowIndex: rowIndex
+                    message: message
                 )
                 return true
             }
@@ -504,7 +509,46 @@ extension NativeTimelineCanvasView {
             pointerHit.hit,
             message: message,
             rowIdentifier: rowIdentifier,
-            region: pointerHit.region
+            region: pointerHit.region,
+            profileAnchor: textLinkAnchorFrame(
+                for: pointerHit,
+                in: layout,
+                rowIdentifier: rowIdentifier
+            )
+        )
+    }
+
+    func textLinkAnchorFrame(
+        for pointerHit: TextPointerHit,
+        in layout: NativeTimelineRowLayout,
+        rowIdentifier: NativeMessageTimelineItem.Identifier
+    ) -> CGRect? {
+        guard let index = items.firstIndex(where: {
+            $0.identifier == rowIdentifier
+        }),
+            let textRegion = linkPointerTextRegions(
+                for: items[index],
+                layout: layout
+            ).first(where: { $0.region == pointerHit.region }),
+            pointerHit.hit.characterIndex >= 0,
+            pointerHit.hit.characterIndex < textRegion.value.length
+        else { return nil }
+        var linkRange = NSRange(location: 0, length: 0)
+        guard textRegion.value.attribute(
+            .link,
+            at: pointerHit.hit.characterIndex,
+            effectiveRange: &linkRange
+        ) != nil,
+            let localFrame = NativeTimelineTextHitTester.rangeFrame(
+                value: textRegion.value,
+                framesetter: textRegion.framesetter,
+                frame: textRegion.frame,
+                range: linkRange
+            )
+        else { return nil }
+        return localFrame.offsetBy(
+            dx: 0,
+            dy: displayedRowOrigin(at: index)
         )
     }
 
@@ -577,7 +621,8 @@ extension NativeTimelineCanvasView {
         _ hit: NativeTimelineTextHit,
         message: Message,
         rowIdentifier: NativeMessageTimelineItem.Identifier,
-        region: NativeTimelineTextRegion
+        region: NativeTimelineTextRegion,
+        profileAnchor: CGRect? = nil
     ) -> Bool {
         if let spoilerRange = hit.spoilerRange,
            let key = textSpoilerRevealKey(
@@ -608,7 +653,17 @@ extension NativeTimelineCanvasView {
             return true
         }
         guard let url = hit.url else { return false }
-        return MessageLinkActivator.activate(url, model: model)
+        let presentSystemProfile: ((User) -> Void)? = profileAnchor.map { anchor in
+            { [weak self] user in
+                self?.showMessageProfile(for: user, anchor: anchor)
+            }
+        }
+        return MessageLinkActivator.activate(
+            url,
+            model: model,
+            sourceMessage: message,
+            presentSystemProfile: presentSystemProfile
+        )
     }
 
     func revealTextSpoiler(
@@ -774,63 +829,74 @@ extension NativeTimelineCanvasView {
         rebuildAccessibilityProxy(for: identifier)
     }
 
-    func showMenu(
+    func showComponentChoicePicker(
         for region: NativeTimelineComponentLayout.SelectRegion,
-        message: Message,
-        rowIndex: Int
+        message: Message
     ) {
-        guard region.kind == .string else {
-            showComponentChoicePicker(
-                for: region,
-                message: message,
-                rowIndex: rowIndex
-            )
-            return
-        }
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        for option in region.options {
-            let title = option.emoji.map {
-                "\($0.name) \(option.label)"
-            } ?? option.label
-            let item = actionItem(
-                title,
-                systemImage: option.isDefault
-                    ? "checkmark.circle.fill"
-                    : "circle"
-            ) { [weak self] in
+        guard let model else { return }
+        closeComponentChoiceOverlay()
+        let selectedOptions = model.componentSelection(
+            messageID: message.id,
+            customID: region.customID
+        )
+        let initialSelection = Array(
+            (selectedOptions ?? region.options.filter(\.isDefault))
+                .map(\.value)
+                .prefix(max(1, region.maximumSelectionCount))
+        )
+        let initialOptions = initialComponentChoices(for: region, message: message, model: model)
+        let overlay = ComponentChoiceOverlayController(
+            initialSelection: initialSelection,
+            minimumSelectionCount: region.minimumSelectionCount,
+            maximumSelectionCount: region.maximumSelectionCount,
+            submit: { [weak self] values in
                 guard let self else { return }
                 self.actions?.submitComponent(
                     message,
                     region.customID,
                     self.interactionKind(region.kind),
-                    [option.value]
+                    values
                 )
+            },
+            onClose: { [weak self] in
+                if model.componentSelection(
+                    messageID: message.id,
+                    customID: region.customID
+                )?.map(\.value) != initialSelection
+                {
+                    model.publishComponentSelectionPresentation()
+                }
+                self?.componentChoiceOverlay = nil
+                self?.activeComponentChoiceTarget = nil
+                self?.needsDisplay = true
             }
-            item.state = option.isDefault ? .on : .off
-            item.toolTip = option.description
-            menu.addItem(item)
-        }
-        let point = CGPoint(
-            x: region.frame.minX,
-            y: displayedRowOrigin(at: rowIndex) + region.frame.maxY + 2
         )
-        menu.popUp(positioning: nil, at: point, in: self)
-    }
-
-    func showComponentChoicePicker(
-        for region: NativeTimelineComponentLayout.SelectRegion,
-        message: Message,
-        rowIndex: Int
-    ) {
-        guard let model else { return }
-        closeComponentChoicePopover()
-        let popover = NSPopover()
-        popover.behavior = .transient
-        popover.animates = true
-        popover.contentViewController = NSHostingController(
-            rootView: ComponentChoicePicker(
+        componentChoiceOverlay = overlay
+        activeComponentChoiceTarget = NativeTimelineComponentSelectTarget(
+            messageID: message.id,
+            componentID: region.componentID
+        )
+        needsDisplay = true
+        guard let anchorRect = componentSelectAnchorRect(
+            messageID: message.id,
+            componentID: region.componentID
+        ) else {
+            overlay.close()
+            return
+        }
+        let placement = ComponentChoiceOverlayController.placement(
+            for: anchorRect,
+            in: self
+        )
+        overlay.present(
+            rootView: AnyView(ComponentChoicePicker(
                 placeholder: region.placeholder,
+                selectKind: region.kind,
+                options: region.options,
+                initialOptions: initialOptions,
+                selectedOptions: selectedOptions,
+                maximumSelectionCount: region.maximumSelectionCount,
+                resultPlacement: placement,
                 loader: { [weak model] query in
                     guard let model else {
                         throw CancellationError()
@@ -842,35 +908,66 @@ extension NativeTimelineCanvasView {
                         channelID: message.channelID
                     )
                 },
-                select: { [weak self] option in
-                    guard let self else { return }
-                    self.actions?.submitComponent(
-                        message,
-                        region.customID,
-                        self.interactionKind(region.kind),
-                        [option.value]
+                selectionChanged: { [weak model, weak overlay] options in
+                    model?.setComponentSelection(
+                        options,
+                        messageID: message.id,
+                        customID: region.customID
                     )
-                    self.closeComponentChoicePopover()
+                    overlay?.updateSelection(options.map(\.value))
+                },
+                submitSingleSelection: { [weak overlay] values in
+                    overlay?.submitSingleSelection(values)
+                },
+                dismiss: { [weak overlay] in
+                    overlay?.close()
                 }
-            )
-        )
-        componentChoicePopover = popover
-        popover.show(
-            relativeTo: CGRect(
-                x: region.frame.minX,
-                y: displayedRowOrigin(at: rowIndex)
-                    + region.frame.minY,
-                width: region.frame.width,
-                height: region.frame.height
-            ),
-            of: self,
-            preferredEdge: .maxY
+            )),
+            in: self,
+            placement: placement,
+            anchorRectProvider: { [weak self] in
+                self?.componentSelectAnchorRect(
+                    messageID: message.id,
+                    componentID: region.componentID
+                )
+            }
         )
     }
 
-    func closeComponentChoicePopover() {
-        componentChoicePopover?.performClose(nil)
-        componentChoicePopover = nil
+    func initialComponentChoices(
+        for region: NativeTimelineComponentLayout.SelectRegion,
+        message: Message,
+        model: AppModel
+    ) -> [ComponentSelectOption] {
+        guard region.options.isEmpty else { return region.options }
+        return model.cachedComponentChoices(
+            kind: region.kind,
+            guildID: message.guildID,
+            channelTypes: region.channelTypes
+        )
+    }
+
+    func componentSelectAnchorRect(
+        messageID: MessageID,
+        componentID: String
+    ) -> CGRect? {
+        guard let rowIndex = items.firstIndex(where: {
+            $0.messageID == messageID
+        }),
+        layouts.indices.contains(rowIndex),
+        let region = layouts[rowIndex].componentLayouts
+            .flatMap(\.selects)
+            .first(where: { $0.componentID == componentID })
+        else { return nil }
+        return region.frame.offsetBy(
+            dx: 0,
+            dy: displayedRowOrigin(at: rowIndex)
+        )
+    }
+
+    func closeComponentChoiceOverlay() {
+        componentChoiceOverlay?.close()
+        componentChoiceOverlay = nil
     }
 
     func interactionKind(
@@ -892,11 +989,15 @@ extension NativeTimelineCanvasView {
               layouts.indices.contains(index),
               case let .message(row, _, _) = items[index]
         else { return nil }
+        let interactionMode = MessageOutboxPresentation.interactionMode(
+            for: row.message.outboxState
+        )
+        guard interactionMode.allowsMessageContextMenu else { return nil }
         let localPoint = CGPoint(
             x: point.x,
             y: point.y - displayedRowOrigin(at: index)
         )
-        if let imageItem = NativeTimelineImageContextMenuPlan.item(
+        let imageItem = NativeTimelineImageContextMenuPlan.item(
             in: row.message,
             layout: layouts[index],
             at: localPoint,
@@ -908,7 +1009,22 @@ extension NativeTimelineCanvasView {
                     )
                 )
             }
-        ) {
+        )
+        let gif = NativeTimelineGIFContextMenuPlan.result(
+            in: row.message,
+            layout: layouts[index],
+            at: localPoint
+        )
+        if interactionMode.allowsMediaContextMenu,
+           let gif
+        {
+            return GIFContextMenuBuilder.make(
+                actions: gifContextMenuActions(for: gif)
+            )
+        }
+        if interactionMode.allowsMediaContextMenu,
+           let imageItem
+        {
             return MediaImageContextMenuBuilder.make(
                 actions: imageContextMenuActions(for: imageItem)
             )
@@ -918,7 +1034,10 @@ extension NativeTimelineCanvasView {
             for: row,
             at: index,
             point: point,
-            actions: actions
+            actions: actions,
+            failedMediaActions: interactionMode == .failed
+                ? imageItem.map(imageContextMenuActions(for:))
+                : nil
         )
     }
 
@@ -926,7 +1045,8 @@ extension NativeTimelineCanvasView {
         for row: MessageRowPresentation,
         at index: Int,
         point: CGPoint,
-        actions: NativeTimelineRowActions
+        actions: NativeTimelineRowActions,
+        failedMediaActions: MediaImageContextMenuActions?
     ) -> NSMenu? {
         guard TimelineContextMenuHitTesting.contains(
             point,
@@ -935,13 +1055,24 @@ extension NativeTimelineCanvasView {
         ) else { return nil }
         let canEdit =
             row.message.author.id == model?.snapshot?.currentUser.id
+                && MessageReplyPresentationPolicy.allowsReplyAction(
+                    for: row.message
+                )
+        let canDelete = model?.canDeleteMessage(row.message) == true
         let menu = NSMenu()
         menu.autoenablesItems = false
+        var insertedFailedMediaActions = false
         for entry in NativeTimelineMessageMenuPolicy.entries(
             canEdit: canEdit,
+            canDelete: canDelete,
             canRetry: row.message.outboxState == .failed,
-            canReply: actions.reply != nil,
+            canReply: actions.reply != nil
+                && MessageReplyPresentationPolicy.allowsReplyAction(
+                    for: row.message
+                ),
             canForward: actions.forward != nil && model?.canForward(row.message) == true,
+            canPin: model?.canManagePins(for: row.message) == true,
+            isPinned: row.message.isPinned,
             context: messageInteractionContext
         ) {
             guard case let .action(
@@ -952,6 +1083,17 @@ extension NativeTimelineCanvasView {
             ) = entry
             else {
                 menu.addItem(.separator())
+                if !insertedFailedMediaActions,
+                   let failedMediaActions
+                {
+                    MediaImageContextMenuBuilder.appendImageActions(
+                        to: menu,
+                        actions: failedMediaActions,
+                        includesLinkActions: false
+                    )
+                    menu.addItem(.separator())
+                    insertedFailedMediaActions = true
+                }
                 continue
             }
             let handler = messageMenuHandler(
@@ -979,6 +1121,28 @@ extension NativeTimelineCanvasView {
         actions: NativeTimelineRowActions
     ) -> () -> Void {
         switch action {
+        case .pinMessage, .unpinMessage:
+            return { actions.togglePin(row.message) }
+        default:
+            return nonPinMessageMenuHandler(
+                action: action,
+                row: row,
+                index: index,
+                actions: actions
+            )
+        }
+    }
+
+    private func nonPinMessageMenuHandler(
+        action: NativeTimelineMessageMenuAction,
+        row: MessageRowPresentation,
+        index: Int,
+        actions: NativeTimelineRowActions
+    ) -> () -> Void {
+        if let copyHandler = copyMessageMenuHandler(action: action, row: row) {
+            return copyHandler
+        }
+        return switch action {
         case .jumpToMessage:
             { actions.openMessage?(row.message) }
         case .retrySending:
@@ -999,6 +1163,18 @@ extension NativeTimelineCanvasView {
             { actions.markUnread(row.message) }
         case .editMessage:
             { [weak self] in self?.beginEditing(row: row, at: index) }
+        case .deleteMessage, .discardFailedMessage:
+            deletionMenuHandler(action: action, message: row.message)
+        default:
+            {}
+        }
+    }
+
+    private func copyMessageMenuHandler(
+        action: NativeTimelineMessageMenuAction,
+        row: MessageRowPresentation
+    ) -> (() -> Void)? {
+        switch action {
         case .copyText:
             { Self.copyText(row.message.content) }
         case .copyLink:
@@ -1010,9 +1186,19 @@ extension NativeTimelineCanvasView {
             { Self.copyText(row.message.id.description) }
         case .copyAuthorID:
             { Self.copyText(row.message.author.id.description) }
-        case .deleteMessage:
-            { [weak self] in self?.requestDelete(row.message) }
+        default:
+            nil
         }
+    }
+
+    func deletionMenuHandler(
+        action: NativeTimelineMessageMenuAction,
+        message: Message
+    ) -> () -> Void {
+        if action == .discardFailedMessage {
+            return { [weak self] in self?.requestDiscardFailed(message) }
+        }
+        return { [weak self] in self?.requestDelete(message) }
     }
 
     func imageContextMenuActions(
@@ -1044,6 +1230,27 @@ extension NativeTimelineCanvasView {
             },
             openLink: {
                 MediaViewerActionService.openInBrowser(item.url)
+            }
+        )
+    }
+
+    func gifContextMenuActions(
+        for gif: GIFSearchResult
+    ) -> GIFContextMenuActions {
+        let isFavorite = model?.favoriteGIFs.contains(where: {
+            $0.url == gif.url
+        }) == true
+        return GIFContextMenuActions(
+            isFavorite: isFavorite,
+            isFavoriteMutationPending: model?.gifFavoriteMutationURL != nil,
+            toggleFavorite: { [weak self] in
+                self?.model?.setGIFFavorite(
+                    gif,
+                    isFavorite: !isFavorite
+                )
+            },
+            copyMediaLink: {
+                MediaViewerActionService.copyText(gif.url.absoluteString)
             }
         )
     }

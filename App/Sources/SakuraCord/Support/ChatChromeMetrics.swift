@@ -2,6 +2,13 @@ import SwiftUI
 
 nonisolated enum ChatChromeMetrics {
     static let controlHeight: CGFloat = 48
+    static let composerControlHeight: CGFloat = 36
+    static let composerCornerRadius = composerControlHeight / 2
+    static let composerTextVerticalInset: CGFloat = 9
+    static let composerAccessoryButtonSize: CGFloat = 32
+    static let composerAccessoryEdgeInset: CGFloat =
+        (composerControlHeight - composerAccessoryButtonSize) / 2
+    static let composerSegmentSpacing: CGFloat = 8
     static let controlCornerRadius: CGFloat = 16
     static let serverRailWidth: CGFloat = 68
     static let sidebarTitleLeadingOffset: CGFloat = serverRailWidth + 24
@@ -18,7 +25,17 @@ nonisolated enum ChatChromeMetrics {
     static let composerMinimumCornerRadius: CGFloat = 12
     static let channelListTopPadding: CGFloat = 10
     static let memberListWidth: CGFloat = 280
+    /// Native toolbar search keeps its own outer item margin. An eight-point
+    /// field inset centers the visible glass inside the fixed inspector pane.
+    static let toolbarPaneEdgeInset: CGFloat = 8
+    static let toolbarSearchMaximumFieldWidth: CGFloat =
+        memberListWidth - (toolbarPaneEdgeInset * 2)
     static let emojiPickerWidth: CGFloat = 520
+    static let pickerSearchHeaderHeight: CGFloat = 48
+    static let pickerSearchHeaderInset: CGFloat = 15
+    static let pickerSearchHeaderSpacing: CGFloat = 9
+    static let pickerSearchHeaderIconSize: CGFloat = 14
+    static let pickerSearchHeaderFontSize: CGFloat = 15
 }
 
 /// One place to tune how immediate the interface feels. Every view animation
@@ -43,7 +60,7 @@ nonisolated enum ChatDetailLayoutPolicy {
         timelineTopPadding + 7
     static let newMessagesButtonSpacing: CGFloat = 10
     static let defaultFloatingFooterHeight: CGFloat =
-        ChatChromeMetrics.controlHeight + 12 + 18
+        ChatChromeMetrics.composerControlHeight + 12 + 18
 
     static func bottomContentInset(measuredFooterHeight: CGFloat) -> CGFloat {
         guard measuredFooterHeight.isFinite else { return defaultFloatingFooterHeight }

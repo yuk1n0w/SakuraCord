@@ -80,7 +80,7 @@ struct ChannelListLoadingSkeleton: View {
         HStack(spacing: 5) {
             Image(systemName: "chevron.down")
                 .font(.caption2.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.12))
+                .foregroundStyle(.primary.opacity(0.12))
                 .frame(width: 8)
             SkeletonShape(cornerRadius: 4)
                 .frame(width: 86, height: 9)
@@ -124,7 +124,6 @@ struct SakuraCordSessionLoadingView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .preferredColorScheme(.dark)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Opening SakuraCord. \(detail)")
     }
@@ -208,35 +207,39 @@ struct SakuraCordSessionLoadingView: View {
         VStack(spacing: 0) {
             ChannelListLoadingSkeleton()
 
-            GlassEffectContainer(spacing: 0) {
-                HStack(spacing: 9) {
-                    SkeletonShape(cornerRadius: 17)
-                        .frame(width: 34, height: 34)
-                    VStack(alignment: .leading, spacing: 4) {
+            GlassEffectContainer(spacing: SidebarAccountControlMetrics.surfaceSpacing) {
+                HStack(spacing: 8) {
+                    SkeletonShape(Circle())
+                        .frame(
+                            width: SidebarAccountControlMetrics.avatarSize,
+                            height: SidebarAccountControlMetrics.avatarSize
+                        )
+                    VStack(alignment: .leading, spacing: 3) {
                         SkeletonShape(cornerRadius: 4)
-                            .frame(width: 88, height: 11)
+                            .frame(width: 82, height: 10)
                         SkeletonShape(cornerRadius: 3)
-                            .frame(width: 58, height: 8)
+                            .frame(width: 52, height: 7)
                     }
-                    Spacer(minLength: 4)
-                    SkeletonShape(cornerRadius: 7)
-                        .frame(width: 22, height: 22)
+                    Spacer(minLength: 0)
+                    SkeletonShape(Circle())
+                        .frame(
+                            width: SidebarAccountControlMetrics.settingsDiameter,
+                            height: SidebarAccountControlMetrics.settingsDiameter
+                        )
                 }
-                .padding(.horizontal, 10)
-                .frame(height: ChatChromeMetrics.controlHeight)
+                .padding(.horizontal, SidebarAccountControlMetrics.contentInset)
+                .frame(height: SidebarAccountControlMetrics.capsuleHeight)
                 .glassEffect(
                     .regular,
                     in: ConcentricRectangle(
-                        corners: .concentric(
-                            minimum: .fixed(ChatChromeMetrics.composerMinimumCornerRadius)
-                        ),
-                        isUniform: true
+                        cornerRadius: SidebarAccountControlMetrics.cornerRadius,
+                        style: .continuous
                     )
                 )
             }
             .padding(.horizontal, 8)
-            .padding(.top, 8)
-            .padding(.bottom, 12)
+            .padding(.top, SidebarAccountControlMetrics.surfaceSpacing)
+            .padding(.bottom, 8)
         }
         .overlay {
             SidebarChromeSeparator(
@@ -263,10 +266,40 @@ struct SakuraCordSessionLoadingView: View {
             bottomContentInset: ChatDetailLayoutPolicy.defaultFloatingFooterHeight
         )
         .overlay(alignment: .bottom) {
-            SkeletonShape(cornerRadius: ChatChromeMetrics.composerMinimumCornerRadius)
+            composerLoadingSkeleton
+                .padding(.horizontal, ChatChromeMetrics.composerWindowInset)
+                .padding(.bottom, ChatChromeMetrics.composerWindowInset)
+        }
+    }
+
+    @ViewBuilder
+    private var composerLoadingSkeleton: some View {
+        switch AppearanceSettingsStore.shared.load().composerBarAppearance {
+        case .defaultStyle:
+            HStack(spacing: ChatChromeMetrics.composerSegmentSpacing) {
+                SkeletonShape(Circle())
+                    .frame(
+                        width: ChatChromeMetrics.composerControlHeight,
+                        height: ChatChromeMetrics.composerControlHeight
+                    )
+                SkeletonShape(cornerRadius: ChatChromeMetrics.composerCornerRadius)
+                    .frame(height: ChatChromeMetrics.composerControlHeight)
+                SkeletonShape(Circle())
+                    .frame(
+                        width: ChatChromeMetrics.composerControlHeight,
+                        height: ChatChromeMetrics.composerControlHeight
+                    )
+            }
+        case .legacy:
+            SkeletonShape(
+                ConcentricRectangle(
+                    corners: .concentric(
+                        minimum: .fixed(ChatChromeMetrics.composerMinimumCornerRadius)
+                    ),
+                    isUniform: true
+                )
+            )
             .frame(height: ChatChromeMetrics.controlHeight)
-            .padding(.horizontal, ChatChromeMetrics.composerWindowInset)
-            .padding(.bottom, ChatChromeMetrics.composerWindowInset)
         }
     }
 
@@ -317,11 +350,21 @@ struct SakuraCordSessionLoadingView: View {
 }
 
 struct SkeletonShape: View {
-    let cornerRadius: CGFloat
+    private let shape: AnyShape
+
+    init(cornerRadius: CGFloat) {
+        shape = AnyShape(
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        )
+    }
+
+    init(_ shape: some Shape) {
+        self.shape = AnyShape(shape)
+    }
 
     var body: some View {
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(.white.opacity(0.09))
+        shape
+            .fill(.primary.opacity(0.09))
             .skeletonShimmer()
     }
 }
@@ -330,18 +373,20 @@ struct SkeletonShape: View {
 // intentionally uses only structural placeholders.
 struct SakuraCordAuroraBackdrop: View {
     let elapsed: TimeInterval
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        let theme = SakuraCordThemeStore.shared.activeTheme
+        let colors = theme.colors(for: colorScheme)
+        let firstColor = colors[0]
+        let lastColor = colors[colors.count - 1]
+        let middleColor = colors[colors.count / 2]
         ZStack {
-            LinearGradient(
-                colors: [Color(hex: 0x0D0914), Color(hex: 0x1B1022), Color(hex: 0x0B0913)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            SakuraCordThemeBackground(emphasizesGradient: true)
 
             GeometryReader { geometry in
                 Ellipse()
-                    .fill(Color(hex: 0xFF4F96).opacity(0.2))
+                    .fill(firstColor.opacity(colorScheme == .dark ? 0.24 : 0.18))
                     .frame(width: geometry.size.width * 0.72, height: geometry.size.height * 0.68)
                     .blur(radius: 110)
                     .offset(
@@ -350,7 +395,7 @@ struct SakuraCordAuroraBackdrop: View {
                     )
 
                 Ellipse()
-                    .fill(Color(hex: 0x7A5CFF).opacity(0.13))
+                    .fill(lastColor.opacity(colorScheme == .dark ? 0.18 : 0.14))
                     .frame(width: geometry.size.width * 0.64, height: geometry.size.height * 0.58)
                     .blur(radius: 120)
                     .offset(
@@ -359,7 +404,7 @@ struct SakuraCordAuroraBackdrop: View {
                     )
 
                 Ellipse()
-                    .fill(Color(hex: 0x58C6D8).opacity(0.07))
+                    .fill(middleColor.mix(with: lastColor, by: 0.5).opacity(0.10))
                     .frame(width: geometry.size.width * 0.48, height: geometry.size.height * 0.48)
                     .blur(radius: 100)
                     .offset(
@@ -369,7 +414,12 @@ struct SakuraCordAuroraBackdrop: View {
             }
 
             RadialGradient(
-                colors: [.clear, Color.black.opacity(0.36)],
+                colors: [
+                    .clear,
+                    colorScheme == .dark
+                        ? Color.black.opacity(0.30)
+                        : Color.white.opacity(0.22),
+                ],
                 center: .center,
                 startRadius: 180,
                 endRadius: 800
@@ -381,11 +431,19 @@ struct SakuraCordAuroraBackdrop: View {
 struct SakuraCordSakuraPetalField: View {
     let elapsed: TimeInterval
     let size: CGSize
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        let theme = SakuraCordThemeStore.shared.activeTheme
+        let colors = theme.colors(for: colorScheme)
         Canvas(rendersAsynchronously: true) { context, _ in
             for index in 0 ..< 24 {
-                let petal = SakuraPetal.motion(index: index, elapsed: elapsed, canvasSize: size)
+                let petal = SakuraPetal.motion(
+                    index: index,
+                    elapsed: elapsed,
+                    canvasSize: size,
+                    colors: colors
+                )
                 context.drawLayer { layer in
                     layer.translateBy(x: petal.position.x, y: petal.position.y)
                     layer.rotate(by: petal.rotation)
@@ -424,7 +482,12 @@ private enum SakuraPetal {
         return path
     }()
 
-    static func motion(index: Int, elapsed: TimeInterval, canvasSize: CGSize) -> Motion {
+    static func motion(
+        index: Int,
+        elapsed: TimeInterval,
+        canvasSize: CGSize,
+        colors: [Color]
+    ) -> Motion {
         let seed = fraction(sin(Double(index + 1) * 12.9898) * 43_758.5453)
         let secondarySeed = fraction(sin(Double(index + 7) * 78.233) * 19_341.274)
         let duration = 10 + seed * 9
@@ -442,7 +505,7 @@ private enum SakuraPetal {
             rotation: .radians(elapsed * (0.3 + seed * 0.75) + secondarySeed * .pi * 2),
             scale: depth,
             opacity: 0.18 + seed * 0.38,
-            color: index.isMultiple(of: 4) ? Color(hex: 0xFFD1E1) : Color(hex: 0xFF8FBA)
+            color: colors[index % colors.count]
         )
     }
 

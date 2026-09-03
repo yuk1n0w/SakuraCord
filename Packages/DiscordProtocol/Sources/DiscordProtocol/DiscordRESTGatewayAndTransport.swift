@@ -949,16 +949,24 @@ extension DiscordRESTProvider {
                 )
             }
         case "USER_SETTINGS_PROTO_UPDATE":
-            guard
-                let update = try? JSONDecoder().decode(
-                    GatewayUserSettingsProtoUpdateDTO.self,
-                    from: data
-                ), update.settings.type == 1
-            else { return }
-            applyGuildSettingsProto(
-                update.settings.proto,
-                replacesAllSettings: update.partial != true
-            )
+            guard let update = try? JSONDecoder().decode(
+                GatewayUserSettingsProtoUpdateDTO.self,
+                from: data
+            ) else { return }
+            switch update.settings.type {
+            case 1:
+                applyGuildSettingsProto(
+                    update.settings.proto,
+                    replacesAllSettings: update.partial != true
+                )
+            case 2:
+                await applyFrecencySettingsProtoUpdate(
+                    update.settings.proto,
+                    isPartial: update.partial == true
+                )
+            default:
+                return
+            }
         case "USER_GUILD_SETTINGS_UPDATE":
             guard let update = try? JSONDecoder().decode(
                 GatewayUserGuildSettingsDTO.self, from: data
@@ -1782,6 +1790,7 @@ extension DiscordRESTProvider {
                 cachedChannels[nil] = channels
                 continuation?.yield(.channelsChanged(guildID: nil, channels: channels))
             }
+            continuation?.yield(.channelPinsInvalidated(channelID: channelID))
         case "GUILD_MEMBER_LIST_UPDATE":
             guard let update = try? JSONDecoder().decode(GuildMemberListUpdateDTO.self, from: data),
                   let guildID = GuildID(update.guildID)

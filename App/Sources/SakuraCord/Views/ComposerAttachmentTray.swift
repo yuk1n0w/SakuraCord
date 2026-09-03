@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ComposerAttachmentTray: View {
     let attachments: [ForumPostAttachment]
+    let open: (UUID) -> Void
     let toggleSpoiler: (UUID) -> Void
     let update: (ForumPostAttachment) -> Void
     let remove: (UUID) -> Void
@@ -42,66 +43,7 @@ struct ComposerAttachmentTray: View {
 
     private func attachmentTile(_ attachment: ForumPostAttachment) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            ZStack {
-                LocalAttachmentThumbnail(
-                    url: attachment.url,
-                    maximumPixelDimension: 480,
-                    preservesImageAspectRatio: true,
-                    imageCornerRadius: 16
-                )
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-
-                if attachment.isSpoiler {
-                    Rectangle()
-                        .fill(.black.opacity(0.58))
-                    VStack(spacing: 5) {
-                        Image(systemName: "eye.slash")
-                        Text("SPOILER")
-                            .font(.caption2.weight(.bold))
-                    }
-                    .foregroundStyle(.white)
-                }
-            }
-            .frame(width: tileSize, height: tileSize - filenameRowHeight)
-            .overlay(alignment: .topTrailing) {
-                if hoveredID == attachment.id {
-                    HoverActionPill(
-                        glass: .regular.interactive(),
-                        spacing: 1,
-                        padding: 3
-                    ) {
-                        HoverActionButton(
-                            systemImage: attachment.isSpoiler ? "eye.slash" : "eye",
-                            help: attachment.isSpoiler ? "Remove spoiler" : "Mark as spoiler",
-                            isSelected: attachment.isSpoiler,
-                            diameter: 22,
-                            iconFont: .caption2.weight(.semibold)
-                        ) {
-                            toggleSpoiler(attachment.id)
-                        }
-                        HoverActionButton(
-                            systemImage: "pencil",
-                            help: "Edit attachment",
-                            diameter: 22,
-                            iconFont: .caption2.weight(.semibold)
-                        ) {
-                            editingTarget = ComposerAttachmentEditorTarget(id: attachment.id)
-                        }
-                        HoverActionButton(
-                            systemImage: "trash",
-                            help: "Delete attachment",
-                            role: .destructive,
-                            diameter: 22,
-                            iconFont: .caption2.weight(.semibold)
-                        ) {
-                            remove(attachment.id)
-                        }
-                    }
-                    .padding(7)
-                }
-            }
-
+            attachmentPreview(attachment)
             Text(attachment.filename)
                 .font(.callout.weight(.medium))
                 .lineLimit(1)
@@ -130,6 +72,10 @@ struct ComposerAttachmentTray: View {
             .help(attachment.filename)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(attachment.filename)
+            .accessibilityAction(named: "Open attachment") {
+                guard attachmentMediaKind(attachment).isViewableImage else { return }
+                open(attachment.id)
+            }
             .accessibilityAction(
                 named: attachment.isSpoiler ? "Remove spoiler" : "Mark as spoiler"
             ) {
@@ -141,5 +87,95 @@ struct ComposerAttachmentTray: View {
             .accessibilityAction(named: "Delete attachment") {
                 remove(attachment.id)
             }
+    }
+
+    private func attachmentPreview(
+        _ attachment: ForumPostAttachment
+    ) -> some View {
+        ZStack {
+            LocalAttachmentThumbnail(
+                url: attachment.url,
+                maximumPixelDimension: 480,
+                preservesImageAspectRatio: true,
+                imageCornerRadius: 16
+            )
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+
+            if attachment.isSpoiler {
+                Rectangle()
+                    .fill(.black.opacity(0.58))
+                VStack(spacing: 5) {
+                    Image(systemName: "eye.slash")
+                    Text("SPOILER")
+                        .font(.caption2.weight(.bold))
+                }
+                .foregroundStyle(.white)
+            }
+        }
+        .frame(width: tileSize, height: tileSize - filenameRowHeight)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard attachmentMediaKind(attachment).isViewableImage else { return }
+            open(attachment.id)
+        }
+        .overlay(alignment: .topTrailing) {
+            if hoveredID == attachment.id {
+                attachmentActions(attachment)
+                    .padding(7)
+            }
+        }
+    }
+
+    private func attachmentActions(
+        _ attachment: ForumPostAttachment
+    ) -> some View {
+        HoverActionPill(
+            glass: .regular.interactive(),
+            spacing: 1,
+            padding: 3
+        ) {
+            HoverActionButton(
+                systemImage: attachment.isSpoiler ? "eye.slash" : "eye",
+                help: attachment.isSpoiler ? "Remove spoiler" : "Mark as spoiler",
+                isSelected: attachment.isSpoiler,
+                diameter: 22,
+                iconFont: .caption2.weight(.semibold)
+            ) {
+                toggleSpoiler(attachment.id)
+            }
+            HoverActionButton(
+                systemImage: "pencil",
+                help: "Edit attachment",
+                diameter: 22,
+                iconFont: .caption2.weight(.semibold)
+            ) {
+                editingTarget = ComposerAttachmentEditorTarget(id: attachment.id)
+            }
+            HoverActionButton(
+                systemImage: "trash",
+                help: "Delete attachment",
+                role: .destructive,
+                diameter: 22,
+                iconFont: .caption2.weight(.semibold)
+            ) {
+                remove(attachment.id)
+            }
+        }
+    }
+
+    private func attachmentMediaKind(
+        _ attachment: ForumPostAttachment
+    ) -> AttachmentMediaKind {
+        OptimisticAttachmentPresentation.attachment(
+            for: attachment.url,
+            index: 0
+        ).mediaKind
+    }
+}
+
+private extension AttachmentMediaKind {
+    var isViewableImage: Bool {
+        self == .image || self == .animatedImage
     }
 }

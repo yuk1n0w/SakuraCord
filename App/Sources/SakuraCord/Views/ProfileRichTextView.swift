@@ -86,12 +86,14 @@ private struct ProfileStatusTextRepresentable: NSViewRepresentable {
         textView.textContainer?.heightTracksTextView = false
         textView.isHorizontallyResizable = false
         textView.isVerticallyResizable = true
+        textView.applySakuraCordTextSelectionAppearance()
         return textView
     }
 
     func updateNSView(_ textView: ProfileStatusNSTextView, context: Context) {
         let selection = textView.selectedRange()
         textView.onHoverChange = onHoverChange
+        textView.applySakuraCordTextSelectionAppearance()
         textView.textContainer?.maximumNumberOfLines = isExpanded ? 0 : 1
         textView.textContainer?.lineBreakMode = isExpanded ? .byWordWrapping : .byTruncatingTail
         textView.textStorage?.setAttributedString(attributedText())
@@ -149,11 +151,13 @@ private struct ProfileTextRepresentable: NSViewRepresentable {
             .foregroundColor: NSColor.systemBlue,
             .underlineStyle: 0
         ]
+        textView.applySakuraCordTextSelectionAppearance()
         return textView
     }
 
     func updateNSView(_ textView: HoverLinkTextView, context: Context) {
         let selection = textView.selectedRange()
+        textView.applySakuraCordTextSelectionAppearance()
         textView.textStorage?.setAttributedString(attributedText())
         textView.setSelectedRange(selection.clamped(toLength: textView.string.utf16.count))
         textView.invalidateIntrinsicContentSize()
@@ -187,8 +191,22 @@ private struct ProfileTextRepresentable: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
             guard let url = link as? URL else { return false }
-            NSWorkspace.shared.open(url)
-            return true
+            var linkRange = NSRange(location: 0, length: 0)
+            textView.attributedString().attribute(
+                .link,
+                at: charIndex,
+                effectiveRange: &linkRange
+            )
+            let displayedText = linkRange.length > 0
+                ? textView.attributedString().attributedSubstring(
+                    from: linkRange
+                ).string
+                : nil
+            return MessageLinkActivator.activate(
+                url,
+                model: nil,
+                displayedText: displayedText
+            )
         }
     }
 }

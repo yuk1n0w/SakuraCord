@@ -282,7 +282,12 @@ private struct HomeRailButton: View {
                 Image(systemName: "message.fill")
                     .font(.title2)
                     .frame(width: 44, height: 44)
-                    .background(home.isSelected ? Color.accentColor : Color.secondary.opacity(0.16), in: ConcentricRectangle(cornerRadius: 14, style: .continuous))
+                    .background(
+                        home.isSelected
+                            ? SakuraCordAccentColor.color
+                            : Color.secondary.opacity(0.16),
+                        in: ConcentricRectangle(cornerRadius: 14, style: .continuous)
+                    )
                     .overlay(alignment: .bottomTrailing) {
                         if home.mentionCount > 0 {
                             Text(home.mentionCount, format: .number)
@@ -314,10 +319,11 @@ struct ServerRailSelectionIndicator: View {
     let isSelected: Bool
     let isHovering: Bool
     let hasNotification: Bool
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Capsule()
-            .fill(Color.primary)
+            .fill(colorScheme == .dark ? Color.white : Color.black)
             .frame(width: 4, height: indicatorHeight)
             .opacity(indicatorHeight == 0 ? 0 : 1)
             .frame(width: 7, height: 40)

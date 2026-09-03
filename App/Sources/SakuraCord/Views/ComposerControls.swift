@@ -13,7 +13,10 @@ struct EmojiAutocompleteRow: View {
         Button(action: select) {
             HStack(spacing: 9) {
                 if let url = suggestion.imageURL {
-                    AnimatedRemoteImage(url: url)
+                    AnimatedRemoteImage(
+                        url: url,
+                        accessibilityCategory: .emoji
+                    )
                         .frame(width: 28, height: 28)
                 } else {
                     Text(suggestion.value)
@@ -69,7 +72,9 @@ struct UploadProgressView: View {
                 ProgressView()
                 Text("Reserving \(files) file\(files == 1 ? "" : "s")…")
             case let .uploading(fileName, completed, total):
-                ProgressView(value: total > 0 ? Double(completed) / Double(total) : 0).frame(width: 90)
+                ProgressView(value: total > 0 ? Double(completed) / Double(total) : 0)
+                    .tint(SakuraCordAccentColor.color)
+                    .frame(width: 90)
                 Text("Uploading \(fileName)…").lineLimit(1)
             case .submitting:
                 ProgressView()
@@ -91,6 +96,9 @@ struct ComposerActionButton: View {
     let help: String
     var iconSize: CGFloat = 18
     var iconWeight: Font.Weight = .medium
+    var size = ChatChromeMetrics.composerControlHeight
+    var showsHoverBackground = true
+    var appearance: ComposerBarAppearance = .defaultStyle
     let action: () -> Void
 
     @Environment(\.isEnabled) private var isEnabled
@@ -102,27 +110,35 @@ struct ComposerActionButton: View {
                 .symbolVariant(.none)
                 .font(.system(size: iconSize, weight: iconWeight))
                 .foregroundStyle(.primary)
-                .frame(width: 36, height: 36)
+                .frame(width: size, height: size)
                 .contentShape(buttonShape)
         }
         .buttonStyle(.plain)
         .background(hoverColor, in: buttonShape)
         .contentShape(buttonShape)
-        .onHover { isHovering = $0 }
+        .onHover { isHovering = showsHoverBackground && $0 }
         .help(help)
     }
 
-    private var buttonShape: ConcentricRectangle {
-        ConcentricRectangle(cornerRadius: 9, style: .continuous)
+    private var buttonShape: AnyShape {
+        switch appearance {
+        case .defaultStyle:
+            AnyShape(Circle())
+        case .legacy:
+            AnyShape(ConcentricRectangle(cornerRadius: 9, style: .continuous))
+        }
     }
 
     private var hoverColor: Color {
-        isHovering && isEnabled ? .primary.opacity(0.14) : .clear
+        showsHoverBackground && isHovering && isEnabled
+            ? .primary.opacity(0.14)
+            : .clear
     }
 }
 
 struct ComposerSendButton: View {
     let action: () -> Void
+    var appearance: ComposerBarAppearance = .defaultStyle
 
     @Environment(\.isEnabled) private var isEnabled
     @State private var isHovering = false
@@ -132,21 +148,31 @@ struct ComposerSendButton: View {
             Image(systemName: "paperplane.circle.fill")
                 .font(.system(size: 21, weight: .medium))
                 .foregroundStyle(isEnabled ? Color.white : Color.gray.opacity(0.62))
-                .frame(width: 36, height: 36)
+                .frame(
+                    width: ChatChromeMetrics.composerControlHeight,
+                    height: ChatChromeMetrics.composerControlHeight
+                )
                 .contentShape(buttonShape)
         }
         .buttonStyle(.plain)
         .background(hoverColor, in: buttonShape)
         .contentShape(buttonShape)
-        .onHover { isHovering = $0 }
+        .onHover { isHovering = appearance == .legacy && $0 }
         .help("Send message")
     }
 
-    private var buttonShape: ConcentricRectangle {
-        ConcentricRectangle(cornerRadius: 9, style: .continuous)
+    private var buttonShape: AnyShape {
+        switch appearance {
+        case .defaultStyle:
+            AnyShape(Circle())
+        case .legacy:
+            AnyShape(ConcentricRectangle(cornerRadius: 9, style: .continuous))
+        }
     }
 
     private var hoverColor: Color {
-        isHovering && isEnabled ? .primary.opacity(0.14) : .clear
+        appearance == .legacy && isHovering && isEnabled
+            ? .primary.opacity(0.14)
+            : .clear
     }
 }

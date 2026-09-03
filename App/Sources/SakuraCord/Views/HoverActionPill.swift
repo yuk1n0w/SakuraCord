@@ -2,17 +2,23 @@ import SwiftUI
 
 nonisolated enum HoverActionPillMetrics {
     static let controlDiameter: CGFloat = 28
+    static let enlargedControlDiameter: CGFloat = 36
     static let spacing: CGFloat = 1
     static let padding: CGFloat = 4
 
-    static func size(controlCount: Int) -> CGSize {
+    static func diameter(enlarged: Bool) -> CGFloat {
+        enlarged ? enlargedControlDiameter : controlDiameter
+    }
+
+    static func size(controlCount: Int, enlarged: Bool = false) -> CGSize {
         let count = max(1, controlCount)
+        let diameter = diameter(enlarged: enlarged)
         return CGSize(
             width:
                 padding * 2
-                + controlDiameter * CGFloat(count)
+                + diameter * CGFloat(count)
                 + spacing * CGFloat(count - 1),
-            height: padding * 2 + controlDiameter
+            height: padding * 2 + diameter
         )
     }
 }
@@ -66,9 +72,12 @@ struct HoverActionButton: View {
     let help: String
     var role: ButtonRole?
     var isSelected: Bool?
-    var diameter: CGFloat = HoverActionPillMetrics.controlDiameter
+    var diameter: CGFloat?
     var iconFont: Font = .callout.weight(.medium)
+    var onHoverChanged: ((Bool) -> Void)?
     let action: () -> Void
+    @AppStorage("settings.accessibility.largerTargets")
+    private var usesLargerTargets = false
 
     var body: some View {
         let button = Button(role: role, action: action) {
@@ -76,6 +85,10 @@ struct HoverActionButton: View {
                 role: role,
                 isSelected: isSelected,
                 diameter: diameter
+                    ?? HoverActionPillMetrics.diameter(
+                        enlarged: usesLargerTargets
+                    ),
+                onHoverChanged: onHoverChanged
             ) {
                 Image(systemName: systemImage)
                     .symbolVariant(.none)
@@ -97,6 +110,7 @@ struct HoverActionControlLabel<Content: View>: View {
     var role: ButtonRole?
     var isSelected: Bool?
     var diameter: CGFloat = 28
+    var onHoverChanged: ((Bool) -> Void)?
     @ViewBuilder let content: () -> Content
     @State private var isHovering = false
 
@@ -107,12 +121,15 @@ struct HoverActionControlLabel<Content: View>: View {
             .contentShape(Circle())
             .background(backgroundColor, in: Circle())
             .contentShape(Circle())
-            .onHover { isHovering = $0 }
+            .onHover {
+                isHovering = $0
+                onHoverChanged?($0)
+            }
     }
 
     private var iconColor: Color {
         if role == .destructive, isHovering { return .red }
-        if isSelected == true { return .accentColor }
+        if isSelected == true { return SakuraCordAccentColor.color }
         return .primary
     }
 
@@ -120,6 +137,8 @@ struct HoverActionControlLabel<Content: View>: View {
         if isHovering {
             return role == .destructive ? .red.opacity(0.18) : .primary.opacity(0.14)
         }
-        return isSelected == true ? .accentColor.opacity(0.16) : .clear
+        return isSelected == true
+            ? SakuraCordAccentColor.color.opacity(0.16)
+            : .clear
     }
 }

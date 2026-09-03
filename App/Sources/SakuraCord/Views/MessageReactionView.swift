@@ -257,7 +257,7 @@ struct MessageReactionPill: View {
                         .font(.caption.weight(.semibold))
                         .monospacedDigit()
                         .foregroundStyle(
-                            reaction.didCurrentUserReact ? Color.accentColor : .primary
+                            reaction.didCurrentUserReact ? SakuraCordAccentColor.color : .primary
                         )
                         .contentTransition(.numericText(value: Double(reaction.count)))
                         .animation(
@@ -326,13 +326,15 @@ struct MessageReactionPill: View {
 
     private var backgroundColor: Color {
         if reaction.didCurrentUserReact {
-            return Color.accentColor.opacity(isHovered ? 0.22 : 0.16)
+            return SakuraCordAccentColor.color.opacity(isHovered ? 0.22 : 0.16)
         }
         return Color.primary.opacity(isHovered ? 0.14 : 0.09)
     }
 
     private var borderColor: Color {
-        if reaction.didCurrentUserReact { return Color.accentColor.opacity(0.95) }
+        if reaction.didCurrentUserReact {
+            return SakuraCordAccentColor.color.opacity(0.95)
+        }
         return isHovered ? Color.primary.opacity(0.28) : .clear
     }
 }
@@ -348,14 +350,15 @@ private struct MessageReactionEmoji: View {
                 ZStack {
                     ConcentricRectangle(cornerRadius: 5, style: .continuous)
                         .fill(Color.secondary.opacity(0.12))
-                    Image(systemName: "face.smiling")
+                    SakuraCordSystemSymbol.emojiFaceGrinningImage
                         .font(.system(size: size * 0.58, weight: .medium))
                         .foregroundStyle(.secondary)
                     if let url {
                         AnimatedRemoteImage(
                             url: url,
-                            fallbackSystemImage: "face.smiling",
-                            fallbackInset: 3
+                            fallbackSystemImage: SakuraCordSystemSymbol.emojiFaceGrinning,
+                            fallbackInset: 3,
+                            accessibilityCategory: .emoji
                         )
                     }
                 }

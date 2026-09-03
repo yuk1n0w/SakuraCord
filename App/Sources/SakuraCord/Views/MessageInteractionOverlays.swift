@@ -4,13 +4,16 @@ import SakuraCordModels
 import SwiftUI
 
 enum MessageRowLayoutMetrics {
+    nonisolated static let horizontalInset: CGFloat = 14
     nonisolated static let avatarDiameter: CGFloat = 38
+    nonisolated static let avatarColumnGap: CGFloat = 12
     nonisolated static let compactContentHeight: CGFloat = 18
     nonisolated static let authorLineHeight: CGFloat = 16
     nonisolated static let authorContentSpacing: CGFloat = 4
     nonisolated static let commandAuthorContentSpacing: CGFloat = 2
-    nonisolated static let firstMessageContentOffset: CGFloat = 12
+    nonisolated static let messageGroupSeparation: CGFloat = 12
     nonisolated static let visibleHighlightInset: CGFloat = 3
+    nonisolated static let defaultMessageSpacing = visibleHighlightInset * 2
     nonisolated static let replyPreviewIntrinsicTopInset: CGFloat = 3
     nonisolated static let editFooterIntrinsicBottomInset: CGFloat = 3
     nonisolated static let commandInvocationHeight: CGFloat = 20
@@ -22,13 +25,15 @@ enum MessageRowLayoutMetrics {
 
     nonisolated static func highlightInsets(
         hasReplyPreview: Bool,
-        isEditing: Bool
+        isEditing: Bool,
+        messageSpacing: CGFloat = defaultMessageSpacing
     ) -> MessageRowHighlightInsets {
         let intrinsicTopInset = hasReplyPreview ? replyPreviewIntrinsicTopInset : 0
         let intrinsicBottomInset = isEditing ? editFooterIntrinsicBottomInset : 0
+        let edgeSpacing = max(0, messageSpacing) / 2
         return MessageRowHighlightInsets(
-            top: max(0, visibleHighlightInset - intrinsicTopInset),
-            bottom: max(0, visibleHighlightInset - intrinsicBottomInset),
+            top: max(0, edgeSpacing - intrinsicTopInset),
+            bottom: max(0, edgeSpacing - intrinsicBottomInset),
             intrinsicTop: intrinsicTopInset,
             intrinsicBottom: intrinsicBottomInset
         )
@@ -37,19 +42,21 @@ enum MessageRowLayoutMetrics {
     nonisolated static func separation(
         startsGroup: Bool,
         followsTimelineSeparator: Bool = false,
-        highlightTopInset: CGFloat
+        highlightTopInset: CGFloat,
+        messageSpacing: CGFloat = defaultMessageSpacing
     ) -> CGFloat {
         // Date and unread separators already provide the complete visual gap
         // between adjacent messages. Applying the ordinary author-group
         // separation after either one makes the lower half visibly larger
         // than the upper half.
         guard startsGroup, !followsTimelineSeparator else { return 0 }
-        return firstMessageContentOffset - highlightTopInset
+        let adjustedSeparation = messageGroupSeparation
+            + messageSpacing
+            - defaultMessageSpacing
+        return max(0, adjustedSeparation - highlightTopInset)
     }
 
-    nonisolated static func authorToContentSpacing(
-        isCommandResponse: Bool
-    ) -> CGFloat {
+    nonisolated static func authorToContentSpacing(isCommandResponse: Bool) -> CGFloat {
         isCommandResponse
             ? commandAuthorContentSpacing
             : authorContentSpacing
@@ -60,13 +67,19 @@ enum MessageRowLayoutMetrics {
         startsGroup: Bool,
         hasReplyPreview: Bool = false,
         isEditing: Bool = false,
-        followsTimelineSeparator: Bool = false
+        followsTimelineSeparator: Bool = false,
+        messageSpacing: CGFloat = defaultMessageSpacing
     ) -> MessageRowLayoutGeometry {
-        let insets = highlightInsets(hasReplyPreview: hasReplyPreview, isEditing: isEditing)
+        let insets = highlightInsets(
+            hasReplyPreview: hasReplyPreview,
+            isEditing: isEditing,
+            messageSpacing: messageSpacing
+        )
         let externalSeparation = separation(
             startsGroup: startsGroup,
             followsTimelineSeparator: followsTimelineSeparator,
-            highlightTopInset: insets.top
+            highlightTopInset: insets.top,
+            messageSpacing: messageSpacing
         )
         let highlightMinY = externalSeparation
         let contentMinY = highlightMinY + insets.top
@@ -111,6 +124,7 @@ struct MessageRowLayoutGeometry: Equatable {
 
 nonisolated enum MessageRowPersistentHighlight: Equatable {
     case none
+    case failed
     case ephemeral
     case mention
 
@@ -119,6 +133,9 @@ nonisolated enum MessageRowPersistentHighlight: Equatable {
         currentUserID: UserID?,
         currentUserRoleIDs: Set<RoleID> = []
     ) -> Self {
+        if message.outboxState == .failed {
+            return .failed
+        }
         if message.flags.contains(.ephemeral) {
             return .ephemeral
         }
@@ -145,6 +162,35 @@ nonisolated enum MessageRowPersistentHighlight: Equatable {
 }
 
 nonisolated enum MessageOutboxPresentation {
+    enum InteractionMode: Equatable {
+        case disabled
+        case failed
+        case confirmed
+
+        var allowsHoverActions: Bool {
+            self != .disabled
+        }
+
+        var allowsMessageContextMenu: Bool {
+            self != .disabled
+        }
+
+        var allowsMediaContextMenu: Bool {
+            self == .confirmed
+        }
+    }
+
+    static func interactionMode(for state: OutboxState) -> InteractionMode {
+        switch state {
+        case .queued, .uploading, .sending, .awaitingReconciliation:
+            .disabled
+        case .failed:
+            .failed
+        case .confirmed:
+            .confirmed
+        }
+    }
+
     static func textOpacity(for state: OutboxState) -> Double {
         contentOpacity(for: state)
     }
@@ -184,6 +230,7 @@ struct NativeTimelineEditingMessageContent: View {
     let react: (String) -> Void
     @State private var editText: String
     @State private var isReactionPickerPresented = false
+    @State private var confirmsDiscard = false
 
     init(
         model: AppModel,
@@ -213,7 +260,7 @@ struct NativeTimelineEditingMessageContent: View {
                     }
                     save(value)
                 },
-                cancel: cancel
+                cancel: requestCancel
             )
             let reactionItems = MessageReactionPresentation.items(
                 from: message.reactions
@@ -252,7 +299,7 @@ struct NativeTimelineEditingMessageContent: View {
                         model.dismissEphemeralMessage(message)
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(.tint)
+                    .foregroundStyle(SakuraCordAccentColor.color)
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -272,6 +319,30 @@ struct NativeTimelineEditingMessageContent: View {
                 for: message.outboxState
             )
         )
+        .confirmationDialog(
+            "Discard Message Edit?",
+            isPresented: $confirmsDiscard
+        ) {
+            Button("Discard Edit", role: .destructive, action: cancel)
+            Button("Keep Editing", role: .cancel) {}
+        } message: {
+            Text("Your changes to this message will be discarded.")
+        }
+    }
+
+    private func requestCancel() {
+        let confirms = SettingsPreferenceStore.shared.value(
+            for: .confirmDiscardComposer
+        ) != .bool(false)
+        if GeneralComposerDiscardPolicy.shouldConfirmEdit(
+            isEnabled: confirms,
+            original: message.content,
+            current: editText
+        ) {
+            confirmsDiscard = true
+        } else {
+            cancel()
+        }
     }
 }
 
@@ -297,6 +368,7 @@ struct MessageActionCapsule: View {
     let model: AppModel
     let message: Message
     let canEdit: Bool
+    let canDelete: Bool
     @Binding var isReactionPickerPresented: Bool
     @Binding var isDeleteConfirmationPresented: Bool
     let retry: (() -> Void)?
@@ -319,61 +391,62 @@ struct MessageActionCapsule: View {
 
     private var actions: some View {
         HoverActionPill {
-            if let retry {
-                HoverActionButton(
+            if message.outboxState == .failed {
+                if let retry {
+                    HoverActionButton(
                         systemImage: "arrow.clockwise",
-                        help: "Retry sending",
+                        help: "Retry send",
                         action: retry
-                )
-            }
-            ReactionActionMenu(
-                model: model,
-                guildID: message.guildID,
-                isPickerPresented: $isReactionPickerPresented,
-                react: react
-            )
-            .id("reaction-picker-\(message.id)-toolbar")
-            if let reply {
-                HoverActionButton(systemImage: "arrowshape.turn.up.left", help: "Reply", action: reply)
-            }
-            if let forward {
+                    )
+                }
                 HoverActionButton(
-                    systemImage: "arrowshape.turn.up.right",
-                    help: "Forward",
-                    action: forward
+                    systemImage: "doc.on.doc",
+                    help: "Copy text",
+                    action: copy
                 )
-            }
-            if canEdit {
-                HoverActionButton(systemImage: "pencil", help: "Edit message", action: edit)
-            }
-            HoverActionButton(systemImage: "doc.on.doc", help: "Copy text", action: copy)
-            // A message link points at a Discord channel route, which is
-            // worth sharing inside a server and is only plumbing in a private
-            // conversation, so the button stays out of direct messages.
-            if message.guildID != nil {
-                HoverActionButton(
-                    systemImage: "link",
-                    help: "Copy message link",
-                    action: copyLink
+            } else {
+                ReactionActionMenu(
+                    model: model,
+                    guildID: message.guildID,
+                    isPickerPresented: $isReactionPickerPresented,
+                    react: react
                 )
-            }
-            if let openThread {
-                HoverActionButton(
-                    systemImage: "bubble.left.and.bubble.right", help: "Open thread", action: openThread
-                )
-            }
-            if canEdit {
-                HoverActionButton(
-                    systemImage: "trash",
-                    help: "Delete message",
-                    role: .destructive
-                ) {
-                    if MessageDeleteConfirmationPolicy.isBypassed(
-                        by: NSEvent.modifierFlags
+                .id("reaction-picker-\(message.id)-toolbar")
+                if let reply {
+                    HoverActionButton(systemImage: "arrowshape.turn.up.left", help: "Reply", action: reply)
+                }
+                if let forward {
+                    HoverActionButton(
+                        systemImage: "arrowshape.turn.up.right",
+                        help: "Forward",
+                        action: forward
+                    )
+                }
+                if canEdit {
+                    HoverActionButton(systemImage: "pencil", help: "Edit message", action: edit)
+                }
+                HoverActionButton(systemImage: "doc.on.doc", help: "Copy text", action: copy)
+                if message.guildID != nil {
+                    HoverActionButton(systemImage: "link", help: "Copy message link", action: copyLink)
+                }
+                if let openThread {
+                    HoverActionButton(
+                        systemImage: "bubble.left.and.bubble.right", help: "Open thread", action: openThread
+                    )
+                }
+                if canDelete {
+                    HoverActionButton(
+                        systemImage: "trash",
+                        help: "Delete message",
+                        role: .destructive
                     ) {
-                        delete()
-                    } else {
-                        isDeleteConfirmationPresented = true
+                        if MessageDeleteConfirmationPolicy.isBypassed(
+                            by: NSEvent.modifierFlags
+                        ) {
+                            delete()
+                        } else {
+                            isDeleteConfirmationPresented = true
+                        }
                     }
                 }
             }
@@ -410,13 +483,20 @@ private struct ReactionActionMenu: View {
     var presentation: ReactionActionMenuPresentation = .toolbar
     let react: (String) -> Void
     @State private var isHovering = false
+    @AppStorage("settings.accessibility.largerTargets")
+    private var usesLargerTargets = false
 
     var body: some View {
+        let width = presentation.width(enlarged: usesLargerTargets)
+        let height = presentation.height(enlarged: usesLargerTargets)
+        let cornerRadius = presentation.cornerRadius(
+            enlarged: usesLargerTargets
+        )
         ZStack {
-            ConcentricRectangle(cornerRadius: presentation.cornerRadius, style: .continuous)
+            ConcentricRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(backgroundColor)
                 .overlay {
-                    ConcentricRectangle(cornerRadius: presentation.cornerRadius, style: .continuous)
+                    ConcentricRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .stroke(borderColor, lineWidth: 1)
                         .padding(0.5)
                 }
@@ -424,20 +504,20 @@ private struct ReactionActionMenu: View {
             Button {
                 presentPicker()
             } label: {
-                Image(systemName: "face.smiling.inverse")
+                SakuraCordSystemSymbol.emojiFaceGrinningImage
                     .symbolVariant(.none)
                     .font(.callout.weight(.medium))
                     .foregroundStyle(.primary)
-                    .frame(width: presentation.width, height: presentation.height)
+                    .frame(width: width, height: height)
                     .contentShape(
-                        ConcentricRectangle(cornerRadius: presentation.cornerRadius, style: .continuous)
+                        ConcentricRectangle(cornerRadius: cornerRadius, style: .continuous)
                     )
             }
             .buttonStyle(.plain)
         }
-        .frame(width: presentation.width, height: presentation.height)
+        .frame(width: width, height: height)
         .contentShape(
-            ConcentricRectangle(cornerRadius: presentation.cornerRadius, style: .continuous)
+            ConcentricRectangle(cornerRadius: cornerRadius, style: .continuous)
         )
         .onHover { isHovering = $0 }
         .help("Add reaction")
@@ -450,18 +530,23 @@ private struct ReactionActionMenu: View {
                 EmojiPickerView(
                     model: model,
                     useCase: .reaction(guildID: guildID ?? model.selectedGuildID),
-                    allowsPersistentSelection: true
-                ) { activation in
-                    switch activation.selection {
-                    case let .native(value): react(value)
-                    case let .custom(emoji): react(emoji.messageToken)
+                    allowsPersistentSelection: true,
+                    dismiss: { isPickerPresented = false },
+                    select: { activation in
+                        switch activation.selection {
+                        case let .native(value): react(value)
+                        case let .custom(emoji): react(emoji.messageToken)
+                        }
+                        if !activation.keepsPickerPresented {
+                            isPickerPresented = false
+                        }
                     }
-                    if !activation.keepsPickerPresented {
-                        isPickerPresented = false
-                    }
-                }
+                )
             }
-            .frame(width: presentation.width, height: presentation.height)
+            .frame(
+                width: width,
+                height: height
+            )
         }
     }
 
@@ -490,15 +575,21 @@ enum ReactionActionMenuPresentation {
     case toolbar
     case inline
 
-    var width: CGFloat {
-        self == .toolbar ? HoverActionPillMetrics.controlDiameter : 30
-    }
-    var height: CGFloat {
+    func width(enlarged: Bool) -> CGFloat {
         self == .toolbar
-            ? HoverActionPillMetrics.controlDiameter
+            ? HoverActionPillMetrics.diameter(enlarged: enlarged)
+            : 30
+    }
+    func height(enlarged: Bool) -> CGFloat {
+        self == .toolbar
+            ? HoverActionPillMetrics.diameter(enlarged: enlarged)
             : MessageReactionMetrics.pillHeight
     }
-    var cornerRadius: CGFloat { self == .toolbar ? 14 : 9 }
+    func cornerRadius(enlarged: Bool) -> CGFloat {
+        self == .toolbar
+            ? HoverActionPillMetrics.diameter(enlarged: enlarged) / 2
+            : 9
+    }
     var popoverEdge: NSRectEdge {
         StableReactionPickerAnchorPolicy.preferredEdge(isInline: self == .inline)
     }
@@ -608,11 +699,12 @@ private struct InlineMessageEditor: View {
                 text: text,
                 placeholder: "Edit message",
                 sendWithReturn: MessageEditInputPolicy.sendsWithReturn,
+                chatSettings: model.chatSettings,
                 onTextChange: { text = $0 },
                 onSubmit: composerActions.onSubmit,
                 onEscape: composerActions.onEscape,
                 onAutocompleteCommand: handleAutocomplete,
-                capturesUnfocusedTyping: true,
+                capturesUnfocusedTyping: model.chatSettings.focusesComposerOnTyping,
                 selection: $selection,
                 isFocused: $isFocused
             )
@@ -656,7 +748,6 @@ private struct InlineMessageEditor: View {
             customEmojis: model.orderedCustomEmojis,
             customValue: model.composerText(for:),
             customSource: { model.serverRailGuildsByID[$0.guildID]?.name },
-            favoriteKeys: model.favoriteEmojiKeys,
             discordFavoriteKeys: Set(model.discordFavoriteEmojiKeys),
             usageCounts: model.emojiUsageCounts,
             discordUsageScores: model.discordEmojiUsageScores,

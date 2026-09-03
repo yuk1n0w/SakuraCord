@@ -411,11 +411,8 @@ private struct ApplicationCommandSuggestionRow: View {
     }
 
     private var titleColor: Color {
-        guard case let .role(colorHex, _, _) = leadingVisual,
-              let colorHex,
-              colorHex != 0
-        else { return .primary }
-        return Color(hex: colorHex)
+        guard case let .role(colorHex, _, _) = leadingVisual else { return .primary }
+        return SakuraCordAccentColor.color(forRoleColorHex: colorHex)
     }
 }
 
@@ -429,15 +426,17 @@ private struct ApplicationCommandSuggestionIcon: View {
                 .font(.system(size: 17))
                 .foregroundStyle(.secondary)
         case let .user(name, avatarURL, decorationURL, status):
-            ZStack(alignment: .bottomTrailing) {
+            AvatarPresenceView(
+                status: status,
+                avatarSize: 25,
+                indicatorSize: 8
+            ) {
                 DecoratedAvatarView(
                     name: name,
                     avatarURL: avatarURL,
                     decorationURL: decorationURL,
                     size: 25
                 )
-                PresenceIndicator(status: status, size: 8)
-                    .overlay(Circle().stroke(Color(nsColor: .controlBackgroundColor), lineWidth: 1.5))
             }
         case let .role(colorHex, iconURL, unicodeEmoji):
             if let iconURL {
@@ -447,9 +446,7 @@ private struct ApplicationCommandSuggestionIcon: View {
                 Text(unicodeEmoji)
                     .font(.system(size: 18))
             } else {
-                Circle()
-                    .fill(colorHex.map(Color.init(hex:)) ?? .secondary)
-                    .frame(width: 13, height: 13)
+                RoleColorIndicator(colorHex: colorHex, size: 13)
             }
         }
     }
@@ -477,6 +474,7 @@ struct ApplicationCommandInlineInput: View {
     let composer: ApplicationCommandComposerModel
     let roles: [GuildRole]
     let sendWithReturn: Bool
+    let chatSettings: ChatSettingsSnapshot
     let onTextChange: (ApplicationCommandOption, String) -> Void
     let onSubmit: () -> Void
     let onKeyboardCommand: (ComposerAutocompleteCommand) -> Bool
@@ -503,6 +501,7 @@ struct ApplicationCommandInlineInput: View {
                     ),
                     focusedOptionID: composer.focusedOptionID,
                     sendWithReturn: sendWithReturn,
+                    chatSettings: chatSettings,
                     onTextChange: onTextChange,
                     onFocusOption: { optionID in
                         guard let optionID,
@@ -678,11 +677,11 @@ struct ApplicationCommandTextDocument {
         guard !placeholder else { return .tertiaryLabelColor }
         switch value {
         case .user, .channel:
-            return .controlAccentColor
+            return .sakuraCordAccentColor
         case let .mentionable(id):
             guard let roleID = RoleID(id),
                   roles.contains(where: { $0.id == roleID })
-            else { return .controlAccentColor }
+            else { return .sakuraCordAccentColor }
         default:
             break
         }
@@ -691,15 +690,9 @@ struct ApplicationCommandTextDocument {
         case let .mentionable(id): RoleID(id)
         default: nil
         }
-        guard let roleID,
-              let color = roles.first(where: { $0.id == roleID })?.colorHex,
-              color != 0
-        else { return .labelColor }
-        return NSColor(
-            srgbRed: CGFloat((color >> 16) & 0xFF) / 255,
-            green: CGFloat((color >> 8) & 0xFF) / 255,
-            blue: CGFloat(color & 0xFF) / 255,
-            alpha: 1
+        guard let roleID else { return .labelColor }
+        return SakuraCordAccentColor.nsColor(
+            forRoleColorHex: roles.first(where: { $0.id == roleID })?.colorHex
         )
     }
 
@@ -863,6 +856,7 @@ private struct ApplicationCommandStructuredTextView: NSViewRepresentable {
     let document: ApplicationCommandTextDocument
     let focusedOptionID: String?
     let sendWithReturn: Bool
+    let chatSettings: ChatSettingsSnapshot
     let onTextChange: (ApplicationCommandOption, String) -> Void
     let onFocusOption: (String?) -> Void
     let focusedOptionIDProvider: () -> String?
@@ -904,8 +898,11 @@ private struct ApplicationCommandStructuredTextView: NSViewRepresentable {
         textView.focusedOptionIDProvider = focusedOptionIDProvider
         textView.onSubmit = onSubmit
         textView.sendWithReturn = sendWithReturn
+        textView.capturesUnfocusedTyping = chatSettings.focusesComposerOnTyping
+        ComposerTextCheckingConfiguration.apply(chatSettings, to: textView)
         textView.document = document
         textView.setAccessibilityLabel("Command input")
+        textView.applySakuraCordTextSelectionAppearance()
 
         let scrollView = NSScrollView()
         scrollView.documentView = textView
@@ -920,10 +917,13 @@ private struct ApplicationCommandStructuredTextView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? ApplicationCommandNSTextView else { return }
         context.coordinator.parent = self
+        textView.applySakuraCordTextSelectionAppearance()
         textView.onKeyboardCommand = onKeyboardCommand
         textView.focusedOptionIDProvider = focusedOptionIDProvider
         textView.onSubmit = onSubmit
         textView.sendWithReturn = sendWithReturn
+        textView.capturesUnfocusedTyping = chatSettings.focusesComposerOnTyping
+        ComposerTextCheckingConfiguration.apply(chatSettings, to: textView)
         context.coordinator.apply(document: document, to: textView, viewportWidth: scrollView.bounds.width)
         context.coordinator.applyFocus(to: textView)
     }
@@ -1365,13 +1365,24 @@ final class ApplicationCommandNSTextView: NSTextView {
     var focusedOptionIDProvider: () -> String? = { nil }
     var onSubmit: () -> Void = {}
     var sendWithReturn = true
+    var capturesUnfocusedTyping = true {
+        didSet {
+            unfocusedTypingMonitor.synchronize(
+                with: self,
+                enabled: capturesUnfocusedTyping,
+                onUnfocusedReturn: { [weak self] event in
+                    self?.handleReturn(event) ?? false
+                }
+            )
+        }
+    }
     private lazy var unfocusedTypingMonitor = ComposerUnfocusedTypingMonitor()
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         unfocusedTypingMonitor.synchronize(
             with: self,
-            enabled: true,
+            enabled: capturesUnfocusedTyping,
             onUnfocusedReturn: { [weak self] event in
                 self?.handleReturn(event) ?? false
             }
@@ -1536,7 +1547,7 @@ final class ApplicationCommandNSTextView: NSTextView {
             NSGraphicsContext.restoreGraphicsState()
 
             let isFocused = segment.option.id == document.focusedOptionID
-            (isFocused ? NSColor.keyboardFocusIndicatorColor.withAlphaComponent(0.72)
+            (isFocused ? NSColor.sakuraCordAccentColor.withAlphaComponent(0.72)
                 : NSColor.labelColor.withAlphaComponent(0.18)).setStroke()
             path.lineWidth = isFocused ? 1.5 : 1
             path.stroke()

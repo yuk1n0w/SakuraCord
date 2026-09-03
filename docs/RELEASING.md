@@ -17,9 +17,7 @@ workflow's monotonically increasing build number, allowing a later regular
 release to update an installed nightly without a downgrade.
 
 Nightly beta tags must point to commits on the `nightly` source branch. Push
-the intended commit to `nightly` before pushing its beta tag. This is separate
-from the generated `nightly-feed` branch, which only hosts the signed Sparkle
-appcast and must not be edited by hand.
+the intended commit to `nightly` before pushing its beta tag.
 
 `main` must always be an ancestor of `nightly`. The
 `sync-main-into-nightly.yml` workflow fast-forwards `nightly` after a `main`
@@ -82,16 +80,22 @@ pre-commit code-quality hook, pre-push committed-tree and release-copy checks,
 pre-release `./script/ci.sh checks` job, Sparkle secret checks, packaging,
 signature validation, and reviewed update-notes validation as regular tags.
 
-After the release assets have been downloaded and compared, a nightly release
-updates the signed feed on the generated `nightly-feed` branch. Switching
+After the release assets have been downloaded and compared, the website's
+Cloudflare Worker serves the newest published prerelease's signed
+`appcast.xml` asset at `https://sakuracord.app/updates/appcast.xml`. Switching
 tracks in the app checks the newly selected feed through a silent Sparkle
 information check and remains silent when no newer build exists.
 
 ## One-time Sparkle setup
 
-SakuraCord pins the official Sparkle package. Generate one Ed25519 keypair on a
-trusted maintainer Mac, back up the private key in an offline secret store, and
-configure the repository secrets:
+This macOS 26 fork pins upstream `sparkle-project/Sparkle` at `2.9.4`.
+Both release tracks retain Sparkle's signed-feed, archive, bundle-identity,
+installation verification, and downgrade protection. Packaging does not opt
+into `SUAllowsVersionDowngrades`. Switching from Nightly to Regular checks for
+a newer Regular build; an older Regular build must be installed manually.
+
+Generate one Ed25519 keypair on a trusted maintainer Mac, back up the private
+key in an offline secret store, and configure the repository secrets:
 
 ```sh
 swift package --package-path App resolve

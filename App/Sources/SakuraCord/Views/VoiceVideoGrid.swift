@@ -100,9 +100,8 @@ struct VoiceVideoGrid: View {
                 isLocal: userID == currentUserID,
                 isMuted: state.isMuted || state.isSelfMuted,
                 isDeafened: state.isDeafened || state.isSelfDeafened,
-                isSpeaking: usesLocalVoiceSession
-                    && (userID == currentUserID
-                        ? model.isLocallySpeaking : (speakingByID[userID] ?? false)),
+                isSpeaking: usesLocalVoiceSession && (userID == currentUserID
+                    ? model.isLocallySpeaking : (speakingByID[userID] ?? false)),
                 isStreaming: state.isStreaming,
                 volume: volumeByID[userID] ?? 1,
                 isRinging: ringingUserIDs.contains(state.userID)
@@ -279,7 +278,8 @@ struct VoiceVideoGrid: View {
             VoiceParticipantTile(
                 participant: participant,
                 isCompact: isCompact,
-                tileSize: nil
+                tileSize: nil,
+                mirrorsLocalPreview: model.voiceVideoPreferences.mirrorsLocalPreview
             ) { volume in
                 Task { await model.updateParticipantVolume(volume, userID: participant.id) }
             }
@@ -552,7 +552,8 @@ private struct VoiceStreamTile: View {
             ConcentricRectangle(cornerRadius: metrics.value(16), style: .continuous)
                 .stroke(
                     isActiveStreamSurface
-                        ? Color.accentColor.opacity(0.7) : Color.primary.opacity(0.1),
+                        ? SakuraCordAccentColor.color.opacity(0.7)
+                        : Color.primary.opacity(0.1),
                     lineWidth: metrics.value(isActiveStreamSurface ? 2 : 1)
                 )
         }
@@ -636,7 +637,10 @@ private struct VoiceStreamTile: View {
             }
             .buttonStyle(.plain)
             .contentShape(Capsule())
-            .glassEffect(.regular.tint(Color.accentColor).interactive(), in: Capsule())
+            .glassEffect(
+                .regular.tint(SakuraCordAccentColor.color).interactive(),
+                in: Capsule()
+            )
             .disabled(state == .connecting)
         }
     }
@@ -660,6 +664,7 @@ private struct VoiceParticipantTile: View {
     let participant: VoiceTileParticipant
     let isCompact: Bool
     let tileSize: CGSize?
+    let mirrorsLocalPreview: Bool
     let updateVolume: (Float) -> Void
     @State private var isHovering = false
     @State private var showVolume = false
@@ -684,6 +689,10 @@ private struct VoiceParticipantTile: View {
                     Image(decorative: frame.image, scale: 1)
                         .resizable()
                         .scaledToFill()
+                        .scaleEffect(
+                            x: participant.isLocal && mirrorsLocalPreview ? -1 : 1,
+                            y: 1
+                        )
                 } else {
                     AvatarView(
                         name: participant.name,
@@ -871,7 +880,9 @@ private struct ParticipantVolumeControl: View {
                 Image(systemName: volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
                     .foregroundStyle(.secondary)
                     .frame(width: 18)
-                Slider(value: $volume, in: 0 ... 2).frame(width: 180)
+                Slider(value: $volume, in: 0 ... 2)
+                    .tint(SakuraCordAccentColor.color)
+                    .frame(width: 180)
                 Text("\(Int(volume * 100))%")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
