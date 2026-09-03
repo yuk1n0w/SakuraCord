@@ -957,6 +957,15 @@ extension NativeMessageTimelineCoordinator {
                         self?.canvas?.invalidatePresentationCaches()
                     }
                 },
+                center.addObserver(
+                    forName: NSColor.systemColorsDidChangeNotification,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.canvas?.invalidatePresentationCaches()
+                    }
+                },
             ]
         }
 

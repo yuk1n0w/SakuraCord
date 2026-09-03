@@ -310,6 +310,17 @@ final class NativeMemberListCoordinator: NSObject {
                 self?.canvas?.needsDisplay = true
             }
         })
+        observations.append(center.addObserver(
+            forName: NSColor.systemColorsDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self, weak scrollView] _ in
+            MainActor.assumeIsolated {
+                scrollView?.needsDisplay = true
+                scrollView?.contentView.needsDisplay = true
+                self?.canvas?.needsDisplay = true
+            }
+        })
         self.scrollView = scrollView
         self.canvas = canvas
         update(parent: parent, scrollView: scrollView)

@@ -8,11 +8,11 @@ enum SakuraCordAccentColor {
     }
 
     static var nsColor: NSColor {
-        SakuraCordThemeStore.shared.accentNSColor()
+        .controlAccentColor
     }
 
     static var textSelectionNSColor: NSColor {
-        SakuraCordThemeStore.shared.textSelectionNSColor()
+        .selectedTextBackgroundColor
     }
 
     static func color(forRoleColorHex colorHex: UInt32?) -> Color {

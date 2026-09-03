@@ -68,6 +68,7 @@ struct SakuraCordTextInputAccentBridge: NSViewRepresentable {
             for name in [
                 NSControl.textDidBeginEditingNotification,
                 NSText.didBeginEditingNotification,
+                NSColor.systemColorsDidChangeNotification,
                 .sakuraCordThemeDidCommit,
             ] {
                 observers.append(center.addObserver(
