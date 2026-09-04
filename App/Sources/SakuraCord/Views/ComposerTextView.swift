@@ -279,6 +279,7 @@ struct ComposerTextView: NSViewRepresentable {
     var onEscape: () -> Void = {}
     var onEditLatestMessage: () -> Bool = { false }
     var onNavigateReplySelection: (MessageReplyNavigationDirection) -> Bool = { _ in false }
+    var onTranslate: (() -> Void)?
     var onAutocompleteCommand: (ComposerAutocompleteCommand) -> Bool = { _ in false }
     var onPasteAttachments: (([URL]) -> Void)?
     var onDropTargetChanged: ((_ isTargeted: Bool, _ isInstant: Bool) -> Void)?
@@ -350,6 +351,7 @@ struct ComposerTextView: NSViewRepresentable {
         textView.onNavigateReplySelection = { [weak coordinator = context.coordinator] direction in
             coordinator?.parent.onNavigateReplySelection(direction) ?? false
         }
+        textView.onTranslate = onTranslate
         textView.onPasteAttachments = onPasteAttachments
         textView.onDropTargetChanged = onDropTargetChanged
         textView.onDropAttachments = onDropAttachments
@@ -390,6 +392,7 @@ struct ComposerTextView: NSViewRepresentable {
         textView.onNavigateReplySelection = { [weak coordinator = context.coordinator] direction in
             coordinator?.parent.onNavigateReplySelection(direction) ?? false
         }
+        textView.onTranslate = onTranslate
         textView.onPasteAttachments = onPasteAttachments
         textView.onDropTargetChanged = onDropTargetChanged
         textView.onDropAttachments = onDropAttachments
@@ -702,6 +705,7 @@ final class ComposerNSTextView: NSTextView {
     var onEscape: (() -> Void)?
     var onEditLatestMessage: (() -> Bool)?
     var onNavigateReplySelection: ((MessageReplyNavigationDirection) -> Bool)?
+    var onTranslate: (() -> Void)?
     var onAutocompleteCommand: ((ComposerAutocompleteCommand) -> Bool)?
     var onPasteAttachments: (([URL]) -> Void)?
     var onDropTargetChanged: ((_ isTargeted: Bool, _ isInstant: Bool) -> Void)?
@@ -758,6 +762,31 @@ final class ComposerNSTextView: NSTextView {
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         true
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event) ?? NSMenu()
+        guard !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              onTranslate != nil,
+              !menu.items.contains(where: { $0.identifier == .composerTranslateDraft })
+        else { return menu }
+        if !menu.items.isEmpty {
+            menu.addItem(.separator())
+        }
+        let item = NSMenuItem(
+            title: "Translate Draft to Japanese",
+            action: #selector(translateDraft),
+            keyEquivalent: ""
+        )
+        item.target = self
+        item.identifier = .composerTranslateDraft
+        item.image = NSImage(systemSymbolName: "character.bubble", accessibilityDescription: nil)
+        menu.addItem(item)
+        return menu
+    }
+
+    @objc private func translateDraft() {
+        onTranslate?()
     }
 
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {

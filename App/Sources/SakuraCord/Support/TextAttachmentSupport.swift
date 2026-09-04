@@ -1,6 +1,10 @@
 import AppKit
 import SwiftUI
 
+extension NSUserInterfaceItemIdentifier {
+    static let composerTranslateDraft = Self("dev.sakuracord.composer.translate-draft")
+}
+
 extension NSTextView {
     func applySakuraCordTextSelectionAppearance() {
         insertionPointColor = .sakuraCordAccentColor

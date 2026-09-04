@@ -51,6 +51,7 @@ struct GeneralSettingsPage: View {
                 Toggle("Reduce animated media", isOn: chatBinding(\.reducesAnimatedMedia))
                     .settingsControlAnchor(.reduceAnimatedMedia, state: state)
             }
+            MessageTranslationSettingsSection(controller: model.messageTranslation)
             GeneralStartupRestorationSection(
                 launchAtLogin: launchAtLogin,
                 launchDestination: launchDestinationBinding,
@@ -135,6 +136,67 @@ struct GeneralSettingsPage: View {
         )
     }
 
+}
+
+private struct MessageTranslationSettingsSection: View {
+    let controller: MessageTranslationController
+    @State private var englishTerm = ""
+    @State private var japaneseTerm = ""
+
+    var body: some View {
+        Section {
+            LabeledContent("Anime glossary") {
+                VStack(alignment: .trailing, spacing: 8) {
+                    HStack {
+                        TextField("English name", text: $englishTerm)
+                        TextField("Japanese name", text: $japaneseTerm)
+                        Button {
+                            controller.addGlossaryEntry(
+                                english: englishTerm,
+                                japanese: japaneseTerm
+                            )
+                            englishTerm = ""
+                            japaneseTerm = ""
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+                        .disabled(
+                            englishTerm.trimmingCharacters(
+                                in: .whitespacesAndNewlines
+                            ).isEmpty
+                                || japaneseTerm.trimmingCharacters(
+                                    in: .whitespacesAndNewlines
+                                ).isEmpty
+                        )
+                    }
+                    ForEach(controller.glossary) { entry in
+                        HStack {
+                            Text(entry.english)
+                            Image(systemName: "arrow.left.arrow.right")
+                                .foregroundStyle(.tertiary)
+                            Text(entry.japanese)
+                            Spacer()
+                            Button(role: .destructive) {
+                                controller.removeGlossaryEntry(entry.id)
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+                .frame(minWidth: 420)
+            }
+        } header: {
+            Text("Translation", bundle: #bundle)
+        } footer: {
+            Text(
+                "Incoming Japanese translates to English. Outgoing English becomes an "
+                    + "editable Japanese draft. Only messages you explicitly translate are "
+                    + "sent to Google. Add names and titles above to keep their exact wording."
+            )
+        }
+    }
 }
 
 private struct GeneralStartupRestorationSection: View {

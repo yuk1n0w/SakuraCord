@@ -631,3 +631,14 @@ which is what the service asks of its callers.
 
 Lyrics remain the property of their rights holders. SakuraCord stores no
 lyrics: each is fetched for the track being played and held only in memory.
+
+## Google Translate message translation
+
+SakuraCord can translate an explicitly selected Discord message from Japanese
+to English or an explicitly selected composer draft from English to Japanese.
+Only that text is sent to Google Translate; message text and translated output
+are not written to disk. An optional local bilingual glossary protects anime
+titles and character names during each request.
+
+- Service: `https://translate.googleapis.com/translate_a/single`
+- Used in: `App/Sources/SakuraCord/Services/MessageTranslationService.swift`

@@ -1096,6 +1096,11 @@ extension NativeTimelineCanvasView {
                 }
                 continue
             }
+            if action == .translateMessage,
+               row.message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            {
+                continue
+            }
             let handler = messageMenuHandler(
                 action: action,
                 row: row,
@@ -1161,6 +1166,8 @@ extension NativeTimelineCanvasView {
             }
         case .markUnread:
             { actions.markUnread(row.message) }
+        case .translateMessage:
+            { actions.translate(row.message) }
         case .editMessage:
             { [weak self] in self?.beginEditing(row: row, at: index) }
         case .deleteMessage, .discardFailedMessage:

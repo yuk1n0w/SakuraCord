@@ -247,6 +247,17 @@ avatars/decorations, 64-pixel emoji, and 32-pixel guild badges), while full-row
 nameplates retain their 512-pixel budget. All decoded state remains in bounded
 process-memory caches and is discarded at process exit.
 
+Message translation is explicit and app-owned. A message context-menu action
+sends only that message's text to Google Translate and presents the
+English result without changing the Discord message. The composer action sends
+only its current draft, presents an editable Japanese result, and replaces the
+draft only after the user confirms it. It never sends automatically. The
+request uses Google's public Translate surface, while the optional
+English/Japanese anime glossary is ordinary local settings data. Glossary
+terms are protected before each request and restored in the target language so
+names and titles remain exact in both directions. Message text and translation
+results are not persisted.
+
 `MediaPipeline` owns public-media caching and the complete native voice/video
 stack. `DaveKit` is an implementation dependency of `MediaPipeline`; the app
 target does not import it directly.

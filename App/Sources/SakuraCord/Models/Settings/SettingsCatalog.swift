@@ -444,8 +444,11 @@ private nonisolated extension SettingsCatalog {
         ),
         page(
             .general, group: .preferences, title: "General", image: "gearshape",
-            help: "Choose startup, restoration, and confirmation behavior.",
-            keywords: ["startup", "launch", "restore", "confirmation", "quit"]
+            help: "Choose translation, startup, restoration, and confirmation behavior.",
+            keywords: [
+                "translation", "Japanese", "Google", "anime glossary", "startup", "launch",
+                "restore", "confirmation", "quit",
+            ]
         ),
         page(
             .appearance, group: .preferences, title: "Appearance", image: "circle.lefthalf.filled",

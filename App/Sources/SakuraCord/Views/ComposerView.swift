@@ -126,6 +126,7 @@ struct ComposerView: View {
                                         direction: direction
                                     )
                                 },
+                                onTranslate: presentDraftTranslation,
                                 onAutocompleteCommand: handleAutocomplete,
                                 onPasteAttachments: addPastedAttachments,
                                 onDropTargetChanged: { targeted, instant in
@@ -193,6 +194,20 @@ struct ComposerView: View {
             },
             accessories: {
                 HStack(spacing: 1) {
+                    if !hasActiveCommand,
+                       !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    {
+                        ComposerActionButton(
+                            icon: Image(systemName: "character.bubble"),
+                            help: "Translate draft to Japanese",
+                            iconSize: 18,
+                            iconWeight: .medium,
+                            size: accessoryButtonSize,
+                            appearance: appearance,
+                            action: presentDraftTranslation
+                        )
+                        .fixedSize()
+                    }
                     if !isDirectMessage, !hasActiveCommand {
                         if model.supportedCapabilities.contains(.gifs) {
                             ComposerActionButton(
@@ -521,6 +536,16 @@ struct ComposerView: View {
         showEmojiPicker = false
         selectionBeforeEmojiPicker = nil
         showGIFPicker = true
+    }
+
+    private func presentDraftTranslation() {
+        let source = draft
+        model.messageTranslation.presentOutgoing(source) { translated in
+            guard draft == source else { return }
+            updateDraft(translated)
+            draftSelection = NSRange(location: translated.utf16.count, length: 0)
+            isFocused = true
+        }
     }
 
     private func send() {

@@ -1018,6 +1018,9 @@ extension NativeMessageTimelineCoordinator {
                     guard let model else { return }
                     model.markMessageAndFollowingUnread(message)
                 },
+                translate: { [weak model = parent.model] message in
+                    model?.messageTranslation.presentIncoming(message.content)
+                },
                 delete: { [weak model = parent.model] message in
                     guard let model else { return }
                     Task { await model.delete(message) }

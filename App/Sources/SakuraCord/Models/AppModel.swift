@@ -421,6 +421,7 @@ final class AppModel {
     var isLoadingGIFPicker = false
     var gifErrorMessage: String?
     var gifFavoriteMutationURL: URL?
+    @ObservationIgnored let messageTranslation = MessageTranslationController()
     var stickersByGuild: [GuildID: [MessageSticker]] = [:]
     var supportedCapabilities: Set<ChatCapability> = []
     var componentInteractionPresentation =

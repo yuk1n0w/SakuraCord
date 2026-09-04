@@ -177,6 +177,7 @@ struct NativeTimelineRowActions {
     var retry: (Message) -> Void
     var edit: (Message, String) -> Void
     var markUnread: (Message) -> Void
+    var translate: (Message) -> Void
     var delete: (Message) -> Void
     var togglePin: (Message) -> Void
     var discardFailed: (Message) -> Void
@@ -200,6 +201,7 @@ struct NativeTimelineRowActions {
         retry: @escaping (Message) -> Void,
         edit: @escaping (Message, String) -> Void,
         markUnread: @escaping (Message) -> Void,
+        translate: @escaping (Message) -> Void = { _ in },
         delete: @escaping (Message) -> Void,
         togglePin: @escaping (Message) -> Void = { _ in },
         react: @escaping (String, Message) -> Void,
@@ -222,6 +224,7 @@ struct NativeTimelineRowActions {
         self.retry = retry
         self.edit = edit
         self.markUnread = markUnread
+        self.translate = translate
         self.delete = delete
         self.togglePin = togglePin
         self.discardFailed = discardFailed

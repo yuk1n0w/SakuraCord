@@ -189,6 +189,7 @@ nonisolated enum NativeTimelineMessageMenuAction: Equatable {
     case reply
     case forward
     case markUnread
+    case translateMessage
     case editMessage
     case pinMessage
     case unpinMessage
@@ -324,6 +325,11 @@ nonisolated enum NativeTimelineMessageMenuPolicy {
             title: "Mark Unread",
             systemImage: "envelope.badge"
         ))
+        result.append(.action(
+            .translateMessage,
+            title: "Translate Message",
+            systemImage: "character.bubble"
+        ))
         result.append(.separator)
         result.append(.action(
             .copyText,
@@ -380,6 +386,11 @@ nonisolated enum NativeTimelineMessageMenuPolicy {
                 systemImage: isPinned ? "pin.slash" : "pin"
             ))
         }
+        result.append(.action(
+            .translateMessage,
+            title: "Translate Message",
+            systemImage: "character.bubble"
+        ))
         result.append(.separator)
         result.append(contentsOf: [
             .action(

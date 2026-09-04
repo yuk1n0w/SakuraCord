@@ -84,6 +84,19 @@ nonisolated enum LyricsLanguageRequest {
         url(source: "auto", target: "en", text: text, romanizes: false)
     }
 
+    static func translationURL(
+        text: String,
+        sourceLanguage: String?,
+        targetLanguage: String
+    ) -> URL {
+        url(
+            source: sourceLanguage ?? "auto",
+            target: targetLanguage,
+            text: text,
+            romanizes: false
+        )
+    }
+
     static func detectedLanguage(_ body: Data) -> String? {
         parse(body, expectedCount: 1, romanization: false).detectedLanguage
     }
