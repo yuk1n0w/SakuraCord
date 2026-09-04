@@ -352,7 +352,6 @@ extension AppModel {
                 guard self.isCurrentAccountSession(session) else {
                     throw CancellationError()
                 }
-                self.mergeMessageSearchPrivateChannels(page.channels)
                 self.messageSearch.page = page
                 self.messageSearch.submittedQuery = query
                 self.messageSearch.rows = rows
@@ -663,14 +662,13 @@ extension AppModel {
         return channels
     }
 
-    private func mergeMessageSearchPrivateChannels(_ channels: [Channel]) {
-        let privateChannels = MessageSearchChannelMergePolicy
-            .canonicalPrivateChannels(in: channels)
-        guard !privateChannels.isEmpty else { return }
-        var known = Set(snapshot?.channels.map(\.id) ?? [])
-        for channel in privateChannels where known.insert(channel.id).inserted {
-            snapshot?.channels.append(channel)
-        }
+    private func materializeMessageSearchPrivateChannel(_ channelID: ChannelID) {
+        guard snapshot?.channels.contains(where: { $0.id == channelID }) == false,
+              let channel = MessageSearchChannelMergePolicy
+              .canonicalPrivateChannels(in: messageSearch.page?.channels ?? [])
+              .first(where: { $0.id == channelID })
+        else { return }
+        snapshot?.channels.append(channel)
         forwardSearchSourceRevision &+= 1
     }
 
@@ -716,6 +714,7 @@ extension AppModel {
         _ result: MessageSearchResult,
         messageID: MessageID
     ) {
+        materializeMessageSearchPrivateChannel(result.hit.channelID)
         let isGuildThreadResult = messageSearch.submittedQuery?.scope.guildID != nil
             && messageSearch.page?.channels.contains(where: {
                 $0.id == result.hit.channelID

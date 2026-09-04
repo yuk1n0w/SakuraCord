@@ -331,6 +331,30 @@ import UserNotifications
 }
 
 @MainActor
+@Test func `message search does not reorder the direct message inbox`() async throws {
+    let provider = MockChatProvider()
+    let model = AppModel(launchMode: .offlineTesting, provider: provider)
+    await model.start()
+    model.selectGuild(nil)
+    await model.guildActivationTask?.value
+
+    let removableChannels = model.snapshot?.channels.filter { channel in
+        channel.guildID == nil
+            && (channel.kind == .directMessage || channel.kind == .groupDirectMessage)
+            && channel.id != model.selectedChannelID
+    } ?? []
+    let removedChannel = try #require(removableChannels.first)
+    model.snapshot?.channels.removeAll { $0.id == removedChannel.id }
+    let canonicalOrder = model.snapshot?.channels.map(\.id)
+
+    model.messageSearch.filters.channelIDs = [removedChannel.id]
+    model.submitMessageSearch()
+    await model.messageSearch.requestTask?.value
+
+    #expect(model.snapshot?.channels.map(\.id) == canonicalOrder)
+}
+
+@MainActor
 @Test func `command f scopes message search to the current conversation`() async throws {
     let model = AppModel(launchMode: .offlineTesting)
     await model.start()
