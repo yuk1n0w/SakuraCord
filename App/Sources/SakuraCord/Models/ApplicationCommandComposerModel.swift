@@ -71,6 +71,9 @@ final class ApplicationCommandComposerModel {
         }
     }
     private(set) var applications: [ApplicationCommandApplication] = []
+    @ObservationIgnored private var indexedCommands: [ApplicationCommand] = []
+    @ObservationIgnored private var indexedApplications: [ApplicationCommandApplication] = []
+    @ObservationIgnored private var builtInCommands: [ApplicationCommand] = []
     private(set) var isLoading = false
     private(set) var loadError: String?
     private(set) var activeCommand: ApplicationCommand?
@@ -246,13 +249,27 @@ final class ApplicationCommandComposerModel {
                 }
             }
         }
-        applications = applicationsByID.values.sorted {
-            $0.name.localizedStandardCompare($1.name) == .orderedAscending
-        }
-        commands = commandsByID.values.sorted(by: stableCommandOrder)
+        indexedApplications = Array(applicationsByID.values)
+        indexedCommands = Array(commandsByID.values)
+        rebuildAvailableCommands()
         isLoading = false
         loadError = nil
         if selectedCommandID == nil || !commands.contains(where: { $0.id == selectedCommandID }) {
+            selectedCommandID = rankedCommands(query: searchText).first?.id
+        }
+    }
+
+    var hasIndexedCommands: Bool {
+        !indexedCommands.isEmpty
+    }
+
+    func setBuiltInCommands(_ commands: [ApplicationCommand]) {
+        guard builtInCommands != commands else { return }
+        builtInCommands = commands
+        rebuildAvailableCommands()
+        if isPickerPresented,
+           selectedCommandID == nil || !self.commands.contains(where: { $0.id == selectedCommandID })
+        {
             selectedCommandID = rankedCommands(query: searchText).first?.id
         }
     }
@@ -275,8 +292,9 @@ final class ApplicationCommandComposerModel {
             executionError = "This command changed in Discord. Choose it again before running it."
             cancelActiveCommand()
         }
-        commands = []
-        applications = []
+        indexedCommands = []
+        indexedApplications = []
+        rebuildAvailableCommands()
         loadError = nil
         return isPickerPresented || wasActive
     }
@@ -659,8 +677,10 @@ final class ApplicationCommandComposerModel {
         executionProgress = nil
         executionState = nil
         executionError = nil
-        commands = []
-        applications = []
+        indexedCommands = []
+        indexedApplications = []
+        builtInCommands = []
+        rebuildAvailableCommands()
         currentTargets = []
         isLoading = false
         loadError = nil
@@ -817,6 +837,24 @@ final class ApplicationCommandComposerModel {
         let appComparison = lhs.application.name.localizedStandardCompare(rhs.application.name)
         if appComparison != .orderedSame { return appComparison == .orderedAscending }
         return lhs.id < rhs.id
+    }
+
+    private func rebuildAvailableCommands() {
+        var commandsByID: [String: ApplicationCommand] = [:]
+        for command in builtInCommands + indexedCommands where commandsByID[command.id] == nil {
+            commandsByID[command.id] = command
+        }
+        commands = commandsByID.values.sorted(by: stableCommandOrder)
+
+        var applicationsByID: [String: ApplicationCommandApplication] = [:]
+        for application in builtInCommands.map(\.application) + indexedApplications
+            where applicationsByID[application.id] == nil
+        {
+            applicationsByID[application.id] = application
+        }
+        applications = applicationsByID.values.sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
     }
 
     private func searchScore(

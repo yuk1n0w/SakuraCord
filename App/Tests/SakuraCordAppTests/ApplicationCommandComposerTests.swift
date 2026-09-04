@@ -52,6 +52,34 @@ func commandSearchRanking() throws {
 }
 
 @MainActor
+@Test("built-in commands remain available while indexed commands refresh")
+func builtInCommandsSurviveCatalogRefresh() {
+    let model = ApplicationCommandComposerModel()
+    let sakuraCord = ApplicationCommandApplication(id: "local", name: "SakuraCord")
+    let discordApp = ApplicationCommandApplication(id: "remote", name: "Utility")
+    let gif = composerFixtureCommand(id: "gif", name: "gif", application: sakuraCord)
+    let verify = composerFixtureCommand(id: "verify", name: "verify", application: discordApp)
+
+    model.setBuiltInCommands([gif])
+    model.beginLoading(targets: [.user])
+    model.replaceCatalogs([
+        ApplicationCommandCatalog(
+            target: .user,
+            applications: [discordApp],
+            commands: [verify]
+        )
+    ])
+
+    #expect(model.rankedCommands(query: "gif").map(\.id) == [gif.id])
+    #expect(model.commands.map(\.id) == [gif.id, verify.id])
+    #expect(model.hasIndexedCommands)
+
+    model.setBuiltInCommands([])
+    #expect(model.commands.map(\.id) == [verify.id])
+    #expect(model.applications.map(\.id) == [discordApp.id])
+}
+
+@MainActor
 @Test("required and optional command options keep stable typed values")
 func commandOptionEditing() throws {
     let model = ApplicationCommandComposerModel()

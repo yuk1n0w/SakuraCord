@@ -140,7 +140,7 @@ struct ComposerView: View {
                                     model.chatSettings.focusesComposerOnTyping
                                         && !showEmojiPicker
                                         && !showGIFPicker,
-                                verticalContentInset: appearance == .defaultStyle
+                                verticalContentInset: appearance == .defaultStyle || isDirectMessage
                                     ? ChatChromeMetrics.composerTextVerticalInset
                                     : 0,
                                 selection: $draftSelection,
@@ -173,6 +173,17 @@ struct ComposerView: View {
                                     characterCount: draft.count,
                                     premiumType: model.snapshot?.currentUser.premiumType
                                 )
+                            }
+                        }
+                        .background {
+                            if isDirectMessage, model.supportedCapabilities.contains(.gifs) {
+                                StableReactionPickerPresenter(
+                                    isPresented: $showGIFPicker,
+                                    preferredEdge: .maxY,
+                                    accessibilityIdentifier: "composer-gif-picker"
+                                ) {
+                                    composerGIFPicker
+                                }
                             }
                         }
                     }
@@ -758,15 +769,21 @@ struct ComposerView: View {
 
     private func updateSlashPicker(for text: String) {
         guard conversation == .channel, !hasActiveCommand else { return }
-        guard model.supportsCapability(.slashCommands),
-              let context = SlashCommandQuery(text: text, selection: draftSelection)
+        let context = SlashCommandQuery(text: text, selection: draftSelection)
+        let supportsGIFs = model.supportsCapability(.gifs)
+        model.commandComposer.setBuiltInCommands(
+            context != nil && supportsGIFs ? [ComposerBuiltInCommand.gif] : []
+        )
+        guard let context,
+              model.supportsCapability(.slashCommands) || supportsGIFs
         else {
             if model.commandComposer.isPickerPresented {
                 model.commandComposer.dismissPicker()
             }
             return
         }
-        let shouldLoad = model.commandComposer.commands.isEmpty
+        let shouldLoad = model.supportsCapability(.slashCommands)
+            && !model.commandComposer.hasIndexedCommands
             && !model.commandComposer.isLoading
         if !model.commandComposer.isPickerPresented {
             model.commandComposer.presentPicker(query: context.query)
@@ -779,6 +796,14 @@ struct ComposerView: View {
     }
 
     private func activateCommand(_ command: ApplicationCommand) {
+        if ComposerBuiltInCommand.isGIF(command) {
+            model.commandComposer.dismissPicker()
+            updateDraft("")
+            draftSelection = nil
+            showEmojiPicker = false
+            showGIFPicker = true
+            return
+        }
         model.commandComposer.activate(command)
         model.cancelReply()
         model.updateDraft("")
@@ -1107,6 +1132,28 @@ struct ComposerView: View {
             !activeReplyMentionsAuthor,
             in: conversation
         )
+    }
+}
+
+private enum ComposerBuiltInCommand {
+    static let gifID = "dev.sakuracord.builtin.gif"
+    static let application = ApplicationCommandApplication(
+        id: "dev.sakuracord",
+        name: "SakuraCord",
+        description: "Native SakuraCord actions"
+    )
+    static let gif = ApplicationCommand(
+        id: gifID,
+        rootCommandID: gifID,
+        applicationID: application.id,
+        version: "1",
+        name: "gif",
+        description: "Browse and send a GIF",
+        application: application
+    )
+
+    static func isGIF(_ command: ApplicationCommand) -> Bool {
+        command.id == gifID
     }
 }
 
