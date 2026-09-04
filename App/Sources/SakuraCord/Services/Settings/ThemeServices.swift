@@ -844,28 +844,41 @@ extension SakuraCordGradientTheme {
         let maximumOpacity = appearance == .dark ? 0.96 : 0.40
         return maximumOpacity * intensityProgress
     }
+
+    nonisolated func windowFrostTintOpacity(
+        for appearance: SakuraCordThemeAppearance
+    ) -> Double {
+        let maximumOpacity = appearance == .dark ? 0.34 : 0.22
+        return maximumOpacity * intensityProgress
+    }
 }
 
 struct SakuraCordThemeBackground: View {
     let themeStore: SakuraCordThemeStore
     var emphasizesGradient = false
+    var preservesWindowFrost = false
 
     init(
         themeStore: SakuraCordThemeStore = .shared,
-        emphasizesGradient: Bool = false
+        emphasizesGradient: Bool = false,
+        preservesWindowFrost: Bool = false
     ) {
         self.themeStore = themeStore
         self.emphasizesGradient = emphasizesGradient
+        self.preservesWindowFrost = preservesWindowFrost
     }
 
     var body: some View {
         if themeStore.usesSystemSurface {
-            Color(nsColor: .windowBackgroundColor)
+            (preservesWindowFrost
+                ? Color.clear
+                : Color(nsColor: .windowBackgroundColor))
                 .accessibilityHidden(true)
         } else {
             SakuraCordGradientBackground(
                 theme: themeStore.activeTheme,
-                emphasizesGradient: emphasizesGradient
+                emphasizesGradient: emphasizesGradient,
+                preservesWindowFrost: preservesWindowFrost
             )
         }
     }
@@ -874,6 +887,7 @@ struct SakuraCordThemeBackground: View {
 private struct SakuraCordGradientBackground: View {
     let theme: SakuraCordGradientTheme
     let emphasizesGradient: Bool
+    let preservesWindowFrost: Bool
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
@@ -883,20 +897,30 @@ private struct SakuraCordGradientBackground: View {
         let colors = theme.backgroundColors(for: colorScheme)
         let contrastScale = colorSchemeContrast == .increased ? 0.76 : 1
         let emphasis = emphasizesGradient ? 1.22 : 1
-        let maximumOpacity = appearance == .dark ? 0.98 : 0.46
+        let baseOpacity = preservesWindowFrost
+            ? theme.windowFrostTintOpacity(for: appearance)
+            : theme.backgroundBlendOpacity(for: appearance)
+        let maximumOpacity = preservesWindowFrost
+            ? (appearance == .dark ? 0.34 : 0.22)
+            : (appearance == .dark ? 0.98 : 0.46)
         let opacity = min(
             maximumOpacity,
-            theme.backgroundBlendOpacity(for: appearance) * contrastScale * emphasis
+            baseOpacity * contrastScale * emphasis
         )
         let linearColors = colors.enumerated().map { index, color in
             color.opacity(opacity * theme.stopOpacityScale(at: index))
         }
         let radialColor = colors.last ?? .clear
+        let surfaceOpacity = preservesWindowFrost
+            ? opacity * 0.28
+            : theme.intensityProgress
 
         ZStack {
-            Color(nsColor: .windowBackgroundColor)
+            if !preservesWindowFrost {
+                Color(nsColor: .windowBackgroundColor)
+            }
             theme.surfaceTargetColor(for: colorScheme)
-                .opacity(theme.intensityProgress)
+                .opacity(surfaceOpacity)
 
             LinearGradient(
                 colors: linearColors,

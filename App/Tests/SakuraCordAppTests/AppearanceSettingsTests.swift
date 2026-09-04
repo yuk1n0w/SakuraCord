@@ -637,6 +637,30 @@ func `Public beta accents migrate into native-surface single-color themes`(
     )
 }
 
+@Test func `Window theme tint preserves the frosted backdrop`() {
+    let color = SakuraCordThemeColor(hue: 0.92, saturation: 0.88)
+    let transparentTheme = SakuraCordGradientTheme(
+        first: color,
+        second: color,
+        intensity: 0,
+        brightness: 0.5
+    )
+    let vividTheme = SakuraCordGradientTheme(
+        first: color,
+        second: color,
+        intensity: 1,
+        brightness: 1
+    )
+
+    #expect(transparentTheme.windowFrostTintOpacity(for: .dark) == 0)
+    #expect(vividTheme.windowFrostTintOpacity(for: .dark) == 0.34)
+    #expect(vividTheme.windowFrostTintOpacity(for: .light) == 0.22)
+    #expect(
+        vividTheme.windowFrostTintOpacity(for: .dark)
+            < vividTheme.backgroundBlendOpacity(for: .dark)
+    )
+}
+
 @MainActor
 @Test func `Hue handles stay centered on the ring and clear the intensity hit region`() {
     let center = CGPoint(

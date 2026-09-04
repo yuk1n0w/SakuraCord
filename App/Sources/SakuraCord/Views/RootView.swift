@@ -105,7 +105,9 @@ struct RootView: View {
                 : 1
         )
         .background {
-            SakuraCordThemeBackground()
+            SakuraCordThemeBackground(
+                preservesWindowFrost: model.sessionState == .workspace
+            )
                 .ignoresSafeArea()
         }
         .sheet(
