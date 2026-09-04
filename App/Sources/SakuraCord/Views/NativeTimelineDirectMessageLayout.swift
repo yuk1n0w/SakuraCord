@@ -33,11 +33,17 @@ extension NativeTimelineRowLayout {
         let textPlan = message.forwardedSnapshot == nil
             ? row.textPlan
             : NativeTimelineTextPlan.make(for: effectiveMessage)
-        let contentPresentation = NativeTimelineTextPresentation.make(
+        let baseContentPresentation = NativeTimelineTextPresentation.make(
             message: effectiveMessage,
             plan: textPlan,
             model: model
         )
+        let contentPresentation = NativeTimelineTextPresentation
+            .addingInlineTranslation(
+                model?.messageTranslation.inlineTranslation(for: message),
+                to: baseContentPresentation,
+                concealsAsSpoiler: message.content.contains("||")
+            )
         // A bubble needs something to show. Text and images are both valid on
         // their own, so an image sent without a caption still gets one.
         let attributedContent = contentPresentation.attributedContent

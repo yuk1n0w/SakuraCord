@@ -1293,6 +1293,9 @@ final class AppModel {
                 await self?.installMediaDeviceSnapshot(snapshot)
             }
         }
+        messageTranslation.presentationDidChange = { [weak self] in
+            self?.invalidateTimelinePresentation()
+        }
     }
 }
 

@@ -247,16 +247,20 @@ avatars/decorations, 64-pixel emoji, and 32-pixel guild badges), while full-row
 nameplates retain their 512-pixel budget. All decoded state remains in bounded
 process-memory caches and is discarded at process exit.
 
-Message translation is explicit and app-owned. A message context-menu action
-sends only that message's text to Google Translate and presents the
-English result without changing the Discord message. The composer action sends
-only its current draft, presents an editable Japanese result, and replaces the
-draft only after the user confirms it. It never sends automatically. The
-request uses Google's public Translate surface, while the optional
-English/Japanese anime glossary is ordinary local settings data. Glossary
-terms are protected before each request and restored in the target language so
-names and titles remain exact in both directions. Message text and translation
-results are not persisted.
+Message translation is app-owned. The `/translate` built-in command toggles
+automatic Japanese-to-English translation for the current conversation for the
+rest of the app session. While enabled, eligible incoming Japanese messages in
+the recent loaded timeline are queued one at a time, sent to Google Translate,
+and shown as a secondary line beneath the untouched source message. Local
+script detection avoids sending messages that contain no Japanese text, and a
+small message action can request the same inline presentation for one message
+without enabling the conversation. The composer action sends only its current
+draft, presents an editable Japanese result, and replaces the draft only after
+the user confirms it. The request uses Google's public Translate surface,
+while the optional English/Japanese anime glossary is ordinary local settings
+data. Glossary terms are protected before each request and restored in the
+target language so names and titles remain exact in both directions. Automatic
+conversation state, message text, and translation results are not persisted.
 
 `MediaPipeline` owns public-media caching and the complete native voice/video
 stack. `DaveKit` is an implementation dependency of `MediaPipeline`; the app

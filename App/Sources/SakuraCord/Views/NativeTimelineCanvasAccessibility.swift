@@ -1357,6 +1357,9 @@ extension NativeTimelineCanvasView {
                 return true
             })
         }
+        if let translateAction = accessibilityTranslationAction(for: message) {
+            result.append(translateAction)
+        }
         result.append(NSAccessibilityCustomAction(
             name: "Mark Unread"
         ) { [weak self] in
@@ -1403,6 +1406,19 @@ extension NativeTimelineCanvasView {
             })
         }
         return result
+    }
+
+    private func accessibilityTranslationAction(
+        for message: Message
+    ) -> NSAccessibilityCustomAction? {
+        guard MessageTranslationEligibility.canTranslateInline(
+            message,
+            currentUserID: model?.snapshot?.currentUser.id
+        ) else { return nil }
+        return NSAccessibilityCustomAction(name: "Translate to English") { [weak self] in
+            self?.actions?.translate(message)
+            return self != nil
+        }
     }
 
     private func accessibilityReactionAction(

@@ -446,6 +446,15 @@ extension NativeMessageTimelineCoordinator {
                 hasIssuedLaterHistoryRequest = false
             }
             let newRows = parent.conversation.rows(in: parent.model)
+            if parent.conversation.messageInteractionContext == .conversation,
+               let conversationID = parent.conversation.id
+            {
+                parent.model.messageTranslation.synchronizeAutomaticTranslations(
+                    messages: newRows.map(\.message),
+                    conversationID: conversationID,
+                    currentUserID: parent.model.snapshot?.currentUser.id
+                )
+            }
             let hasUnpublishedRows =
                 (parent.rowsUpdateJournal.latestRevision
                     ?? parent.rowsRevision)
@@ -1019,7 +1028,11 @@ extension NativeMessageTimelineCoordinator {
                     model.markMessageAndFollowingUnread(message)
                 },
                 translate: { [weak model = parent.model] message in
-                    model?.messageTranslation.presentIncoming(message.content)
+                    guard let model else { return }
+                    model.messageTranslation.translateInline(
+                        message,
+                        currentUserID: model.snapshot?.currentUser.id
+                    )
                 },
                 delete: { [weak model = parent.model] message in
                     guard let model else { return }

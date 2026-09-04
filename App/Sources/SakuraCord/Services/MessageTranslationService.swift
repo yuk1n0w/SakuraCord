@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SakuraCordModels
 
 nonisolated struct MessageTranslationGlossaryEntry: Codable, Equatable, Identifiable, Sendable {
     var id = UUID()
@@ -42,6 +43,32 @@ nonisolated struct MessageTranslationPresentation: Identifiable, Sendable {
 nonisolated struct GoogleMessageTranslationResult: Equatable, Sendable {
     let text: String
     let detectedSourceLanguage: String?
+}
+
+nonisolated enum MessageTranslationEligibility {
+    static func containsJapanese(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            switch scalar.value {
+            case 0x3040 ... 0x30FF,
+                 0x3400 ... 0x4DBF,
+                 0x4E00 ... 0x9FFF,
+                 0xFF66 ... 0xFF9D:
+                true
+            default:
+                false
+            }
+        }
+    }
+
+    static func canTranslateInline(
+        _ message: Message,
+        currentUserID: UserID?
+    ) -> Bool {
+        message.author.id != currentUserID
+            && message.outboxState == .confirmed
+            && !message.type.hasGeneratedContent
+            && containsJapanese(message.content)
+    }
 }
 
 nonisolated enum GoogleMessageTranslationError: LocalizedError {
@@ -161,15 +188,36 @@ nonisolated enum MessageTranslationGlossary {
 @MainActor
 @Observable
 final class MessageTranslationController {
+    private struct InlineTranslation {
+        let channelID: ChannelID
+        let sourceText: String
+        var translatedText: String?
+        var isManuallyVisible: Bool
+    }
+
+    private struct InlineRequest {
+        let messageID: MessageID
+        let channelID: ChannelID
+        let sourceText: String
+        let glossary: [MessageTranslationGlossaryEntry]
+    }
+
     private static let glossaryDefaultsKey = "dev.sakuracord.message-translation.glossary"
+    private static let automaticHistoryLimit = 50
 
     var presentation: MessageTranslationPresentation?
     private(set) var glossary: [MessageTranslationGlossaryEntry]
+    private(set) var automaticConversationIDs: Set<ChannelID> = []
 
     @ObservationIgnored private let client: GoogleMessageTranslationClient
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private var translationTask: Task<Void, Never>?
     @ObservationIgnored private var applyTranslation: ((String) -> Void)?
+    @ObservationIgnored private var inlineTranslations: [MessageID: InlineTranslation] = [:]
+    @ObservationIgnored private var failedInlineSources: [MessageID: String] = [:]
+    @ObservationIgnored private var inlineQueue: [InlineRequest] = []
+    @ObservationIgnored private var inlineQueueTask: Task<Void, Never>?
+    @ObservationIgnored var presentationDidChange: (() -> Void)?
 
     init(
         client: GoogleMessageTranslationClient = GoogleMessageTranslationClient(),
@@ -197,6 +245,58 @@ final class MessageTranslationController {
     func removeGlossaryEntry(_ id: UUID) {
         glossary.removeAll { $0.id == id }
         persistGlossary()
+    }
+
+    func isAutomaticTranslationEnabled(for conversationID: ChannelID?) -> Bool {
+        guard let conversationID else { return false }
+        return automaticConversationIDs.contains(conversationID)
+    }
+
+    @discardableResult
+    func toggleAutomaticTranslation(for conversationID: ChannelID) -> Bool {
+        let isEnabled: Bool
+        if automaticConversationIDs.remove(conversationID) != nil {
+            inlineQueue.removeAll { $0.channelID == conversationID }
+            isEnabled = false
+        } else {
+            automaticConversationIDs.insert(conversationID)
+            isEnabled = true
+        }
+        presentationDidChange?()
+        return isEnabled
+    }
+
+    func synchronizeAutomaticTranslations(
+        messages: [Message],
+        conversationID: ChannelID,
+        currentUserID: UserID?
+    ) {
+        guard automaticConversationIDs.contains(conversationID) else { return }
+        for message in messages.suffix(Self.automaticHistoryLimit).reversed()
+        where MessageTranslationEligibility.canTranslateInline(
+            message,
+            currentUserID: currentUserID
+        ) {
+            enqueueInlineTranslation(message, isManual: false)
+        }
+    }
+
+    func translateInline(_ message: Message, currentUserID: UserID?) {
+        guard MessageTranslationEligibility.canTranslateInline(
+            message,
+            currentUserID: currentUserID
+        ) else { return }
+        failedInlineSources[message.id] = nil
+        enqueueInlineTranslation(message, isManual: true)
+    }
+
+    func inlineTranslation(for message: Message) -> String? {
+        guard let entry = inlineTranslations[message.id],
+              entry.sourceText == message.content,
+              entry.isManuallyVisible
+                || automaticConversationIDs.contains(entry.channelID)
+        else { return nil }
+        return entry.translatedText
     }
 
     func presentIncoming(_ text: String) {
@@ -263,5 +363,71 @@ final class MessageTranslationController {
     private func persistGlossary() {
         guard let data = try? JSONEncoder().encode(glossary) else { return }
         defaults.set(data, forKey: Self.glossaryDefaultsKey)
+    }
+
+    private func enqueueInlineTranslation(
+        _ message: Message,
+        isManual: Bool
+    ) {
+        if var existing = inlineTranslations[message.id],
+           existing.sourceText == message.content
+        {
+            if isManual, !existing.isManuallyVisible {
+                existing.isManuallyVisible = true
+                inlineTranslations[message.id] = existing
+                if existing.translatedText != nil {
+                    presentationDidChange?()
+                }
+            }
+            return
+        }
+        guard failedInlineSources[message.id] != message.content else { return }
+        inlineTranslations[message.id] = InlineTranslation(
+            channelID: message.channelID,
+            sourceText: message.content,
+            translatedText: nil,
+            isManuallyVisible: isManual
+        )
+        inlineQueue.append(InlineRequest(
+            messageID: message.id,
+            channelID: message.channelID,
+            sourceText: message.content,
+            glossary: glossary
+        ))
+        startInlineQueueIfNeeded()
+    }
+
+    private func startInlineQueueIfNeeded() {
+        guard inlineQueueTask == nil else { return }
+        inlineQueueTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled, let request = inlineQueue.first {
+                inlineQueue.removeFirst()
+                do {
+                    let result = try await client.translate(
+                        request.sourceText,
+                        direction: .incoming,
+                        glossary: request.glossary
+                    )
+                    guard var entry = inlineTranslations[request.messageID],
+                          entry.sourceText == request.sourceText
+                    else { continue }
+                    entry.translatedText = result.text
+                    inlineTranslations[request.messageID] = entry
+                    failedInlineSources[request.messageID] = nil
+                    presentationDidChange?()
+                } catch is CancellationError {
+                    break
+                } catch {
+                    failedInlineSources[request.messageID] = request.sourceText
+                    if inlineTranslations[request.messageID]?.sourceText
+                        == request.sourceText
+                    {
+                        inlineTranslations[request.messageID] = nil
+                    }
+                }
+            }
+            inlineQueueTask = nil
+        }
     }
 }

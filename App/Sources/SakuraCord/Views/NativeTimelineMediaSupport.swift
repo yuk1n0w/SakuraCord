@@ -1441,6 +1441,7 @@ struct NativeTimelineActionCapsuleOverlay: View {
     let edit: () -> Void
     let reply: (() -> Void)?
     let forward: (() -> Void)?
+    let translate: (() -> Void)?
     let react: (String) -> Void
     let copy: () -> Void
     let copyLink: () -> Void
@@ -1478,6 +1479,7 @@ struct NativeTimelineActionCapsuleOverlay: View {
                     edit: edit,
                     reply: reply,
                     forward: forward,
+                    translate: translate,
                     react: react,
                     copy: copy,
                     copyLink: copyLink,

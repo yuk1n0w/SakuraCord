@@ -375,6 +375,7 @@ struct MessageActionCapsule: View {
     let edit: () -> Void
     let reply: (() -> Void)?
     let forward: (() -> Void)?
+    let translate: (() -> Void)?
     let react: (String) -> Void
     let copy: () -> Void
     let copyLink: () -> Void
@@ -420,6 +421,13 @@ struct MessageActionCapsule: View {
                         systemImage: "arrowshape.turn.up.right",
                         help: "Forward",
                         action: forward
+                    )
+                }
+                if let translate {
+                    HoverActionButton(
+                        systemImage: "character.bubble",
+                        help: "Translate to English",
+                        action: translate
                     )
                 }
                 if canEdit {

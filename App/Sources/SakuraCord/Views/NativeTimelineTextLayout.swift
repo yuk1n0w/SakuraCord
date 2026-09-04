@@ -47,6 +47,60 @@ enum NativeTimelineTextPresentation {
         )
     }
 
+    static func addingInlineTranslation(
+        _ translation: String?,
+        to value: Value,
+        concealsAsSpoiler: Bool
+    ) -> Value {
+        guard let translation,
+              !translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let attributedContent = value.attributedContent
+        else { return value }
+
+        let resolved = NSMutableAttributedString(
+            attributedString: attributedContent
+        )
+        resolved.append(NSAttributedString(string: "\n"))
+        let translationStart = resolved.length
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.paragraphSpacingBefore = 3
+        let fontSize = max(
+            12,
+            NSFont.preferredFont(forTextStyle: .caption1).pointSize
+        )
+        resolved.append(NSAttributedString(
+            string: "EN  ",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: fontSize, weight: .semibold),
+                .foregroundColor: SakuraCordAccentColor.nsColor,
+                .paragraphStyle: paragraph,
+            ]
+        ))
+        resolved.append(NSAttributedString(
+            string: translation,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: fontSize, weight: .regular),
+                .foregroundColor: NSColor.secondaryLabelColor,
+                .paragraphStyle: paragraph,
+            ]
+        ))
+        if concealsAsSpoiler {
+            resolved.addAttribute(
+                .discordMarkdownSpoiler,
+                value: NSNumber(value: true),
+                range: NSRange(
+                    location: translationStart,
+                    length: resolved.length - translationStart
+                )
+            )
+        }
+        return Value(
+            attributedContent: resolved,
+            framesetter: CTFramesetterCreateWithAttributedString(resolved),
+            linkedImages: value.linkedImages
+        )
+    }
+
     static var empty: Value {
         Value(
             attributedContent: nil,

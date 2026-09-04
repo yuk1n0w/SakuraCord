@@ -192,8 +192,10 @@ private struct MessageTranslationSettingsSection: View {
         } footer: {
             Text(
                 "Incoming Japanese translates to English. Outgoing English becomes an "
-                    + "editable Japanese draft. Only messages you explicitly translate are "
-                    + "sent to Google. Add names and titles above to keep their exact wording."
+                    + "editable Japanese draft. Use /translate in a chat to automatically "
+                    + "translate its incoming Japanese messages for this app session. Text "
+                    + "being translated is sent to Google. Add names and titles above to "
+                    + "keep their exact wording."
             )
         }
     }

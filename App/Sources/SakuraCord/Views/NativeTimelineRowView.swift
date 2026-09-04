@@ -761,10 +761,16 @@ extension NativeTimelineRowLayout {
         let columnGap = MessageRowLayoutMetrics.avatarColumnGap
         let usesComponentsV2 = message.flags.contains(.isComponentsV2)
         let chatSettings = model?.chatSettings ?? .defaults
-        let unstyledContentPresentation = NativeTimelineTextPresentation.make(
+        let baseContentPresentation = NativeTimelineTextPresentation.make(
             row: row,
             model: model
         )
+        let unstyledContentPresentation = NativeTimelineTextPresentation
+            .addingInlineTranslation(
+                model?.messageTranslation.inlineTranslation(for: message),
+                to: baseContentPresentation,
+                concealsAsSpoiler: message.content.contains("||")
+            )
         let contentPresentation = isOutgoingBubble
             ? NativeTimelineTextPresentation.outgoingBubble(
                 unstyledContentPresentation

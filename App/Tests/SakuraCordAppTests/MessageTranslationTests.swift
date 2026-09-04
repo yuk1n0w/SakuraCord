@@ -1,5 +1,26 @@
 import Testing
+import SakuraCordModels
 @testable import SakuraCord
+
+@Test func `Japanese detection covers kana and kanji without matching English`() {
+    #expect(MessageTranslationEligibility.containsJapanese("五等分の花嫁"))
+    #expect(MessageTranslationEligibility.containsJapanese("ニノが好き"))
+    #expect(!MessageTranslationEligibility.containsJapanese("Nino Nakano"))
+}
+
+@MainActor
+@Test func `automatic translation toggles independently for each conversation`() {
+    let controller = MessageTranslationController()
+    let first = ChannelID(rawValue: 101)
+    let second = ChannelID(rawValue: 202)
+
+    #expect(!controller.isAutomaticTranslationEnabled(for: first))
+    #expect(controller.toggleAutomaticTranslation(for: first))
+    #expect(controller.isAutomaticTranslationEnabled(for: first))
+    #expect(!controller.isAutomaticTranslationEnabled(for: second))
+    #expect(!controller.toggleAutomaticTranslation(for: first))
+    #expect(!controller.isAutomaticTranslationEnabled(for: first))
+}
 
 @Test func `outgoing translation glossary preserves anime character names`() {
     let protected = MessageTranslationGlossary.protect(

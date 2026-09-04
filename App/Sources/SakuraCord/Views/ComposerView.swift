@@ -44,6 +44,13 @@ struct ComposerView: View {
             focus: { isFocused = true },
             header: {
                 VStack(alignment: .leading, spacing: 0) {
+                    if !hasActiveCommand, automaticTranslationIsEnabled {
+                        AutomaticTranslationComposerHeader(
+                            disable: toggleAutomaticTranslation
+                        )
+                        Divider()
+                            .padding(.horizontal, 11)
+                    }
                     if !hasActiveCommand, let reply = activeReply {
                         let author = model.authorPresentation(for: reply)
                         ComposerReplyHeader(
@@ -796,11 +803,16 @@ struct ComposerView: View {
         guard conversation == .channel, !hasActiveCommand else { return }
         let context = SlashCommandQuery(text: text, selection: draftSelection)
         let supportsGIFs = model.supportsCapability(.gifs)
-        model.commandComposer.setBuiltInCommands(
-            context != nil && supportsGIFs ? [ComposerBuiltInCommand.gif] : []
-        )
+        var builtInCommands: [ApplicationCommand] = []
+        if context != nil {
+            builtInCommands.append(ComposerBuiltInCommand.translate)
+            if supportsGIFs {
+                builtInCommands.append(ComposerBuiltInCommand.gif)
+            }
+        }
+        model.commandComposer.setBuiltInCommands(builtInCommands)
         guard let context,
-              model.supportsCapability(.slashCommands) || supportsGIFs
+              model.supportsCapability(.slashCommands) || !builtInCommands.isEmpty
         else {
             if model.commandComposer.isPickerPresented {
                 model.commandComposer.dismissPicker()
@@ -821,6 +833,14 @@ struct ComposerView: View {
     }
 
     private func activateCommand(_ command: ApplicationCommand) {
+        if ComposerBuiltInCommand.isTranslate(command) {
+            model.commandComposer.dismissPicker()
+            updateDraft("")
+            draftSelection = nil
+            toggleAutomaticTranslation()
+            isFocused = true
+            return
+        }
         if ComposerBuiltInCommand.isGIF(command) {
             model.commandComposer.dismissPicker()
             updateDraft("")
@@ -1107,6 +1127,19 @@ struct ComposerView: View {
         }
     }
 
+    private var automaticTranslationIsEnabled: Bool {
+        model.messageTranslation.isAutomaticTranslationEnabled(
+            for: activeConversationID
+        )
+    }
+
+    private func toggleAutomaticTranslation() {
+        guard let activeConversationID else { return }
+        model.messageTranslation.toggleAutomaticTranslation(
+            for: activeConversationID
+        )
+    }
+
     private var activeMessages: [Message] {
         switch conversation {
         case .channel: model.messages
@@ -1157,28 +1190,6 @@ struct ComposerView: View {
             !activeReplyMentionsAuthor,
             in: conversation
         )
-    }
-}
-
-private enum ComposerBuiltInCommand {
-    static let gifID = "dev.sakuracord.builtin.gif"
-    static let application = ApplicationCommandApplication(
-        id: "dev.sakuracord",
-        name: "SakuraCord",
-        description: "Native SakuraCord actions"
-    )
-    static let gif = ApplicationCommand(
-        id: gifID,
-        rootCommandID: gifID,
-        applicationID: application.id,
-        version: "1",
-        name: "gif",
-        description: "Browse and send a GIF",
-        application: application
-    )
-
-    static func isGIF(_ command: ApplicationCommand) -> Bool {
-        command.id == gifID
     }
 }
 

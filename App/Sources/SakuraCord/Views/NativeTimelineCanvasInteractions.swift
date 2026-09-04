@@ -1097,7 +1097,10 @@ extension NativeTimelineCanvasView {
                 continue
             }
             if action == .translateMessage,
-               row.message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+               !MessageTranslationEligibility.canTranslateInline(
+                   row.message,
+                   currentUserID: model?.snapshot?.currentUser.id
+               )
             {
                 continue
             }

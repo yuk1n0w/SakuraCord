@@ -312,6 +312,7 @@ extension NativeTimelineCanvasView {
                 { forward(row.message) }
             }
             : nil
+        let translate = inlineTranslationAction(for: row.message, actions: actions)
         let openThread = row.message.thread.map { thread in
             { actions.openThread(thread) }
         }
@@ -329,6 +330,7 @@ extension NativeTimelineCanvasView {
             },
             reply: reply,
             forward: forward,
+            translate: translate,
             react: { emoji in actions.react(emoji, row.message) },
             copy: { Self.copyText(row.message.content) },
             copyLink: { [weak self] in
@@ -358,6 +360,7 @@ extension NativeTimelineCanvasView {
                 + (retry == nil ? 0 : 1)
                 + (reply == nil ? 0 : 1)
                 + (forward == nil ? 0 : 1)
+                + (translate == nil ? 0 : 1)
                 + (canEdit ? 1 : 0)
                 + (canDelete ? 1 : 0)
                 + (openThread == nil ? 0 : 1))
@@ -367,6 +370,17 @@ extension NativeTimelineCanvasView {
             enlarged: model.accessibilitySettings.enlargesMessageActionTargets
         )
         positionActionCapsule(at: index)
+    }
+
+    private func inlineTranslationAction(
+        for message: Message,
+        actions: NativeTimelineRowActions
+    ) -> (() -> Void)? {
+        guard MessageTranslationEligibility.canTranslateInline(
+            message,
+            currentUserID: model?.snapshot?.currentUser.id
+        ) else { return nil }
+        return { actions.translate(message) }
     }
 
     func refreshActionCapsuleSizeAndPosition(at knownIndex: Int? = nil) {
