@@ -69,6 +69,11 @@ nonisolated enum MessageTranslationEligibility {
             && !message.type.hasGeneratedContent
             && containsJapanese(message.content)
     }
+
+    static func needsOutgoingTranslation(_ text: String) -> Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !containsJapanese(text)
+    }
 }
 
 nonisolated enum GoogleMessageTranslationError: LocalizedError {
@@ -305,6 +310,18 @@ final class MessageTranslationController {
 
     func presentOutgoing(_ text: String, apply: @escaping (String) -> Void) {
         present(text, direction: .outgoing, apply: apply)
+    }
+
+    func translateOutgoingAutomatically(_ text: String) async throws -> String {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard MessageTranslationEligibility.needsOutgoingTranslation(text) else {
+            return text
+        }
+        return try await client.translate(
+            text,
+            direction: .outgoing,
+            glossary: glossary
+        ).text
     }
 
     func updateTranslatedText(_ text: String) {

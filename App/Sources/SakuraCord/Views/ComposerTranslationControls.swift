@@ -24,7 +24,7 @@ enum ComposerBuiltInCommand {
         applicationID: application.id,
         version: "1",
         name: "translate",
-        description: "Toggle Japanese-to-English translation for this chat",
+        description: "Automatically translate this chat between Japanese and English",
         application: application
     )
 
@@ -44,7 +44,7 @@ struct AutomaticTranslationComposerHeader: View {
         HStack(spacing: 7) {
             Image(systemName: "character.bubble.fill")
                 .foregroundStyle(.tint)
-            Text("Japanese → English")
+            Text("Japanese ↔ English")
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 8)

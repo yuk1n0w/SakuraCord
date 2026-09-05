@@ -562,11 +562,54 @@ struct ComposerView: View {
         isSubmitting = true
         draftSelection = nil
         selectionBeforeEmojiPicker = nil
+        let source = draft
         let staged = attachments
         let conversationID = activeConversationID
-        model.beginUsingOwnedPromisedFiles(staged.map(\.url))
-        model.clearComposerAttachments(for: conversation)
         Task {
+            if automaticTranslationIsEnabled,
+               MessageTranslationEligibility.needsOutgoingTranslation(source)
+            {
+                do {
+                    let translated = try await model.messageTranslation
+                        .translateOutgoingAutomatically(source)
+                    guard activeConversationID == conversationID,
+                          automaticTranslationIsEnabled,
+                          draft == source,
+                          attachments == staged
+                    else {
+                        isSubmitting = false
+                        isFocused = true
+                        return
+                    }
+                    updateDraft(translated)
+                } catch is CancellationError {
+                    isSubmitting = false
+                    isFocused = true
+                    return
+                } catch {
+                    guard activeConversationID == conversationID,
+                          draft == source,
+                          attachments == staged
+                    else {
+                        isSubmitting = false
+                        isFocused = true
+                        return
+                    }
+                    model.errorMessage =
+                        "Translation failed, so your message was left unsent: \(error.localizedDescription)"
+                    isSubmitting = false
+                    isFocused = true
+                    return
+                }
+            }
+
+            guard activeConversationID == conversationID else {
+                isSubmitting = false
+                isFocused = true
+                return
+            }
+            model.beginUsingOwnedPromisedFiles(staged.map(\.url))
+            model.clearComposerAttachments(for: conversation)
             defer {
                 model.endUsingOwnedPromisedFiles(staged.map(\.url))
             }
@@ -1928,68 +1971,5 @@ enum ColonAutocompleteSuggestionFactory {
             }
             return lhs.suggestion.id < rhs.suggestion.id
         }.map(\.suggestion)
-    }
-}
-
-struct EmojiAutocompleteList: View {
-    let suggestions: [ColonAutocompleteSuggestion]
-    let selectedIndex: Int
-    let highlight: (Int) -> Void
-    let select: (ColonAutocompleteSuggestion) -> Void
-
-    var body: some View {
-        ComposerAutocompletePanel(heading: "EMOJIS", count: suggestions.count) {
-            LazyVStack(spacing: 2) {
-                ForEach(suggestions.enumerated(), id: \.element.id) { index, suggestion in
-                    EmojiAutocompleteRow(
-                        suggestion: suggestion,
-                        isSelected: index == selectedIndex,
-                        select: { select(suggestion) },
-                        highlight: { highlight(index) }
-                    )
-                }
-            }
-        }
-    }
-}
-
-struct ComposerAutocompletePanel<Content: View>: View {
-    let heading: String
-    let count: Int
-    @ViewBuilder let content: () -> Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(heading)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 12)
-                .padding(.top, 10)
-                .padding(.bottom, 5)
-            ScrollView {
-                content()
-                    .padding(.horizontal, 5)
-                    .padding(.bottom, 5)
-            }
-            .frame(height: min(340, CGFloat(max(1, count)) * 42))
-        }
-        .frame(maxWidth: .infinity)
-        .glassEffect(
-            .regular.interactive(),
-            in: ConcentricRectangle(
-                corners: .concentric(
-                    minimum: .fixed(
-                        ChatChromeMetrics.composerMinimumCornerRadius
-                    )
-                ),
-                isUniform: true
-            )
-        )
-        .containerShape(
-            .rect(
-                cornerRadius: ChatChromeMetrics.composerMinimumCornerRadius,
-                style: .continuous
-            )
-        )
     }
 }
