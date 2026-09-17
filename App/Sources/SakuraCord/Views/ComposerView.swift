@@ -21,7 +21,7 @@ struct ComposerView: View {
     @State private var isFocused = false
     @State private var draftSelection: NSRange?
     @State private var selectionBeforeEmojiPicker: NSRange?
-    @State private var isSubmitting = false
+    @State private var submissionState = ComposerSubmissionState()
     @State private var gifPickerDismissedAt: TimeInterval = -.infinity
     @State private var emojiPickerDismissedAt: TimeInterval = -.infinity
     @State private var autocompleteIndex = 0
@@ -556,15 +556,14 @@ struct ComposerView: View {
     }
 
     private func send() {
-        guard !isSubmitting,
-              !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
+        guard let conversationID = activeConversationID,
+              !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty,
+              submissionState.begin(for: conversationID)
         else { return }
-        isSubmitting = true
         draftSelection = nil
         selectionBeforeEmojiPicker = nil
         let source = draft
         let staged = attachments
-        let conversationID = activeConversationID
         Task {
             if automaticTranslationIsEnabled,
                MessageTranslationEligibility.needsOutgoingTranslation(source)
@@ -577,13 +576,13 @@ struct ComposerView: View {
                           draft == source,
                           attachments == staged
                     else {
-                        isSubmitting = false
+                        submissionState.end(for: conversationID)
                         isFocused = true
                         return
                     }
                     updateDraft(translated)
                 } catch is CancellationError {
-                    isSubmitting = false
+                    submissionState.end(for: conversationID)
                     isFocused = true
                     return
                 } catch {
@@ -591,20 +590,20 @@ struct ComposerView: View {
                           draft == source,
                           attachments == staged
                     else {
-                        isSubmitting = false
+                        submissionState.end(for: conversationID)
                         isFocused = true
                         return
                     }
                     model.errorMessage =
                         "Translation failed, so your message was left unsent: \(error.localizedDescription)"
-                    isSubmitting = false
+                    submissionState.end(for: conversationID)
                     isFocused = true
                     return
                 }
             }
 
             guard activeConversationID == conversationID else {
-                isSubmitting = false
+                submissionState.end(for: conversationID)
                 isFocused = true
                 return
             }
@@ -630,7 +629,7 @@ struct ComposerView: View {
             if !result.consumedComposer, activeConversationID == conversationID {
                 model.restoreComposerAttachments(staged, to: conversation)
             }
-            isSubmitting = false
+            submissionState.end(for: conversationID)
             isFocused = true
         }
     }
@@ -792,7 +791,8 @@ struct ComposerView: View {
             return model.commandComposer.canSubmit
                 && model.commandComposer.executionProgress == nil
         }
-        return !isSubmitting
+        guard let conversationID = activeConversationID else { return false }
+        return !submissionState.isInFlight(for: conversationID)
             && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || !attachments.isEmpty)
             && draft.count <= ChatCharacterLimitPolicy.limit(

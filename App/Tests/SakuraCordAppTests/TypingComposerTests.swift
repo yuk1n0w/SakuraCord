@@ -678,6 +678,26 @@ import Testing
 }
 
 @MainActor
+@Test func `composer submission state isolates in-flight conversations`() {
+    let first = ChannelID(rawValue: 101)
+    let second = ChannelID(rawValue: 202)
+    var state = ComposerSubmissionState()
+
+    let beganFirst = state.begin(for: first)
+    let rejectedDuplicate = state.begin(for: first)
+    #expect(beganFirst)
+    #expect(!rejectedDuplicate)
+    #expect(state.isInFlight(for: first))
+    #expect(!state.isInFlight(for: second))
+    let beganSecond = state.begin(for: second)
+    #expect(beganSecond)
+
+    state.end(for: first)
+    #expect(!state.isInFlight(for: first))
+    #expect(state.isInFlight(for: second))
+}
+
+@MainActor
 @Test func `composer attachment controls preserve edits and spoiler state`() async throws {
     let model = AppModel(launchMode: .offlineTesting, provider: TypingTestProvider())
     await model.start()

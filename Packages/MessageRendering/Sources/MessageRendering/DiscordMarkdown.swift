@@ -94,6 +94,12 @@ public enum DiscordMarkdown {
     ]
 
     private static let appKitCache = AppKitMarkdownRenderCache()
+    private static let codeForegroundColor = NSColor(
+        srgbRed: 219 / 255,
+        green: 222 / 255,
+        blue: 225 / 255,
+        alpha: 1
+    )
 
     public static func attributed(_ source: String) -> AttributedString {
         let plan = appKitPlan(source)
@@ -331,6 +337,9 @@ public enum DiscordMarkdown {
             .font: appKitFont(block: block, traits: run.traits, baseFontSize: baseFontSize),
             .foregroundColor: foregroundColor(block: block, semanticColor: run.color),
         ]
+        if case .code = block, run.color == nil {
+            attributes[.foregroundColor] = codeForegroundColor
+        }
         if run.traits.contains(.underline) {
             attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
         }
@@ -339,6 +348,7 @@ public enum DiscordMarkdown {
         }
         if run.traits.contains(.inlineCode) {
             attributes[.discordMarkdownInlineCode] = NSNumber(value: true)
+            attributes[.foregroundColor] = codeForegroundColor
         }
         if run.traits.contains(.listMarker) {
             attributes[.discordMarkdownListMarker] = NSNumber(value: true)

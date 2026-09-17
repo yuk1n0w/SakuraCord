@@ -176,7 +176,7 @@ private struct ChatRootView: View {
     @State private var supplementaryPaneFrame = CGRect.zero
     @State private var supplementaryToolbarSpacerWidth: CGFloat = 0
     @State private var workspaceFrame = CGRect.zero
-    @State private var sidebarWidth = ChatChromeMetrics.serverRailWidth + 230
+    @State private var sidebarWidth = ChatChromeMetrics.channelSidebarIdealWidth
     @State private var presentsForumComposer = false
     @State private var isFileDropTargeted = false
     @State private var isInstantUpload = false
@@ -187,43 +187,39 @@ private struct ChatRootView: View {
     var body: some View {
         @Bindable var model = model
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            HStack(spacing: 0) {
-                ServerRailContainer(model: model)
-                .zIndex(200)
-                ChannelSidebarView(
-                    voiceModel: model,
-                    guild: selectedGuild,
-                    channels: model.visibleChannels,
-                    channelGroups: model.visibleChannelGroups,
-                    unreadCategoryIDs: selectedGuild.map {
-                        model.unreadCategoryIDsByGuild[$0.id] ?? []
-                    } ?? [],
-                    selection: $model.selectedChannelID,
-                    currentUser: model.snapshot?.currentUser,
-                    connectionState: model.connectionState,
-                    currentStatus: model.currentStatus,
-                    isAuthenticated: model.isAuthenticated,
-                    isOfflineTesting: model.isOfflineTesting,
-                    activeVoiceChannelID: model.activeVoiceChannel?.id,
-                    connectAccount: {
-                        if !model.isOfflineTesting {
-                            showAccountSwitcher = true
-                        }
-                    },
-                    updateStatus: { await model.updateStatus($0) }
-                )
-            }
+            ChannelSidebarView(
+                voiceModel: model,
+                guild: selectedGuild,
+                channels: model.visibleChannels,
+                channelGroups: model.visibleChannelGroups,
+                unreadCategoryIDs: selectedGuild.map {
+                    model.unreadCategoryIDsByGuild[$0.id] ?? []
+                } ?? [],
+                selection: $model.selectedChannelID,
+                currentUser: model.snapshot?.currentUser,
+                connectionState: model.connectionState,
+                currentStatus: model.currentStatus,
+                isAuthenticated: model.isAuthenticated,
+                isOfflineTesting: model.isOfflineTesting,
+                activeVoiceChannelID: model.activeVoiceChannel?.id,
+                connectAccount: {
+                    if !model.isOfflineTesting {
+                        showAccountSwitcher = true
+                    }
+                },
+                updateStatus: { await model.updateStatus($0) }
+            )
             .opacity(model.isSwitchingAccounts ? 0 : 1)
             .onGeometryChange(for: CGFloat.self) { proxy in
                 proxy.size.width
             } action: { width in
-                guard width.isFinite, width > ChatChromeMetrics.serverRailWidth else { return }
+                guard width.isFinite, width > 0 else { return }
                 sidebarWidth = width
             }
             .navigationSplitViewColumnWidth(
-                min: ChatChromeMetrics.serverRailWidth + 190,
-                ideal: ChatChromeMetrics.serverRailWidth + 230,
-                max: ChatChromeMetrics.serverRailWidth + 310
+                min: ChatChromeMetrics.channelSidebarMinimumWidth,
+                ideal: ChatChromeMetrics.channelSidebarIdealWidth,
+                max: ChatChromeMetrics.channelSidebarMaximumWidth
             )
         } detail: {
             Group {
@@ -247,38 +243,8 @@ private struct ChatRootView: View {
         }
         .environment(\.composerDropInteraction, composerDropInteraction)
         .overlay(alignment: .topLeading) {
-            ZStack(alignment: .topLeading) {
-                SakuraCordTextInputAccentBridge()
+            SakuraCordTextInputAccentBridge()
                 .frame(width: 0, height: 0)
-
-                if columnVisibility != .detailOnly {
-                    if model.isSwitchingAccounts {
-                        SkeletonShimmerTimeline {
-                            SkeletonShape(cornerRadius: 4)
-                                .frame(width: 132, height: 14)
-                        }
-                        .offset(
-                            x: ChatChromeMetrics.sidebarTitleLeadingOffset,
-                            y: ChatChromeMetrics.sidebarTitleTopOffset + 7
-                        )
-                    } else {
-                        Text(sidebarDisplayName)
-                            .font(.system(
-                                size: InterfaceTypographyMetrics.interfaceTextSize + 2,
-                                weight: .semibold
-                            ))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .frame(width: 150, height: 28, alignment: .leading)
-                            .offset(
-                                x: ChatChromeMetrics.sidebarTitleLeadingOffset,
-                                y: ChatChromeMetrics.sidebarTitleTopOffset
-                            )
-                    }
-                }
-            }
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
         }
         .overlay {
             if !model.incomingPrivateCalls.isEmpty {
@@ -305,6 +271,11 @@ private struct ChatRootView: View {
                 }
                 WindowChromeDimmingBridge(isDimmed: showsFileDropEffect)
                 WindowGlassBackdropBridge()
+                SidebarTitlebarSwitcherBridge(
+                    model: model,
+                    width: sidebarSwitcherWidth,
+                    isVisible: columnVisibility != .detailOnly
+                )
             }
             .frame(width: 0, height: 0)
         }
@@ -863,9 +834,16 @@ private struct ChatRootView: View {
         return 0
     }
 
-    private var sidebarDisplayName: String {
-        guard let guild = selectedGuild else { return "Messages" }
-        return guild.name.isEmpty ? "Unnamed Server" : guild.name
+    private var sidebarSwitcherWidth: CGFloat {
+        max(
+            40,
+            min(
+                170,
+                sidebarWidth
+                    - ChatChromeMetrics.sidebarTitleLeadingOffset
+                    - ChatChromeMetrics.sidebarTitleTrailingInset
+            )
+        )
     }
 
     private var canAcceptWindowDrops: Bool {

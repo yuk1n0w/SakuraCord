@@ -14,7 +14,6 @@ nonisolated enum SessionLoadingSkeletonLayout {
         }
     }
 
-    static let serverCount = 11
     static let channelSectionCounts = [3, 4, 4, 4]
 
     static func channelPlaceholdersFitting(height: CGFloat) -> [ChannelPlaceholder] {
@@ -111,7 +110,7 @@ struct SakuraCordSessionLoadingView: View {
     let isOfflineTesting: Bool
     var isAccountSwitch = false
     var isEmbeddedInWorkspace = false
-    var embeddedSidebarWidth = ChatChromeMetrics.serverRailWidth + 230
+    var embeddedSidebarWidth = ChatChromeMetrics.channelSidebarIdealWidth
 
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
@@ -130,14 +129,11 @@ struct SakuraCordSessionLoadingView: View {
 
     private var sessionChrome: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            HStack(spacing: 0) {
-                serverRail
-                channelSidebar
-            }
+            channelSidebar
             .navigationSplitViewColumnWidth(
-                min: ChatChromeMetrics.serverRailWidth + 190,
-                ideal: ChatChromeMetrics.serverRailWidth + 230,
-                max: ChatChromeMetrics.serverRailWidth + 310
+                min: ChatChromeMetrics.channelSidebarMinimumWidth,
+                ideal: ChatChromeMetrics.channelSidebarIdealWidth,
+                max: ChatChromeMetrics.channelSidebarMaximumWidth
             )
         } detail: {
             workspace
@@ -150,11 +146,11 @@ struct SakuraCordSessionLoadingView: View {
             }
         }
         .overlay(alignment: .topLeading) {
-            SkeletonShape(cornerRadius: 4)
-                .frame(width: 132, height: 14)
+            SkeletonShape(cornerRadius: 10)
+                .frame(width: 128, height: 28)
                 .offset(
                     x: ChatChromeMetrics.sidebarTitleLeadingOffset,
-                    y: ChatChromeMetrics.sidebarTitleTopOffset + 7
+                    y: ChatChromeMetrics.sidebarTitleTopOffset
                 )
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
@@ -163,44 +159,11 @@ struct SakuraCordSessionLoadingView: View {
 
     private var embeddedChrome: some View {
         HStack(spacing: 0) {
-            HStack(spacing: 0) {
-                serverRail
-                channelSidebar
-            }
+            channelSidebar
             .frame(width: embeddedSidebarWidth)
             workspace
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var serverRail: some View {
-        ScrollView {
-            VStack(spacing: 10) {
-                railItem(cornerRadius: 14)
-                Divider().padding(.horizontal, 12)
-                ForEach(0 ..< SessionLoadingSkeletonLayout.serverCount, id: \.self) { _ in
-                    railItem(cornerRadius: 14)
-                }
-            }
-            .padding(
-                .top,
-                isAccountSwitch && !isEmbeddedInWorkspace
-                    ? ChatChromeMetrics.controlHeight
-                    : 0
-            )
-            .padding(.bottom, 12)
-        }
-        .scrollIndicators(.hidden)
-        .frame(width: ChatChromeMetrics.serverRailWidth)
-    }
-
-    private func railItem(cornerRadius: CGFloat) -> some View {
-        HStack(spacing: 5) {
-            Color.clear.frame(width: 7, height: 40)
-            SkeletonShape(cornerRadius: cornerRadius)
-                .frame(width: 44, height: 44)
-        }
-        .frame(width: ChatChromeMetrics.serverRailWidth, height: 46, alignment: .leading)
     }
 
     private var channelSidebar: some View {

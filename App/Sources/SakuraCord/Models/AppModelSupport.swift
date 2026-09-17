@@ -224,6 +224,26 @@ nonisolated enum ComposerSubmissionResult: Equatable, Sendable {
     }
 }
 
+/// Keeps the composer busy only for the conversation whose submission is in flight.
+/// A shared ComposerView can survive navigation, so a single Boolean would make a
+/// slow upload in one conversation disable every conversation that reuses it.
+struct ComposerSubmissionState: Equatable {
+    private(set) var inFlightConversationIDs: Set<ChannelID> = []
+
+    @discardableResult
+    mutating func begin(for conversationID: ChannelID) -> Bool {
+        inFlightConversationIDs.insert(conversationID).inserted
+    }
+
+    mutating func end(for conversationID: ChannelID) {
+        inFlightConversationIDs.remove(conversationID)
+    }
+
+    func isInFlight(for conversationID: ChannelID) -> Bool {
+        inFlightConversationIDs.contains(conversationID)
+    }
+}
+
 struct OutgoingMessageState {
     var draftsByNonce: [String: SendMessageDraft] = [:]
     private var nextOptimisticMessageRawValue = UInt64.max

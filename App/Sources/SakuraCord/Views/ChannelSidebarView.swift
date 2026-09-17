@@ -288,6 +288,7 @@ private struct GuildChannelList: View, Equatable {
                             : 0,
                     rulesChannelID: input.rulesChannelID,
                     activeVoiceChannelID: input.activeVoiceChannelID,
+                    selectedChannelID: input.selectedChannelID,
                     hiddenChannelIDs: input.hiddenChannelIDs,
                     checkingChannelIDs: input.checkingChannelIDs,
                     isUnread: group.categoryID.map(
@@ -411,6 +412,7 @@ private struct ChannelGroupRows: View {
     let bottomContentInset: CGFloat
     let rulesChannelID: ChannelID?
     let activeVoiceChannelID: ChannelID?
+    let selectedChannelID: ChannelID?
     let hiddenChannelIDs: Set<ChannelID>
     let checkingChannelIDs: Set<ChannelID>
     let isUnread: Bool
@@ -424,6 +426,7 @@ private struct ChannelGroupRows: View {
         bottomContentInset: CGFloat,
         rulesChannelID: ChannelID?,
         activeVoiceChannelID: ChannelID?,
+        selectedChannelID: ChannelID?,
         hiddenChannelIDs: Set<ChannelID>,
         checkingChannelIDs: Set<ChannelID>,
         isUnread: Bool
@@ -433,6 +436,7 @@ private struct ChannelGroupRows: View {
         self.bottomContentInset = bottomContentInset
         self.rulesChannelID = rulesChannelID
         self.activeVoiceChannelID = activeVoiceChannelID
+        self.selectedChannelID = selectedChannelID
         self.hiddenChannelIDs = hiddenChannelIDs
         self.checkingChannelIDs = checkingChannelIDs
         self.isUnread = isUnread
@@ -460,34 +464,32 @@ private struct ChannelGroupRows: View {
 
     var body: some View {
         Section {
-            if group.name == nil || isExpanded {
-                ForEach(group.channels) { channel in
-                    if channel.kind == .voice {
-                        ChannelRow(
-                            model: model,
-                            channel: channel,
-                            rulesChannelID: rulesChannelID,
-                            isVoiceConnected: activeVoiceChannelID == channel.id,
-                            isHidden: hiddenChannelIDs.contains(channel.id),
-                            isChecking: checkingChannelIDs.contains(channel.id)
-                        )
-                        .tag(channel.id)
-                        ForEach(
-                            voiceParticipantEntriesByChannel[channel.id]?.participants
-                                ?? []
-                        ) { participant in
-                            VoiceParticipantRow(participant: participant)
-                        }
-                    } else {
-                        ChannelRow(
-                            model: model,
-                            channel: channel,
-                            rulesChannelID: rulesChannelID,
-                            isHidden: hiddenChannelIDs.contains(channel.id),
-                            isChecking: checkingChannelIDs.contains(channel.id)
-                        )
-                        .tag(channel.id)
+            ForEach(visibleChannels) { channel in
+                if channel.kind == .voice {
+                    ChannelRow(
+                        model: model,
+                        channel: channel,
+                        rulesChannelID: rulesChannelID,
+                        isVoiceConnected: activeVoiceChannelID == channel.id,
+                        isHidden: hiddenChannelIDs.contains(channel.id),
+                        isChecking: checkingChannelIDs.contains(channel.id)
+                    )
+                    .tag(channel.id)
+                    ForEach(
+                        voiceParticipantEntriesByChannel[channel.id]?.participants
+                            ?? []
+                    ) { participant in
+                        VoiceParticipantRow(participant: participant)
                     }
+                } else {
+                    ChannelRow(
+                        model: model,
+                        channel: channel,
+                        rulesChannelID: rulesChannelID,
+                        isHidden: hiddenChannelIDs.contains(channel.id),
+                        isChecking: checkingChannelIDs.contains(channel.id)
+                    )
+                    .tag(channel.id)
                 }
             }
 
@@ -596,6 +598,22 @@ private struct ChannelGroupRows: View {
             guildID: guildID,
             categoryID: categoryID
         )
+    }
+
+    private var visibleChannels: [Channel] {
+        guard group.name != nil, !isExpanded else { return group.channels }
+        let isCategoryMuted = if let guildID = group.guildID,
+                                 let categoryID = group.categoryID
+        {
+            model.isCategoryMuted(guildID: guildID, categoryID: categoryID)
+        } else {
+            false
+        }
+        return group.channels.filter { channel in
+            channel.id == selectedChannelID
+                || channel.mentionCount > 0
+                || (!isCategoryMuted && channel.unreadCount > 0)
+        }
     }
 }
 
@@ -1224,6 +1242,8 @@ private extension PresenceStatus {
 }
 
 private struct ChannelRow: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     let model: AppModel
     let channel: Channel
     var rulesChannelID: ChannelID?
@@ -1234,7 +1254,7 @@ private struct ChannelRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Capsule()
-                .fill(Color.white)
+                .fill(colorScheme == .dark ? Color.white : Color.black)
                 .frame(width: 4, height: 8)
                 .opacity(showsUnread ? 1 : 0)
                 .frame(width: 8)

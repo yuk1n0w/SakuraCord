@@ -11,8 +11,14 @@ nonisolated enum ChatChromeMetrics {
     static let composerSegmentSpacing: CGFloat = 8
     static let controlCornerRadius: CGFloat = 16
     static let serverRailWidth: CGFloat = 68
+    static let channelSidebarMinimumWidth: CGFloat = 190
+    static let channelSidebarIdealWidth: CGFloat = 230
+    static let channelSidebarMaximumWidth: CGFloat = 310
     static let sidebarTitleLeadingOffset: CGFloat = serverRailWidth + 24
     static let sidebarTitleTopOffset: CGFloat = 11
+    /// Space reserved for NavigationSplitView's native sidebar toggle and the
+    /// breathing room between its glass and the workspace switcher.
+    static let sidebarTitleTrailingInset: CGFloat = 58
     static let sidebarContentCornerRadius: CGFloat = 16
     static let composerWindowInset: CGFloat = 12
     static let directMessageContentMaximumWidth: CGFloat = 640
