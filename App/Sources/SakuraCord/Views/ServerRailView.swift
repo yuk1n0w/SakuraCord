@@ -86,13 +86,28 @@ struct SidebarServerSwitcher: View {
             .regular.tint(.white.opacity(0.04)).interactive(),
             in: Capsule()
         )
-        .help("Switch between Direct Messages and servers")
+        .help("Click to choose a server, or scroll to switch between spaces")
         .accessibilityLabel("Current space: \(displayName)")
-        .accessibilityHint("Shows Direct Messages and servers")
+        .accessibilityHint("Shows Direct Messages and servers. Scroll to switch between spaces.")
+        .onChange(of: model.selectedGuildID) { _, _ in
+            isPresented = false
+        }
+        .onChange(of: isPresented) { _, isPresented in
+            // Closing the picker ends a rearrangement, so save it now instead
+            // of waiting out Discord's batching window.
+            if !isPresented { model.saveServerLayout() }
+        }
         .popover(isPresented: $isPresented) {
             ServerSwitcherPopover(
                 items: model.serverRailPresentation.items,
                 home: model.serverRailPresentation.home,
+                accountID: model.snapshot?.currentUser.id.description,
+                isReorderingAvailable: model.canReorderServers,
+                moveItem: { item, placement in
+                    withAnimation(.snappy(duration: 0.18)) {
+                        _ = model.moveServerItem(item.itemID, to: placement, accountID: item.accountID)
+                    }
+                },
                 selectHome: {
                     isPresented = false
                     model.selectGuild(nil)
@@ -159,10 +174,16 @@ struct SidebarServerSwitcher: View {
 private struct ServerSwitcherPopover: View {
     let items: [ServerRailPresentationItem]
     let home: ServerRailHomeEntry
+    let accountID: String?
+    let isReorderingAvailable: Bool
+    let moveItem: (ServerOrderDragItem, ServerOrderPlacement) -> Void
     let selectHome: () -> Void
     let selectGuild: (GuildID?) -> Void
     let contextMenuActions: ServerRailContextMenuActions
     @State private var query = ""
+    @State private var pickerID = UUID()
+    @State private var isDragActive = false
+    @State private var folderExpansionRevision = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -192,30 +213,22 @@ private struct ServerSwitcherPopover: View {
                                     contextMenuActions: contextMenuActions,
                                     action: { selectGuild(entry.id) }
                                 )
+                                .modifier(reordering(.guild(entry.id)))
                             }
                         case .folder(let folder):
                             let matchingEntries = folder.guildEntries.filter(
                                 entryMatchesQuery
                             )
                             if !matchingEntries.isEmpty {
-                                if let folderName = folder.folder.name,
-                                   !folderName.isEmpty
-                                {
-                                    Text(folderName)
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(.secondary)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .padding(.horizontal, 10)
-                                        .padding(.top, 7)
-                                }
-
-                                ForEach(matchingEntries) { entry in
-                                    ServerSwitcherGuildRow(
-                                        entry: entry,
-                                        contextMenuActions: contextMenuActions,
-                                        action: { selectGuild(entry.id) }
-                                    )
-                                }
+                                ServerSwitcherFolderSection(
+                                    folder: folder,
+                                    matchingEntries: matchingEntries,
+                                    isSearching: !normalizedQuery.isEmpty,
+                                    contextMenuActions: contextMenuActions,
+                                    selectGuild: selectGuild,
+                                    reordering: reordering,
+                                    expansionChanged: { folderExpansionRevision &+= 1 }
+                                )
                             }
                         }
                     }
@@ -227,10 +240,50 @@ private struct ServerSwitcherPopover: View {
                     }
                 }
                 .padding(8)
+                .animation(ServerRailAnimations.folderExpansion, value: folderExpansionRevision)
             }
             .scrollIndicators(.hidden)
+            .modifier(ServerOrderAutoscrollModifier(isDragActive: isDragActive))
+            if isReorderingAvailable {
+                Divider()
+                Text(normalizedQuery.isEmpty ? "Drag to reorder" : "Clear search to reorder")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 10)
+                    .padding(.horizontal, 12)
+                    .contentShape(Rectangle())
+                    .modifier(ServerOrderDropModifier(
+                        itemID: nil,
+                        isEnabled: canReorder,
+                        move: acceptDrop
+                    ))
+                    .help("Drop here to move a server or folder to the end")
+            }
         }
         .frame(width: 320, height: popoverHeight)
+    }
+
+    private var canReorder: Bool {
+        isReorderingAvailable && normalizedQuery.isEmpty && accountID != nil
+    }
+
+    private func reordering(_ id: GuildRailItem.RailIdentifier) -> ServerOrderDragModifier {
+        ServerOrderDragModifier(
+            item: ServerOrderDragItem(itemID: id, accountID: accountID ?? "", pickerID: pickerID),
+            isEnabled: canReorder,
+            move: acceptDrop,
+            dragActivityChanged: { isActive in
+                if isDragActive != isActive { isDragActive = isActive }
+            }
+        )
+    }
+
+    private func acceptDrop(_ item: ServerOrderDragItem, _ placement: ServerOrderPlacement) {
+        // A moved row can leave the list before its drag reports the end.
+        isDragActive = false
+        guard canReorder, item.accountID == accountID, item.pickerID == pickerID else { return }
+        moveItem(item, placement)
     }
 
     private var searchField: some View {
@@ -278,21 +331,37 @@ private struct ServerSwitcherPopover: View {
 
     private var visibleFolderHeaderCount: Int {
         items.count { item in
-            guard case .folder(let folder) = item,
-                  let name = folder.folder.name,
-                  !name.isEmpty
+            guard case .folder(let folder) = item
             else { return false }
             return folder.guildEntries.contains(where: entryMatchesQuery)
         }
     }
 
-    private var popoverHeight: CGFloat {
-        let visibleRows = serverMatchCount + (homeMatchesQuery ? 1 : 0)
-        guard visibleRows > 0 else { return 220 }
+    /// A collapsed folder hides its servers unless a search is revealing them.
+    private var visibleServerRowCount: Int {
+        items.reduce(into: 0) { count, item in
+            switch item {
+            case .guild(let entry):
+                if entryMatchesQuery(entry) {
+                    count += 1
+                }
+            case .folder(let folder):
+                guard !normalizedQuery.isEmpty
+                    || UserDefaults.standard.bool(forKey: folder.folder.expansionStorageKey)
+                else { return }
+                count += folder.guildEntries.count(where: entryMatchesQuery)
+            }
+        }
+    }
 
-        let searchAreaHeight: CGFloat = 57
+    private var popoverHeight: CGFloat {
+        guard homeMatchesQuery || hasServerMatches else { return 220 }
+        let visibleRows = visibleServerRowCount + (homeMatchesQuery ? 1 : 0)
+
+        // The search field, plus the reorder footer when it is shown.
+        let searchAreaHeight: CGFloat = isReorderingAvailable ? 93 : 57
         let rowHeight: CGFloat = 48
-        let folderHeaderHeight: CGFloat = 25
+        let folderHeaderHeight: CGFloat = 34
         let dividerHeight: CGFloat = homeMatchesQuery && hasServerMatches ? 11 : 0
         let contentInsets: CGFloat = 16
         return min(
@@ -309,6 +378,113 @@ private struct ServerSwitcherPopover: View {
         guard !normalizedQuery.isEmpty else { return true }
         guard let name = entry.presentation?.guild.name else { return false }
         return name.localizedCaseInsensitiveContains(normalizedQuery)
+    }
+}
+
+/// One folder in the server picker. Its header collapses the folder with the
+/// rail's spring and shares the rail's stored open state; dragging the header
+/// moves the whole folder.
+private struct ServerSwitcherFolderSection: View {
+    let folder: ServerRailFolderEntry
+    let matchingEntries: [ServerRailGuildEntry]
+    let isSearching: Bool
+    let contextMenuActions: ServerRailContextMenuActions
+    let selectGuild: (GuildID?) -> Void
+    let reordering: (GuildRailItem.RailIdentifier) -> ServerOrderDragModifier
+    let expansionChanged: () -> Void
+    @AppStorage private var isExpanded: Bool
+    @State private var isHovering = false
+
+    init(
+        folder: ServerRailFolderEntry,
+        matchingEntries: [ServerRailGuildEntry],
+        isSearching: Bool,
+        contextMenuActions: ServerRailContextMenuActions,
+        selectGuild: @escaping (GuildID?) -> Void,
+        reordering: @escaping (GuildRailItem.RailIdentifier) -> ServerOrderDragModifier,
+        expansionChanged: @escaping () -> Void
+    ) {
+        self.folder = folder
+        self.matchingEntries = matchingEntries
+        self.isSearching = isSearching
+        self.contextMenuActions = contextMenuActions
+        self.selectGuild = selectGuild
+        self.reordering = reordering
+        self.expansionChanged = expansionChanged
+        _isExpanded = AppStorage(wrappedValue: false, folder.folder.expansionStorageKey)
+    }
+
+    var body: some View {
+        header
+            .modifier(reordering(folder.id))
+
+        if showsServers {
+            ForEach(matchingEntries) { entry in
+                ServerSwitcherGuildRow(
+                    entry: entry,
+                    contextMenuActions: contextMenuActions,
+                    action: { selectGuild(entry.id) }
+                )
+                .padding(.leading, 10)
+                .modifier(reordering(.guild(entry.id)))
+                .transition(.offset(y: -10).combined(with: .opacity))
+            }
+        }
+    }
+
+    /// A search reveals matching servers even inside a collapsed folder.
+    private var showsServers: Bool {
+        isExpanded || isSearching
+    }
+
+    private var header: some View {
+        Button {
+            withAnimation(ServerRailAnimations.folderExpansion) {
+                isExpanded.toggle()
+                expansionChanged()
+            }
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(showsServers ? 90 : 0))
+                    .frame(width: 10)
+                Image(systemName: "folder.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color(hex: folder.folder.colorHex ?? 0x5865F2))
+                Text(displayName)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if !showsServers {
+                    notificationAccessory(
+                        mentionCount: folder.mentionCount,
+                        isUnread: folder.hasUnreadGuild,
+                        isSelected: folder.containsSelectedGuild
+                    )
+                }
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 30)
+            .background(
+                Color.primary.opacity(isHovering ? 0.06 : 0),
+                in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(isSearching)
+        .onHover { isHovering = $0 }
+        .help(showsServers ? "Collapse folder" : "Expand folder")
+        .accessibilityLabel(displayName)
+        .accessibilityValue(showsServers ? "Expanded" : "Collapsed")
+    }
+
+    private var displayName: String {
+        folder.folder.name.flatMap { $0.isEmpty ? nil : $0 } ?? "Folder"
     }
 }
 

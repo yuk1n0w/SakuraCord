@@ -88,10 +88,13 @@ struct SidebarTitlebarSwitcherBridge: NSViewRepresentable {
             self.window = window
             guard let window else { return }
 
-            let hostingView = NSHostingView(rootView: SidebarTitlebarSwitcherContent(
+            let hostingView = SidebarSwitcherHostingView(rootView: SidebarTitlebarSwitcherContent(
                 model: model,
                 presentation: presentation
             ))
+            hostingView.onScrollStep = { [weak self] step in
+                self?.selectAdjacentSpace(step: step)
+            }
             // A title-bar host must not inset its SwiftUI content below the
             // toolbar. That draws the capsule outside its actual hit region.
             hostingView.safeAreaRegions = []
@@ -116,6 +119,52 @@ struct SidebarTitlebarSwitcherBridge: NSViewRepresentable {
                 height: hostingView.frame.height
             ))
             accessory.isHidden = !presentation.isVisible
+        }
+
+        private func selectAdjacentSpace(step: Int) {
+            guard presentation.isVisible, !model.isSwitchingAccounts else { return }
+            // Match the popover, including servers inside folders and DMs first.
+            let entries = model.serverRailPresentation.items.flatMap { item in
+                switch item {
+                case .guild(let entry): [entry]
+                case .folder(let folder): folder.guildEntries
+                }
+            }
+            let spaces: [GuildID?] = [nil] + entries.compactMap { entry -> GuildID? in
+                entry.presentation == nil ? nil : entry.id
+            }.map { Optional($0) }
+            guard let current = spaces.firstIndex(of: model.selectedGuildID) else { return }
+            let next = current + step
+            guard spaces.indices.contains(next) else { return }
+            model.selectGuild(spaces[next])
+        }
+    }
+}
+
+private final class SidebarSwitcherHostingView<Content: View>: NSHostingView<Content> {
+    var onScrollStep: ((Int) -> Void)?
+    private var scrollStepper = ServerSwitcherScrollStepper()
+
+    override func scrollWheel(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let pill = CGRect(x: bounds.minX, y: bounds.midY - 14, width: bounds.width, height: 28)
+        guard !isHiddenOrHasHiddenAncestor,
+              CGPath(roundedRect: pill, cornerWidth: 14, cornerHeight: 14, transform: nil)
+              .contains(point)
+        else {
+            scrollStepper = ServerSwitcherScrollStepper()
+            super.scrollWheel(with: event)
+            return
+        }
+        if let step = scrollStepper.step(
+            deltaX: event.scrollingDeltaX,
+            deltaY: event.scrollingDeltaY,
+            precise: event.hasPreciseScrollingDeltas,
+            phase: event.phase,
+            momentum: event.momentumPhase,
+            timestamp: event.timestamp
+        ) {
+            onScrollStep?(step)
         }
     }
 }

@@ -288,6 +288,7 @@ extension AppModel {
         replaceServerRailGuilds([:])
         serverRailHomeIsUnread = false
         serverRailHomeMentionCount = 0
+        discardPendingServerLayout()
         serverRailItems = []
         emojisByGuild = [:]
         loadingEmojiGuildIDs = []
@@ -438,6 +439,7 @@ extension AppModel {
         replaceServerRailGuilds([:])
         serverRailHomeIsUnread = false
         serverRailHomeMentionCount = 0
+        discardPendingServerLayout()
         serverRailItems = []
         emojisByGuild = [:]
         loadingEmojiGuildIDs = []

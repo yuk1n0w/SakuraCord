@@ -207,6 +207,12 @@ cat >"$CONTENTS/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>UTExportedTypeDeclarations</key>
+  <array><dict>
+    <key>UTTypeIdentifier</key><string>dev.sakuracord.server-order-item</string>
+    <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+    <key>UTTypeDescription</key><string>SakuraCord Server Order Item</string>
+  </dict></array>
   <key>NSMicrophoneUsageDescription</key><string>SakuraCord uses your microphone when you join a voice call.</string>
   <key>NSCameraUsageDescription</key><string>SakuraCord uses your camera when you enable video in a call.</string>
   <key>NSScreenCaptureUsageDescription</key><string>SakuraCord uses screen capture only when you choose a source to share in a voice call.</string>

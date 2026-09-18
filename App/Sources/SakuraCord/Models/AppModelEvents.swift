@@ -971,6 +971,8 @@ extension AppModel {
                 uniqueKeysWithValues: snapshot.guilds.map { ($0.id, $0) }
             )
         )
+        // A rearrangement stays on screen until Discord has saved it.
+        guard pendingServerLayout == nil, !isSavingServerLayout else { return }
         serverRailItems = snapshot.guildRailItems
     }
 

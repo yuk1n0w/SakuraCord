@@ -1,6 +1,14 @@
 import SakuraCordModels
 import SwiftUI
 
+extension GuildFolder {
+    /// Shared by the server rail and the server picker, so a folder is open or
+    /// closed in both.
+    var expansionStorageKey: String {
+        "GuildFolders.\(id).isExpanded"
+    }
+}
+
 struct ServerFolderRailView: View {
     let entry: ServerRailFolderEntry
     let selectGuild: (GuildID?) -> Void
@@ -22,7 +30,7 @@ struct ServerFolderRailView: View {
         self.expansionChanged = expansionChanged
         _isExpanded = AppStorage(
             wrappedValue: false,
-            "GuildFolders.\(entry.folder.id).isExpanded"
+            entry.folder.expansionStorageKey
         )
     }
 

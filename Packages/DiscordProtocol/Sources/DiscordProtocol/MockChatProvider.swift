@@ -10,6 +10,7 @@ public actor MockChatProvider: ChatProvider {
     private var messagesByChannel: [ChannelID: [Message]]
     private var pinnedAtByMessageID: [MessageID: Date]
     private let pinMutationFailureStatus: Int?
+    private let guildLayoutMutationFailureStatus: Int?
     private var forumPostsByChannel: [ChannelID: [ForumPost]]
     private var profilesByUser: [UserID: UserProfile]
     private var privateCallsByChannel: [ChannelID: PrivateCall] = [:]
@@ -25,6 +26,7 @@ public actor MockChatProvider: ChatProvider {
     }
 
     public private(set) var pinMutationRequests: [PinMutationRequest] = []
+    public private(set) var guildLayoutRequests: [[GuildRailItem]] = []
     public struct VoiceJoinRequest: Equatable, Sendable {
         public var channelID: ChannelID
         public var guildID: GuildID?
@@ -106,6 +108,7 @@ public actor MockChatProvider: ChatProvider {
         timelineMessageCount: Int? = nil,
         pinnedMessageCount: Int? = nil,
         pinMutationFailureStatus: Int? = nil,
+        guildLayoutMutationFailureStatus: Int? = nil,
         timelineIncludesAnimatedMedia: Bool = false,
         includesIncomingPrivateCall: Bool = false
     ) {
@@ -116,6 +119,7 @@ public actor MockChatProvider: ChatProvider {
         )
         currentUser = fixture.currentUser
         self.pinMutationFailureStatus = pinMutationFailureStatus
+        self.guildLayoutMutationFailureStatus = guildLayoutMutationFailureStatus
         nextMessageID = UInt64(ClientNonce.make()) ?? 9000
         snapshot = fixture.snapshot
         membersByGuild = fixture.membersByGuild
@@ -359,6 +363,19 @@ public actor MockChatProvider: ChatProvider {
         guildNotificationRequests.append(
             GuildNotificationRequest(guildID: guildID, level: level)
         )
+    }
+
+    public func updateGuildLayout(_ railItems: [GuildRailItem]) async throws -> [GuildRailItem] {
+        guildLayoutRequests.append(railItems)
+        if let guildLayoutMutationFailureStatus {
+            throw ChatProviderError.transport(
+                status: guildLayoutMutationFailureStatus,
+                requestID: nil
+            )
+        }
+        snapshot.guildRailItems = railItems
+        continuation?.yield(.guildLayoutChanged(guilds: snapshot.guilds, railItems: railItems))
+        return railItems
     }
 
     public func updateGuildMute(
@@ -1053,6 +1070,7 @@ public actor MockChatProvider: ChatProvider {
             || capability == .components || capability == .modals
             || capability == .remoteComponentChoices
             || capability == .slashCommands || capability == .messageForwarding
+            || capability == .serverOrderEditing
     }
 
     public func componentChoices(

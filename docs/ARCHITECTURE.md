@@ -161,6 +161,14 @@ workspace, message, read, member, and Gateway state is session-memory only. A
 database migration drops the obsolete tables from earlier builds while
 preserving drafts. Normal and offline runs use separate storage behavior.
 
+Rearranging servers and folders in the server picker edits the account's
+Discord folder setting, so the order follows the account to every client and
+nothing is stored locally. A rearrangement stays on screen while it is pending
+and is saved once when the picker closes or ten seconds after the first unsaved
+move; moves made during that request become one follow-up save. A rejected save
+restores the last layout Discord confirmed. The picker and scroll navigation use
+the same resulting layout. Offline fixtures apply rearrangements in memory only.
+
 Startup and account switching publish READY-derived read state in one atomic
 Main Actor update after building it off-main. Once the initial channel is known,
 the app starts its read-only newest-history request concurrently with the

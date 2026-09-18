@@ -453,6 +453,7 @@ request-contract and request-budget tests.
 | GIF picker, search, favourites, and sending | Enabled | Enabled with fixtures |
 | Message forwarding and forwarded snapshot rendering | Enabled | Enabled with fixtures |
 | Guild sticker catalog and sticker sending | Disabled | Enabled with fixtures |
+| Server order and folder arrangement | Enabled | Enabled in memory |
 
 Rendering decoded embeds, Components V2, stickers, attachments, and interaction
 responses does not imply that the corresponding production mutation is enabled.
@@ -531,6 +532,7 @@ and retained as evidence.
 | `GET /guilds/{guild}/emojis` | Stale/missing Gateway and disk-cache fallback; no body, coalesced. | Public emoji semantics and all three client references. |
 | `GET /users/@me/settings-proto/2` | Explicit emoji- or GIF-favourites-settings cache miss; no body, coalesced for the provider session. | Current first-party and Paicord's generated Frecency settings schema; Swiftcord has the versioned settings-proto path but no GIF picker. |
 | `PATCH /users/@me/settings-proto/2` | One explicit emoji or GIF favourite add or remove; JSON contains only `settings`, whose value is the complete updated base64 Frecency proto. Emoji favourites are the ordered, deduplicated repeated strings in top-level field 5, capped by the first-party client at 250. The GIF favourite map key is the canonical GIF URL. Its value contains format (`IMAGE = 1`, `VIDEO = 2`), source URL, width, height, and monotonically increasing order; display order is descending order. The declared format is preserved on reads, including for extensionless CDN sources. Unrelated and unknown top-level proto fields are preserved. | Current first-party actions and generated Paicord schema; Swiftcord v1 has no corresponding favourite mutation. |
+| `PATCH /users/@me/settings-proto/1` | One save after the user rearranges servers or folders in the server picker. JSON contains only `settings`: a partial `PreloadedUserSettings` proto holding only top-level field 14 (`guild_folders`). Each rail item becomes one `GuildFolder` with packed fixed64 `guild_ids`; a folder adds its wrapped `id`, nonempty `name`, and `color`, with proto3's empty wrapper for a zero value. Existing `guild_positions` are preserved. A server that the settings list but the rail cannot show keeps its folder. The response's complete settings replace the cached folder layout. Moves made during the request become one follow-up save; a failed save is not replayed and the rail returns to the last Discord layout. | Current first-party web build `615002` (version hash `1267885be007f9635f1f5f52247951fad9159263`, main asset `web.4946991a65a94ae8.js`, SHA-256 `5d8a29c7aa6c2104298a8a12e61e22454c283b4635ae29e5a3566183a11e3c83`, read 18 September 2026): `updateAsync("guildFolders")` replaces only `folders`, and the settings store sends `settings` plus `required_data_version`, which is set only for edits made while offline. Paicord decodes the same schema with no folder mutation; Swiftcord v1 reads folders with no mutation, and its DiscordKit revision exposes only a generic `settings-proto/{type}` PATCH. |
 | `GET /gifs/trending?locale={locale}&media_format=webm` | Opening the GIF picker; one cacheable landing read returning the current base categories in server order and their preview media. | Current first-party route and clean-client request; P−, S−. |
 | `GET /gifs/trending-gifs?media_format=webm&locale={locale}` | Explicit Trending GIFs selection; no body. The returned order is preserved. | Current first-party route and clean-client request; P−, S−. |
 | `GET /gifs/search?q={query}&media_format=webm&locale={locale}` | Nonempty picker search after the current 250 ms debounce; no speculative or paginated follow-up. The live default response is 50 results and its order is preserved. | Current first-party route/action and clean-client `hello` request; P−, S−. |
@@ -1078,6 +1080,14 @@ implementation records.
 - Server folders decode from Ready `user_settings_proto` and subsequent
   settings updates. Folder rendering, ordering, and expansion add no REST
   request.
+- Rearranging servers or folders in the server picker is the only folder
+  mutation. It sends the audited `PATCH /users/@me/settings-proto/1` once per
+  arrangement and never renames, recolors, creates, or deletes a folder. The
+  first-party client saves ten seconds after the first unsaved move
+  (`FREQUENT_USER_ACTION`) and flushes on page unload. SakuraCord keeps that
+  delay and deliberately also saves when the picker closes, because a native
+  app has no unload flush and closing the picker ends the arrangement. Folder
+  names are written as decoded, without surrounding whitespace.
 - Selecting accessible voice-channel text chat uses the ordinary one-page
   message-history read and does not join voice. Effective `VIEW_CHANNEL`,
   `READ_MESSAGE_HISTORY`, and `CONNECT` are required before that read;

@@ -141,6 +141,9 @@ public protocol ChatProvider: Sendable {
         toggle: GuildNotificationToggle,
         isEnabled: Bool
     ) async throws
+    /// Saves a rearranged server rail as the account's Discord folder layout
+    /// and returns the rail Discord confirmed.
+    func updateGuildLayout(_ railItems: [GuildRailItem]) async throws -> [GuildRailItem]
     func updateChannelNotificationLevel(
         guildID: GuildID?,
         channelID: ChannelID,
@@ -572,6 +575,10 @@ public extension ChatProvider {
         isEnabled: Bool
     ) async throws {}
 
+    func updateGuildLayout(_ railItems: [GuildRailItem]) async throws -> [GuildRailItem] {
+        throw ChatProviderError.capabilityDisabled(.serverOrderEditing)
+    }
+
     func updateChannelMute(
         guildID: GuildID?,
         channelID: ChannelID,
@@ -742,6 +749,7 @@ public enum ChatCapability: String, Codable, CaseIterable, Hashable, Sendable {
     case stickers
     case stickerSending
     case messageForwarding
+    case serverOrderEditing
 
     public var displayName: String {
         switch self {
@@ -754,6 +762,7 @@ public enum ChatCapability: String, Codable, CaseIterable, Hashable, Sendable {
         case .stickers: "Guild stickers"
         case .stickerSending: "Sticker sending"
         case .messageForwarding: "Message forwarding"
+        case .serverOrderEditing: "Server order"
         }
     }
 }

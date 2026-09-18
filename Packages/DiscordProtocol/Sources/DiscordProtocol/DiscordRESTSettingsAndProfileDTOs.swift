@@ -346,7 +346,7 @@ enum DiscordSettingsProto {
         return result
     }
 
-    private static func protoStringField(_ field: Int, _ value: String) -> Data {
+    static func protoStringField(_ field: Int, _ value: String) -> Data {
         protoLengthDelimitedField(field, Data(value.utf8))
     }
 
@@ -357,7 +357,7 @@ enum DiscordSettingsProto {
         return data
     }
 
-    private static func protoVarintField(_ field: Int, _ value: UInt64) -> Data {
+    static func protoVarintField(_ field: Int, _ value: UInt64) -> Data {
         var data = protoVarint(UInt64(field << 3))
         data.append(protoVarint(value))
         return data
@@ -669,6 +669,8 @@ enum DiscordSettingsProto {
         )
     }
 
+    /// A present wrapper without field 1 carries proto3's omitted zero, which
+    /// Discord's client writes for a black folder or a zero folder ID.
     private static func wrappedVarint(from data: Data) -> UInt64? {
         var reader = ProtoReader(data: data)
         while let tag = reader.readTag() {
@@ -677,7 +679,7 @@ enum DiscordSettingsProto {
             }
             guard reader.skip(wireType: tag.wireType) else { return nil }
         }
-        return nil
+        return 0
     }
 
     private static func wrappedString(from data: Data) -> String? {

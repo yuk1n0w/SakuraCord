@@ -151,6 +151,10 @@ final class AppModel {
     }
     @ObservationIgnored let serverRailPresentation =
         ServerRailPresentationStore()
+    /// A rearranged rail that Discord's folder settings have not saved yet.
+    @ObservationIgnored var pendingServerLayout: [GuildRailItem]?
+    @ObservationIgnored var serverLayoutSaveTask: Task<Void, Never>?
+    @ObservationIgnored var isSavingServerLayout = false
     @ObservationIgnored let voiceSidebarPresentation =
         VoiceSidebarPresentationStore()
     var serverRailGuildsByID: [GuildID: Guild] = [:]
