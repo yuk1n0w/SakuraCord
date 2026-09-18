@@ -294,7 +294,7 @@ nonisolated enum KeyboardShortcutAction: String, CaseIterable, Codable, Identifi
         case .messageSearch:
             KeyboardShortcutChord(key: "f", modifiers: [command, .shift])
         case .toggleChannelSidebar:
-            KeyboardShortcutChord(key: "s", modifiers: [command, .control])
+            KeyboardShortcutChord(key: "s", modifiers: command)
         case .toggleMemberList:
             KeyboardShortcutChord(key: "i", modifiers: [command, .option])
         case .openSettings:
