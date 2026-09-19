@@ -3,7 +3,7 @@ import SakuraCordModels
 import SwiftUI
 
 nonisolated enum ChannelSidebarLayoutMetrics {
-    static let minimumRowHeight: CGFloat = 24
+    static let minimumRowHeight: CGFloat = 28
 }
 
 nonisolated enum SidebarAccountControlMetrics {
@@ -111,7 +111,6 @@ struct ChannelSidebarView: View {
     let activeVoiceChannelID: ChannelID?
     let connectAccount: () -> Void
     let updateStatus: (PresenceStatus) async -> Void
-    @Environment(\.displayScale) private var displayScale
     @State private var selectionCommitter =
         ChannelSidebarSelectionCommitter()
     @State private var accountControlHeight: CGFloat = 0
@@ -134,6 +133,8 @@ struct ChannelSidebarView: View {
                 GuildChannelList(
                     input: GuildChannelListInput(
                         modelIdentity: ObjectIdentifier(voiceModel),
+                        guildName: guild?.name ?? "",
+                        guildIconURL: guild?.iconURL,
                         channelGroups: channelGroups,
                         rulesChannelID: guild?.rulesChannelID,
                         activeVoiceChannelID: activeVoiceChannelID,
@@ -178,18 +179,6 @@ struct ChannelSidebarView: View {
             \.defaultMinListRowHeight,
             ChannelSidebarLayoutMetrics.minimumRowHeight
         )
-        .overlay {
-            SidebarChromeSeparator(
-                cornerRadius: ChatChromeMetrics.sidebarContentCornerRadius,
-                strokeInset: separatorLineWidth / 2
-            )
-            .stroke(Color(nsColor: .separatorColor), lineWidth: separatorLineWidth)
-            .allowsHitTesting(false)
-        }
-    }
-
-    private var separatorLineWidth: CGFloat {
-        1 / max(displayScale, 1)
     }
 
     private var deferredGuildSelection: Binding<ChannelID?> {
@@ -254,6 +243,8 @@ struct ChannelSidebarView: View {
 /// observable row leaves continue to receive their own model updates.
 nonisolated private struct GuildChannelListInput: Equatable, Sendable {
     let modelIdentity: ObjectIdentifier
+    let guildName: String
+    let guildIconURL: URL?
     let channelGroups: [ChannelGroup]
     let rulesChannelID: ChannelID?
     let activeVoiceChannelID: ChannelID?
@@ -278,6 +269,11 @@ private struct GuildChannelList: View, Equatable {
 
     var body: some View {
         List(selection: $selection) {
+            GuildChannelListHeader(
+                name: input.guildName,
+                iconURL: input.guildIconURL,
+                back: { model.selectGuild(nil) }
+            )
             ForEach(input.channelGroups) { group in
                 ChannelGroupRows(
                     model: model,
@@ -303,12 +299,55 @@ private struct GuildChannelList: View, Equatable {
         .scrollContentBackground(.hidden)
         .scrollClipDisabled()
         .padding(.top, ChatChromeMetrics.channelListTopPadding)
+        .padding(.horizontal, ChatChromeMetrics.sidebarListHorizontalInset)
         .clipped()
         .background {
             ScrollInputPerformanceProbeAttachment(surface: .channelList)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
+    }
+}
+
+/// Leads a server's channel list back to the direct message inbox. The
+/// workspace switcher still moves between servers; this row is the way home.
+private struct GuildChannelListHeader: View {
+    let name: String
+    let iconURL: URL?
+    let back: () -> Void
+
+    var body: some View {
+        Button(action: back) {
+            HStack(spacing: 8) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.secondary)
+                GuildIconView(
+                    name: displayName,
+                    iconURL: iconURL,
+                    size: 20,
+                    cornerRadius: 6,
+                    animates: false
+                )
+                Text(displayName)
+                    .font(.system(
+                        size: InterfaceTypographyMetrics.interfaceTextSize,
+                        weight: .semibold
+                    ))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Back to Direct Messages")
+        .accessibilityLabel("Back to Direct Messages")
+        .accessibilityValue(displayName)
+    }
+
+    private var displayName: String {
+        name.isEmpty ? "Unnamed Server" : name
     }
 }
 
@@ -385,24 +424,6 @@ nonisolated struct ChannelGroup: Identifiable, Equatable, Sendable {
 nonisolated enum ChannelCategoryPresentation {
     static func initiallyExpanded(isCollapsedByDefault: Bool) -> Bool {
         !isCollapsedByDefault
-    }
-}
-
-struct SidebarChromeSeparator: Shape {
-    let cornerRadius: CGFloat
-    let strokeInset: CGFloat
-
-    nonisolated func path(in rect: CGRect) -> Path {
-        let radius = min(cornerRadius, rect.width, rect.height)
-        var path = Path()
-        path.move(to: CGPoint(x: strokeInset, y: rect.maxY))
-        path.addLine(to: CGPoint(x: strokeInset, y: radius + strokeInset))
-        path.addQuadCurve(
-            to: CGPoint(x: radius + strokeInset, y: strokeInset),
-            control: CGPoint(x: strokeInset, y: strokeInset)
-        )
-        path.addLine(to: CGPoint(x: rect.maxX, y: strokeInset))
-        return path
     }
 }
 
@@ -715,8 +736,8 @@ private struct AccountControlView: View {
                 )
             )
         }
-        .padding(.horizontal, 8)
-        .padding(.bottom, 12)
+        .padding(.horizontal, ChatChromeMetrics.sidebarAccountPanelInset)
+        .padding(.bottom, ChatChromeMetrics.sidebarAccountPanelInset)
     }
 
     private var displayName: String {

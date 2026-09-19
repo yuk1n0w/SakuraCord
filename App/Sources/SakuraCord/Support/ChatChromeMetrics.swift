@@ -12,14 +12,52 @@ nonisolated enum ChatChromeMetrics {
     static let controlCornerRadius: CGFloat = 16
     static let serverRailWidth: CGFloat = 68
     static let channelSidebarMinimumWidth: CGFloat = 190
-    static let channelSidebarIdealWidth: CGFloat = 230
+    static let channelSidebarIdealWidth: CGFloat = 250
     static let channelSidebarMaximumWidth: CGFloat = 310
-    static let sidebarTitleLeadingOffset: CGFloat = serverRailWidth + 24
+    /// User defaults key for the sidebar width the user last dragged to.
+    static let channelSidebarWidthStorageKey = "ChannelSidebarWidth"
+
+    static func clampedChannelSidebarWidth(_ width: CGFloat) -> CGFloat {
+        min(max(width, channelSidebarMinimumWidth), channelSidebarMaximumWidth)
+    }
+
     static let sidebarTitleTopOffset: CGFloat = 11
-    /// Space reserved for NavigationSplitView's native sidebar toggle and the
-    /// breathing room between its glass and the workspace switcher.
-    static let sidebarTitleTrailingInset: CGFloat = 58
-    static let sidebarContentCornerRadius: CGFloat = 16
+    /// Where AppKit places a left title-bar accessory after the traffic
+    /// lights, used until the accessory reports its real position.
+    static let titlebarAccessoryFallbackLeading: CGFloat = 78
+    /// Keeps the title-bar controls clear of the sidebar's edge.
+    static let sidebarTitlebarTrailingInset: CGFloat = 10
+    /// Empty title-bar space past the controls, so the toolbar item that
+    /// follows (the conversation title) starts clearly inside the workspace
+    /// instead of on its corner.
+    static let workspaceTitleGap: CGFloat = 12
+    static let sidebarToggleDiameter: CGFloat = 28
+    static let sidebarTitlebarSpacing: CGFloat = 8
+
+    struct SidebarTitlebarLayout: Equatable {
+        /// The whole accessory, including the gap before the workspace title.
+        var accessoryWidth: CGFloat
+        /// The switcher and sidebar toggle, ending inside the sidebar's edge.
+        var controlsWidth: CGFloat
+        var switcherWidth: CGFloat
+    }
+
+    /// Splits the title bar above the sidebar between the workspace switcher
+    /// and the sidebar toggle.
+    static func sidebarTitlebarLayout(
+        sidebarWidth: CGFloat,
+        leading: CGFloat
+    ) -> SidebarTitlebarLayout {
+        let controlsWidth = max(0, sidebarWidth - leading - sidebarTitlebarTrailingInset)
+        return SidebarTitlebarLayout(
+            accessoryWidth: controlsWidth + workspaceTitleGap,
+            controlsWidth: controlsWidth,
+            switcherWidth: max(
+                40,
+                controlsWidth - sidebarToggleDiameter - sidebarTitlebarSpacing
+            )
+        )
+    }
     static let composerWindowInset: CGFloat = 12
     static let directMessageContentMaximumWidth: CGFloat = 640
     /// Upper bound on a bubble once it scales with the pane. Past roughly
@@ -29,7 +67,12 @@ nonisolated enum ChatChromeMetrics {
     /// Only a fallback for layouts where the composer isn't adjacent to a
     /// rounded container corner. macOS resolves the actual aligned radius.
     static let composerMinimumCornerRadius: CGFloat = 12
-    static let channelListTopPadding: CGFloat = 10
+    static let channelListTopPadding: CGFloat = 14
+    /// Outer margin on both sides of the sidebar lists, so rows and their
+    /// selection highlight never run to the edge of the window.
+    static let sidebarListHorizontalInset: CGFloat = 6
+    /// Space around the account panel at the foot of the sidebar.
+    static let sidebarAccountPanelInset: CGFloat = 12
     static let memberListWidth: CGFloat = 280
     /// Native toolbar search keeps its own outer item margin. An eight-point
     /// field inset centers the visible glass inside the fixed inspector pane.

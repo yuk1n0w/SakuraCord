@@ -172,11 +172,12 @@ private struct ChatRootView: View {
     let model: AppModel
     let toolbarSearchFieldMetrics: ToolbarSearchFieldMetrics
     @State private var showAccountSwitcher = false
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var isSidebarVisible = true
     @State private var supplementaryPaneFrame = CGRect.zero
     @State private var supplementaryToolbarSpacerWidth: CGFloat = 0
     @State private var workspaceFrame = CGRect.zero
-    @State private var sidebarWidth = ChatChromeMetrics.channelSidebarIdealWidth
+    @AppStorage(ChatChromeMetrics.channelSidebarWidthStorageKey)
+    private var storedSidebarWidth = Double(ChatChromeMetrics.channelSidebarIdealWidth)
     @State private var presentsForumComposer = false
     @State private var isFileDropTargeted = false
     @State private var isInstantUpload = false
@@ -186,7 +187,10 @@ private struct ChatRootView: View {
 
     var body: some View {
         @Bindable var model = model
-        NavigationSplitView(columnVisibility: $columnVisibility) {
+        UnibodySplitView(
+            sidebarWidth: sidebarWidthBinding,
+            isSidebarVisible: isSidebarVisible
+        ) {
             ChannelSidebarView(
                 voiceModel: model,
                 guild: selectedGuild,
@@ -210,17 +214,6 @@ private struct ChatRootView: View {
                 updateStatus: { await model.updateStatus($0) }
             )
             .opacity(model.isSwitchingAccounts ? 0 : 1)
-            .onGeometryChange(for: CGFloat.self) { proxy in
-                proxy.size.width
-            } action: { width in
-                guard width.isFinite, width > 0 else { return }
-                sidebarWidth = width
-            }
-            .navigationSplitViewColumnWidth(
-                min: ChatChromeMetrics.channelSidebarMinimumWidth,
-                ideal: ChatChromeMetrics.channelSidebarIdealWidth,
-                max: ChatChromeMetrics.channelSidebarMaximumWidth
-            )
         } detail: {
             Group {
                 if model.isSwitchingAccounts {
@@ -273,8 +266,8 @@ private struct ChatRootView: View {
                 WindowGlassBackdropBridge()
                 SidebarTitlebarSwitcherBridge(
                     model: model,
-                    width: sidebarSwitcherWidth,
-                    isVisible: columnVisibility != .detailOnly
+                    sidebarWidth: sidebarWidth,
+                    isVisible: isSidebarVisible
                 )
             }
             .frame(width: 0, height: 0)
@@ -511,7 +504,9 @@ private struct ChatRootView: View {
                 for: .sakuracordToggleChannelSidebar
             )
         ) { _ in
-            columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+            withAnimation(.snappy(duration: ChatAnimationSpeed.scaled(0.28))) {
+                isSidebarVisible.toggle()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .sakuracordNotificationDeepLink)) { notification in
             guard let link = notification.object as? NotificationDeepLink else { return }
@@ -546,6 +541,16 @@ private struct ChatRootView: View {
 
     @ToolbarContentBuilder
     private var conversationToolbar: some ToolbarContent {
+        // While the sidebar is open its toggle lives in the title bar above
+        // it; once closed, the toggle leads the toolbar so it stays reachable.
+        if !isSidebarVisible {
+            ToolbarItem(placement: .navigation) {
+                SidebarToggleButton(isSidebarVisible: false)
+            }
+            // The button draws the same glass it has in the title bar.
+            .sharedBackgroundVisibility(.hidden)
+        }
+
         ToolbarItem(placement: .navigation) {
             if model.isSwitchingAccounts {
                 SkeletonShimmerTimeline {
@@ -849,15 +854,14 @@ private struct ChatRootView: View {
         return 0
     }
 
-    private var sidebarSwitcherWidth: CGFloat {
-        max(
-            40,
-            min(
-                170,
-                sidebarWidth
-                    - ChatChromeMetrics.sidebarTitleLeadingOffset
-                    - ChatChromeMetrics.sidebarTitleTrailingInset
-            )
+    private var sidebarWidth: CGFloat {
+        ChatChromeMetrics.clampedChannelSidebarWidth(CGFloat(storedSidebarWidth))
+    }
+
+    private var sidebarWidthBinding: Binding<CGFloat> {
+        Binding(
+            get: { sidebarWidth },
+            set: { storedSidebarWidth = Double($0) }
         )
     }
 

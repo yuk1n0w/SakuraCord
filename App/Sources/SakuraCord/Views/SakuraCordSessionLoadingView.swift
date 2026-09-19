@@ -112,7 +112,8 @@ struct SakuraCordSessionLoadingView: View {
     var isEmbeddedInWorkspace = false
     var embeddedSidebarWidth = ChatChromeMetrics.channelSidebarIdealWidth
 
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @AppStorage(ChatChromeMetrics.channelSidebarWidthStorageKey)
+    private var storedSidebarWidth = Double(ChatChromeMetrics.channelSidebarIdealWidth)
 
     var body: some View {
         SkeletonShimmerTimeline {
@@ -128,14 +129,9 @@ struct SakuraCordSessionLoadingView: View {
     }
 
     private var sessionChrome: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
+        HStack(spacing: 0) {
             channelSidebar
-            .navigationSplitViewColumnWidth(
-                min: ChatChromeMetrics.channelSidebarMinimumWidth,
-                ideal: ChatChromeMetrics.channelSidebarIdealWidth,
-                max: ChatChromeMetrics.channelSidebarMaximumWidth
-            )
-        } detail: {
+                .frame(width: sidebarWidth)
             workspace
                 .navigationTitle("")
                 .toolbar { detailToolbar }
@@ -146,15 +142,35 @@ struct SakuraCordSessionLoadingView: View {
             }
         }
         .overlay(alignment: .topLeading) {
-            SkeletonShape(cornerRadius: 10)
-                .frame(width: 128, height: 28)
-                .offset(
-                    x: ChatChromeMetrics.sidebarTitleLeadingOffset,
-                    y: ChatChromeMetrics.sidebarTitleTopOffset
-                )
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
+            HStack(spacing: 0) {
+                SkeletonShape(cornerRadius: 10)
+                    .frame(width: titlebarLayout.switcherWidth, height: 28)
+                Spacer(minLength: 0)
+                SkeletonShape(Circle())
+                    .frame(
+                        width: ChatChromeMetrics.sidebarToggleDiameter,
+                        height: ChatChromeMetrics.sidebarToggleDiameter
+                    )
+            }
+            .frame(width: titlebarLayout.controlsWidth)
+            .offset(
+                x: ChatChromeMetrics.titlebarAccessoryFallbackLeading,
+                y: ChatChromeMetrics.sidebarTitleTopOffset
+            )
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
         }
+    }
+
+    private var sidebarWidth: CGFloat {
+        ChatChromeMetrics.clampedChannelSidebarWidth(CGFloat(storedSidebarWidth))
+    }
+
+    private var titlebarLayout: ChatChromeMetrics.SidebarTitlebarLayout {
+        ChatChromeMetrics.sidebarTitlebarLayout(
+            sidebarWidth: sidebarWidth,
+            leading: ChatChromeMetrics.titlebarAccessoryFallbackLeading
+        )
     }
 
     private var embeddedChrome: some View {
@@ -200,17 +216,9 @@ struct SakuraCordSessionLoadingView: View {
                     )
                 )
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, ChatChromeMetrics.sidebarAccountPanelInset)
             .padding(.top, SidebarAccountControlMetrics.surfaceSpacing)
-            .padding(.bottom, 8)
-        }
-        .overlay {
-            SidebarChromeSeparator(
-                cornerRadius: ChatChromeMetrics.sidebarContentCornerRadius,
-                strokeInset: 0.5
-            )
-            .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
-            .allowsHitTesting(false)
+            .padding(.bottom, ChatChromeMetrics.sidebarAccountPanelInset)
         }
     }
 
@@ -274,6 +282,16 @@ struct SakuraCordSessionLoadingView: View {
 
     @ToolbarContentBuilder
     private var conversationToolbar: some ToolbarContent {
+        // Holds the title bar above the sidebar, where the workspace places
+        // its switcher and sidebar toggle, so the title placeholder lands
+        // where the conversation title will appear.
+        ToolbarItem(placement: .navigation) {
+            Color.clear
+                .frame(width: titlebarLayout.accessoryWidth, height: 28)
+                .accessibilityHidden(true)
+        }
+        .sharedBackgroundVisibility(.hidden)
+
         ToolbarItem(placement: .navigation) {
             HStack(spacing: 8) {
                 SkeletonShape(cornerRadius: 4)

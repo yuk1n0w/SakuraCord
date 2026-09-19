@@ -29,13 +29,14 @@ struct DirectMessageInboxView: View {
 
                 SidebarBottomScrollSpacer(height: bottomContentInset)
             } header: {
-                Text("Direct Messages")
+                SidebarSectionHeader(title: "Direct Messages")
             }
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
         .scrollClipDisabled()
         .padding(.top, ChatChromeMetrics.channelListTopPadding)
+        .padding(.horizontal, ChatChromeMetrics.sidebarListHorizontalInset)
         .clipped()
         .overlay {
             if directMessages.isEmpty {
@@ -51,6 +52,21 @@ struct DirectMessageInboxView: View {
 
     private var directMessages: [Channel] {
         DirectMessageInboxPolicy.conversations(in: channels)
+    }
+}
+
+/// A quiet, letter-spaced label for a section of a sidebar list.
+struct SidebarSectionHeader: View {
+    let title: String
+
+    var body: some View {
+        Text(title)
+            .textCase(.uppercase)
+            .font(.system(size: 11, weight: .semibold))
+            .tracking(0.6)
+            .foregroundStyle(.secondary)
+            .padding(.top, 2)
+            .padding(.bottom, 4)
     }
 }
 
@@ -112,7 +128,7 @@ private struct DirectMessageInboxRow: View {
     let animatesAvatar: Bool
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             DirectMessageAvatar(
                 channel: channel,
                 size: 32,
@@ -172,6 +188,7 @@ private struct DirectMessageInboxRow: View {
                     .accessibilityLabel("Unread")
             }
         }
+        .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
         .accessibilityValue(accessibilityValue)
         .overlay {
