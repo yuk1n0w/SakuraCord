@@ -30,7 +30,10 @@ struct ChatWorkspaceView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             if let supplementaryContent = presentation.supplementaryContent {
-                if supplementaryContent != .memberInspector
+                // Lyrics and a direct message's profile sit on the window's
+                // own surface, so they are not ruled off from the chat.
+                if supplementaryContent != .lyrics,
+                   supplementaryContent != .memberInspector
                     || model.selectedChannel?.kind != .directMessage
                 {
                     Divider()
@@ -207,6 +210,8 @@ private struct ChatWorkspaceSupplementaryContent: View {
                 .frame(maxHeight: .infinity)
             }
         case .lyrics:
+            // The pane runs to the top of the window like the sidebar does, so
+            // the song header and its artwork glow start at the top edge.
             LyricsPanelView(music: model.music)
                 .ignoresSafeArea(.container, edges: .top)
         case .messageSearch:

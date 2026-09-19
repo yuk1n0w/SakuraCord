@@ -234,6 +234,10 @@ private struct ChatRootView: View {
         .toolbar {
             conversationToolbar
         }
+        // One surface: the toolbar floats its glass controls over the window's
+        // own frosted backdrop instead of drawing a band across the top. The
+        // timeline keeps its own soft edge under the controls.
+        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         .environment(\.composerDropInteraction, composerDropInteraction)
         .overlay(alignment: .topLeading) {
             SakuraCordTextInputAccentBridge()

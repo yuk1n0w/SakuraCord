@@ -19,8 +19,7 @@ struct LyricsPanelView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
+            LyricsNowPlayingHeader(music: music)
             content
         }
         .frame(width: ChatChromeMetrics.memberListWidth)
@@ -52,23 +51,6 @@ struct LyricsPanelView: View {
         if index != activeIndex {
             activeIndex = index
         }
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(music.state.hasTrack ? music.state.title : "Lyrics")
-                .font(.system(size: 13, weight: .semibold))
-                .lineLimit(1)
-            if music.state.hasTrack {
-                Text(music.state.artist)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
     }
 
     @ViewBuilder private var content: some View {
@@ -116,6 +98,24 @@ struct LyricsPanelView: View {
                 .padding(.vertical, 160)
             }
             .scrollIndicators(.never)
+            // The mask below is this pane's edge treatment; the system's
+            // toolbar edge effect would dim the header above it.
+            .scrollEdgeEffectHidden(true, for: .top)
+            // Lines ease out under the header and at the foot rather than
+            // being cut off by a hard edge. A static mask on the container,
+            // so the lines' own animation is untouched.
+            .mask {
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0),
+                        .init(color: .black, location: 0.08),
+                        .init(color: .black, location: 0.9),
+                        .init(color: .clear, location: 1),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
             .id(music.state.videoID)
             .onChange(of: activeIndex) { _, index in
                 guard let index else { return }
