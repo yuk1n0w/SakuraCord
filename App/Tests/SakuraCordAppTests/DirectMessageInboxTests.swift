@@ -313,6 +313,57 @@ import Testing
 }
 
 @MainActor
+@Test func `direct message replies to your own messages stay on the trailing edge`() async throws {
+    let model = AppModel(
+        launchMode: .offlineTesting,
+        provider: MockChatProvider()
+    )
+    await model.start()
+    let currentUser = try #require(model.snapshot?.currentUser)
+    let quotedAuthor = User(
+        id: UserID(rawValue: currentUser.id.rawValue + 14_000),
+        username: "quoted-author",
+        displayName: "A Considerably Longer Display Name"
+    )
+    let channelID = ChannelID(rawValue: 9_401)
+    let width: CGFloat = 1_000
+    let parent = Message(
+        id: MessageID(rawValue: 33_000),
+        channelID: channelID,
+        author: quotedAuthor,
+        content: String(repeating: "a quoted line that keeps going ", count: 20)
+    )
+    let row = MessageRowPresentation(
+        message: Message(
+            id: MessageID(rawValue: 33_001),
+            channelID: channelID,
+            author: currentUser,
+            content: "ok",
+            type: .reply
+        ),
+        startsGroup: true,
+        startsDay: false,
+        replyPreview: MessageReplyPreview(message: parent),
+        isReplyAvailable: true
+    )
+    let layout = NativeTimelineRowLayout.make(
+        item: .message(row, isUnreadBoundary: false, isHighlighted: false),
+        width: width,
+        model: model,
+        presentationStyle: .directMessage
+    )
+
+    // However long the quote, the card ends on the outgoing bubble's edge
+    // and stays inside the pane instead of running past it.
+    let bubble = try #require(layout.messageBubbleFrame)
+    let reply = try #require(layout.replyFrame)
+    #expect(abs(reply.maxX - bubble.maxX) < 0.5)
+    #expect(reply.minX >= 0 && reply.maxX <= width)
+    #expect(reply.width <= ChatChromeMetrics.directMessageBubbleMaximumWidth)
+    #expect(reply.maxY <= bubble.minY)
+}
+
+@MainActor
 @Test func `direct message images stay in the bubble presentation`() async throws {
     let model = AppModel(
         launchMode: .offlineTesting,

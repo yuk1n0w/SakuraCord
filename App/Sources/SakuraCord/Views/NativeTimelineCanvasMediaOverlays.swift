@@ -299,7 +299,9 @@ extension NativeTimelineCanvasView {
                     )
                 }
             }
-            if let preview = row.replyPreview,
+            // A conversation reply is a text-only quote card with no avatar.
+            if !layout.usesConversationLayout,
+               let preview = row.replyPreview,
                let url = preview.author.avatarURL,
                let replyContentFrame = layout.replyContentFrame,
                NativeTimelineAvatarPresentation

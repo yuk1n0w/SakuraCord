@@ -173,20 +173,27 @@ extension NativeTimelineRowLayout {
             prefixHeight += headerHeight
         }
 
+        // A reply is a quote card on the bubble's own edge, sized to its text,
+        // so a reply to your own message sits flush right instead of running
+        // past the trailing edge.
         var replyFrame: CGRect?
         if row.replyMessageID != nil {
-            let replyHeight: CGFloat = 20
-            replyFrame = CGRect(
-                x: bubbleX,
-                y: prefixHeight,
-                width: max(
-                    96,
-                    conversationMinX + conversationWidth
-                        - horizontalInset - bubbleX
+            let cardWidth = NativeTimelineReplyCardMetrics.width(
+                for: NativeTimelineReplyCardContent.make(
+                    preview: row.replyPreview,
+                    model: model
                 ),
-                height: replyHeight
+                maximum: maximumBubbleWidth
             )
-            prefixHeight += replyHeight
+            replyFrame = CGRect(
+                x: isOutgoing
+                    ? conversationMinX + conversationWidth - horizontalInset - cardWidth
+                    : conversationMinX + horizontalInset,
+                y: prefixHeight,
+                width: cardWidth,
+                height: NativeTimelineReplyCardMetrics.height
+            )
+            prefixHeight += NativeTimelineReplyCardMetrics.height
         }
 
         let topSeparation: CGFloat = 4

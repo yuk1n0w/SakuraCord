@@ -243,7 +243,9 @@ extension NativeTimelineRowPainter {
         if let frame = layout.replyFrame,
            let contentFrame = layout.replyContentFrame
         {
-            if let preview = row.replyPreview {
+            if layout.usesConversationLayout {
+                replyCard(preview: row.replyPreview, frame: frame, model: model)
+            } else if let preview = row.replyPreview {
                 replyContext(
                     preview: preview,
                     frame: frame,
