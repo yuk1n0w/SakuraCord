@@ -335,6 +335,7 @@ extension NativeTimelineCanvasView {
         guard event.buttonNumber == 0 else { return }
         let point = convert(event.locationInWindow, from: nil)
         pressedActivationTarget = nil
+        dismissProfilePopovers(forClickAt: point)
         if let target = codeBlockCopyButtonHit(at: point) {
             setHoveredCodeBlock(target)
             pressedCodeBlockCopyButton = target
@@ -1050,6 +1051,40 @@ extension NativeTimelineCanvasView {
             )
         }
         return nil
+    }
+
+    /// Profile popovers leave clicks on the chat to the canvas, so a click
+    /// anywhere else in the timeline closes them here. A click on a name,
+    /// avatar, or mention is left alone: it toggles or switches that profile
+    /// when the click completes.
+    private func dismissProfilePopovers(forClickAt point: CGPoint) {
+        if !profilePointerHit(at: point) {
+            closeMessageProfilePopover()
+        }
+        if case .textMention = pointerActivationTarget(at: point) {
+            return
+        }
+        closeMentionPopover()
+    }
+
+    private func profilePointerHit(at point: CGPoint) -> Bool {
+        guard let index = rowIndex(at: point.y),
+              items.indices.contains(index),
+              layouts.indices.contains(index),
+              case let .message(row, _, _) = items[index],
+              !row.message.type.hasGeneratedContent
+        else { return false }
+        let layout = layouts[index]
+        let local = CGPoint(
+            x: point.x,
+            y: point.y - displayedRowOrigin(at: index)
+        )
+        return NativeTimelineAuthorProfileGeometry.hitFrame(
+            at: local,
+            avatarFrame: layout.avatarFrame,
+            authorFrame: layout.authorFrame
+        ) != nil
+            || layout.commandInvocationRegion?.profileFrame.contains(local) == true
     }
 
     func authorNamePointerHit(at point: CGPoint) -> MessageID? {

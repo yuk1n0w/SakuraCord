@@ -479,6 +479,15 @@ import Testing
     #expect(namePlate.maxY <= bubble.minY)
     #expect(firstIncoming.avatarFrame == nil)
 
+    // The plate hugs the name, so only the name opens the profile and the
+    // profile points at it rather than at the middle of the pane.
+    let nameWidth = NativeTimelineReplyMetrics.textWidth(
+        "Group Sender",
+        font: NativeTimelineAuthorNameMetrics.font
+    )
+    #expect(namePlate.width >= nameWidth)
+    #expect(namePlate.width < nameWidth + 8)
+
     // Not repeated mid-run, never shown for your own messages, and never in
     // a one-to-one thread.
     #expect(

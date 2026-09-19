@@ -141,13 +141,21 @@ extension NativeTimelineRowLayout {
         )
         if namesAuthor {
             let authorHeight: CGFloat = 16
+            let nameX = bubbleX + horizontalContentInset
+            let author = model?.authorPresentation(for: message).user ?? message.author
+            // The plate hugs the name: it is the only part that opens the
+            // profile, and the profile points at the name rather than at the
+            // middle of a frame spanning the pane.
+            let nameWidth = ceil(NativeTimelineReplyMetrics.textWidth(
+                author.displayName,
+                font: NativeTimelineAuthorNameMetrics.font
+            )) + 2
             authorFrame = CGRect(
-                x: bubbleX + horizontalContentInset,
+                x: nameX,
                 y: prefixHeight,
-                width: max(
-                    48,
-                    conversationMinX + conversationWidth
-                        - horizontalInset - bubbleX
+                width: min(
+                    max(24, nameWidth),
+                    max(48, conversationMinX + conversationWidth - horizontalInset - nameX)
                 ),
                 height: authorHeight
             )

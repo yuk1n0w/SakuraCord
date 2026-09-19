@@ -8,6 +8,17 @@ import QuartzCore
 import SakuraCordModels
 import SwiftUI
 
+/// The author name above a message, shared by the painter that draws it and
+/// the layouts that measure it.
+enum NativeTimelineAuthorNameMetrics {
+    static var font: NSFont {
+        .systemFont(
+            ofSize: NSFont.preferredFont(forTextStyle: .headline).pointSize,
+            weight: .semibold
+        )
+    }
+}
+
 struct NativeTimelineMessageDrawInput {
     let row: MessageRowPresentation
     let layout: NativeTimelineRowLayout
@@ -152,10 +163,7 @@ extension NativeTimelineRowPainter {
             text(
                 presentedAuthor.displayName,
                 in: frame,
-                font: .systemFont(
-                    ofSize: NSFont.preferredFont(forTextStyle: .headline).pointSize,
-                    weight: .semibold
-                ),
+                font: NativeTimelineAuthorNameMetrics.font,
                 color: layout.usesConversationLayout
                     ? authorNameColor(
                         presentedAuthor,
