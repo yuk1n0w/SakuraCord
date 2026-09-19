@@ -186,7 +186,7 @@ import UserNotifications
 }
 
 @MainActor
-@Test func `numbered navigation maps and selects direct messages and eight servers in rail order`() async {
+@Test func `command option numbers select nine servers in rail order`() async {
     let model = AppModel(launchMode: .offlineTesting)
     let guilds = (1 ... 10).map {
         Guild(id: GuildID(rawValue: UInt64($0)), name: "Server \($0)")
@@ -203,23 +203,40 @@ import UserNotifications
         .guild(guilds[9].id),
     ]
 
-    #expect(model.navigationDestination(for: 1) == .directMessages)
-    for shortcutNumber in 2 ... 9 {
+    // Servers inside folders count, and an unknown rail entry is skipped.
+    for shortcutNumber in 1 ... 9 {
         #expect(
-            model.navigationDestination(for: shortcutNumber)
-                == .guild(guilds[shortcutNumber - 2].id)
+            model.serverShortcutDestination(shortcutNumber)
+                == guilds[shortcutNumber - 1].id
         )
     }
-    #expect(model.navigationDestination(for: 0) == nil)
-    #expect(model.navigationDestination(for: 10) == nil)
+    #expect(model.serverShortcutDestination(0) == nil)
+    #expect(model.serverShortcutDestination(10) == nil)
 
-    model.navigateUsingShortcut(9)
+    model.navigateToServerShortcut(9)
     await model.guildActivationTask?.value
-    #expect(model.selectedGuildID == guilds[7].id)
+    #expect(model.selectedGuildID == guilds[8].id)
+}
 
-    model.navigateUsingShortcut(1)
+@MainActor
+@Test func `command numbers reach direct messages from inside a server`() async throws {
+    let model = AppModel(launchMode: .offlineTesting, provider: MockChatProvider())
+    await model.start()
+    let guildID = try #require(model.snapshot?.guilds.first?.id)
+    model.selectGuild(guildID)
+    await model.guildActivationTask?.value
+    #expect(model.selectedGuildID == guildID)
+
+    // The server's channels are what the sidebar shows now, but the number
+    // still counts the direct message list.
+    let conversations = DirectMessageInboxPolicy.conversations(in: model.snapshot?.channels ?? [])
+    let first = try #require(conversations.first)
+    #expect(model.conversationShortcutDestination(1) == first.id)
+
+    model.navigateToConversationShortcut(1)
     await model.guildActivationTask?.value
     #expect(model.selectedGuildID == nil)
+    #expect(model.selectedChannelID == first.id)
 }
 
 @MainActor

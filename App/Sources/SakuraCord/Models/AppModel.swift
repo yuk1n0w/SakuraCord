@@ -12,11 +12,6 @@ import SakuraCordPersistence
 import UniformTypeIdentifiers
 import UserNotifications
 
-enum ServerRailNavigationDestination: Equatable {
-    case directMessages
-    case guild(GuildID)
-}
-
 enum ApplicationStreamPlaybackState: Equatable {
     case available
     case connecting

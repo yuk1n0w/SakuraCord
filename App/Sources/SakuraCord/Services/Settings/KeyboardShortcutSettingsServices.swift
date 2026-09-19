@@ -422,33 +422,16 @@ nonisolated enum KeyboardShortcutValidator {
         if chord.modifiers.contains(.control), chord.modifiers.contains(.option) {
             return "Control–Option combinations are reserved for VoiceOver commands."
         }
-        if chord.modifiers == command {
-            if ["q", "h", "m", "w"].contains(chord.key) {
-                return "That shortcut is reserved by the macOS application menu."
-            }
-            if ["a", "c", "v", "x", "z"].contains(chord.key) {
-                return "That shortcut is reserved for standard text editing."
-            }
-            if ["g", "n", "o", "p", "s", "t"].contains(chord.key)
-                || (chord.key == "f" && action != .searchCurrentConversation)
-            {
-                return "That shortcut is reserved for a standard macOS application command."
-            }
-            if ("1" ... "9").contains(chord.key) {
-                return "Command–1 through Command–9 are reserved for server navigation."
-            }
-            if chord.key == ",", action != .openSettings {
-                return "Command–Comma is reserved for Settings."
-            }
-            if chord.key == "\t" || chord.key == " " {
-                return "That combination is reserved by macOS application switching or Spotlight."
-            }
-            if chord.key == "`" {
-                return "Command–Grave Accent is reserved for cycling application windows."
-            }
+        if chord.modifiers == command,
+           let reason = commandReservedReason(chord.key, action: action)
+        {
+            return reason
         }
         if chord.modifiers == [command, .option], ["h", "m", "w"].contains(chord.key) {
             return "That shortcut is reserved for macOS window management."
+        }
+        if chord.modifiers == [command, .option], ("1" ... "9").contains(chord.key) {
+            return "Command–Option–1 through Command–Option–9 are reserved for server navigation."
         }
         if chord.modifiers == [command, .option], chord.key.first?.unicodeScalars.first?.value == 27 {
             return "That shortcut is reserved for Force Quit Applications."
@@ -468,6 +451,40 @@ nonisolated enum KeyboardShortcutValidator {
            chord.modifiers.contains(.command) || chord.modifiers.contains(.option)
         {
             return "That combination is reserved for text navigation or selection."
+        }
+        return nil
+    }
+
+    /// Command plus a single key: the application menu, text editing,
+    /// standard application commands, and SakuraCord's numbered navigation.
+    private static func commandReservedReason(
+        _ key: String,
+        action: KeyboardShortcutAction
+    ) -> String? {
+        if ["q", "h", "m", "w"].contains(key) {
+            return "That shortcut is reserved by the macOS application menu."
+        }
+        if ["a", "c", "v", "x", "z"].contains(key) {
+            return "That shortcut is reserved for standard text editing."
+        }
+        // SakuraCord saves no documents, so Command–S belongs to the sidebar.
+        if ["g", "n", "o", "p", "t"].contains(key)
+            || (key == "s" && action != .toggleChannelSidebar)
+            || (key == "f" && action != .searchCurrentConversation)
+        {
+            return "That shortcut is reserved for a standard macOS application command."
+        }
+        if ("1" ... "9").contains(key) {
+            return "Command–1 through Command–9 are reserved for direct message navigation."
+        }
+        if key == ",", action != .openSettings {
+            return "Command–Comma is reserved for Settings."
+        }
+        if key == "\t" || key == " " {
+            return "That combination is reserved by macOS application switching or Spotlight."
+        }
+        if key == "`" {
+            return "Command–Grave Accent is reserved for cycling application windows."
         }
         return nil
     }

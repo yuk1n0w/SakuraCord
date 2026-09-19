@@ -42,13 +42,14 @@ struct SakuraCordCommands: Commands {
             Divider()
 
             Button("Direct Messages") {
-                model.navigateUsingShortcut(1)
+                model.selectGuild(nil)
             }
-            .keyboardShortcut("1")
 
-            ForEach(2 ... 9, id: \.self) { shortcutNumber in
-                Button("Server \(shortcutNumber - 1)") {
-                    model.navigateUsingShortcut(shortcutNumber)
+            // Command numbers open the direct messages in list order; adding
+            // Option switches to the servers in rail order.
+            ForEach(1 ... 9, id: \.self) { shortcutNumber in
+                Button("Conversation \(shortcutNumber)") {
+                    model.navigateToConversationShortcut(shortcutNumber)
                 }
                 .keyboardShortcut(
                     KeyEquivalent(Character(String(shortcutNumber)))
@@ -58,8 +59,8 @@ struct SakuraCordCommands: Commands {
             Divider()
 
             ForEach(1 ... 9, id: \.self) { shortcutNumber in
-                Button("Conversation \(shortcutNumber)") {
-                    model.navigateToConversationShortcut(shortcutNumber)
+                Button("Server \(shortcutNumber)") {
+                    model.navigateToServerShortcut(shortcutNumber)
                 }
                 .keyboardShortcut(
                     KeyEquivalent(Character(String(shortcutNumber))),

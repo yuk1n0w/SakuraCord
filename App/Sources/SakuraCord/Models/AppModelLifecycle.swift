@@ -1030,12 +1030,10 @@ extension AppModel {
         }
     }
 
-    func navigationDestination(for shortcutNumber: Int) -> ServerRailNavigationDestination? {
+    /// The server a Command–Option number key jumps to, counted in rail order
+    /// with servers inside folders included: the first server is 1.
+    func serverShortcutDestination(_ shortcutNumber: Int) -> GuildID? {
         guard (1 ... 9).contains(shortcutNumber) else { return nil }
-        if shortcutNumber == 1 {
-            return .directMessages
-        }
-
         let guildIDs = serverRailItems.flatMap { item -> [GuildID] in
             switch item {
             case .guild(let guildID): [guildID]
@@ -1043,29 +1041,24 @@ extension AppModel {
             }
         }
         let visibleGuildIDs = guildIDs.filter { serverRailGuildsByID[$0] != nil }
-        let guildIndex = shortcutNumber - 2
+        let guildIndex = shortcutNumber - 1
         guard visibleGuildIDs.indices.contains(guildIndex) else { return nil }
-        return .guild(visibleGuildIDs[guildIndex])
+        return visibleGuildIDs[guildIndex]
     }
 
-    func navigateUsingShortcut(_ shortcutNumber: Int) {
-        switch navigationDestination(for: shortcutNumber) {
-        case .directMessages:
-            selectGuild(nil)
-        case .guild(let guildID):
-            selectGuild(guildID)
-        case nil:
-            break
-        }
+    func navigateToServerShortcut(_ shortcutNumber: Int) {
+        guard let guildID = serverShortcutDestination(shortcutNumber) else { return }
+        selectGuild(guildID)
     }
 
-    /// The conversation a number key jumps to, counted the way the list
-    /// reads: first entry is 1. Mirrors what the sidebar shows rather than
-    /// any internal ordering, so the key matches the row you can see.
+    /// The conversation a Command number key jumps to, counted the way the
+    /// direct message list reads: first entry is 1. It reads the account's
+    /// conversations rather than the visible channels, so it still finds
+    /// them while a server is open.
     func conversationShortcutDestination(_ shortcutNumber: Int) -> ChannelID? {
         DirectMessageInboxPolicy.conversationShortcutDestination(
             shortcutNumber,
-            in: visibleChannels
+            in: snapshot?.channels ?? []
         )
     }
 
