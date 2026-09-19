@@ -144,6 +144,7 @@ struct ComposerView: View {
                                     )
                                 },
                                 onDropAttachments: handleDroppedAttachments,
+                                onPromisedAttachments: addPromisedAttachments,
                                 capturesUnfocusedTyping:
                                     model.chatSettings.focusesComposerOnTyping
                                         && !showEmojiPicker
@@ -631,6 +632,28 @@ struct ComposerView: View {
             }
             submissionState.end(for: conversationID)
             isFocused = true
+        }
+    }
+
+    private func addPromisedAttachments(
+        _ batch: ComposerPromisedFileBatch,
+        isInstant: Bool
+    ) {
+        guard isInstant else {
+            model.addPromisedComposerAttachments(batch, to: conversation)
+            return
+        }
+        let acceptedURLs = model.preparePromisedAttachmentsForImmediateSend(
+            batch,
+            to: conversation
+        )
+        guard !acceptedURLs.isEmpty else { return }
+        Task {
+            defer { model.endUsingOwnedPromisedFiles(acceptedURLs) }
+            await model.sendAttachmentsImmediately(
+                acceptedURLs.map { ForumPostAttachment(url: $0) },
+                to: conversation
+            )
         }
     }
 

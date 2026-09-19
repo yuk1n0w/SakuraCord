@@ -284,6 +284,9 @@ struct ComposerTextView: NSViewRepresentable {
     var onPasteAttachments: (([URL]) -> Void)?
     var onDropTargetChanged: ((_ isTargeted: Bool, _ isInstant: Bool) -> Void)?
     var onDropAttachments: ((_ urls: [URL], _ isInstant: Bool) -> Bool)?
+    /// Receives file promises, such as a screenshot thumbnail, whether dropped
+    /// or pasted.
+    var onPromisedAttachments: ((_ batch: ComposerPromisedFileBatch, _ isInstant: Bool) -> Void)?
     var capturesUnfocusedTyping = false
     var verticalContentInset: CGFloat = 0
     var maximumHeight: CGFloat = 150
@@ -314,10 +317,12 @@ struct ComposerTextView: NSViewRepresentable {
         textView.isRichText = true
         textView.importsGraphics = false
         // NSTextView is the AppKit drag destination inside the SwiftUI
-        // workspace. Own file URLs here so AppKit cannot fall back to inserting
-        // their paths into the message text.
+        // workspace. Own file URLs and file promises here so AppKit cannot
+        // fall back to inserting their paths into the message text.
         textView.unregisterDraggedTypes()
-        textView.registerForDraggedTypes([.fileURL])
+        textView.registerForDraggedTypes(
+            [.fileURL] + ComposerPromisedFileReception.draggedTypes
+        )
         textView.drawsBackground = false
         textView.isHorizontallyResizable = false
         textView.isVerticallyResizable = true
@@ -355,6 +360,7 @@ struct ComposerTextView: NSViewRepresentable {
         textView.onPasteAttachments = onPasteAttachments
         textView.onDropTargetChanged = onDropTargetChanged
         textView.onDropAttachments = onDropAttachments
+        textView.onPromisedAttachments = onPromisedAttachments
         textView.capturesUnfocusedTyping = capturesUnfocusedTyping
         ComposerTextCheckingConfiguration.apply(chatSettings, to: textView)
 
@@ -396,6 +402,7 @@ struct ComposerTextView: NSViewRepresentable {
         textView.onPasteAttachments = onPasteAttachments
         textView.onDropTargetChanged = onDropTargetChanged
         textView.onDropAttachments = onDropAttachments
+        textView.onPromisedAttachments = onPromisedAttachments
         textView.capturesUnfocusedTyping = capturesUnfocusedTyping
         ComposerTextCheckingConfiguration.apply(chatSettings, to: textView)
         textView.setAccessibilityLabel(placeholder)
@@ -710,6 +717,7 @@ final class ComposerNSTextView: NSTextView {
     var onPasteAttachments: (([URL]) -> Void)?
     var onDropTargetChanged: ((_ isTargeted: Bool, _ isInstant: Bool) -> Void)?
     var onDropAttachments: ((_ urls: [URL], _ isInstant: Bool) -> Bool)?
+    var onPromisedAttachments: ((_ batch: ComposerPromisedFileBatch, _ isInstant: Bool) -> Void)?
     var commandPasteboard = NSPasteboard.general
     var shortcutSettings = KeyboardShortcutSettingsStore.shared
     var plainTypingAttributes: [NSAttributedString.Key: Any] = [:]
@@ -802,14 +810,20 @@ final class ComposerNSTextView: NSTextView {
     }
 
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        let isInstant = NSEvent.modifierFlags.contains(.shift)
+        defer { onDropTargetChanged?(false, false) }
+        if let onPromisedAttachments,
+           ComposerPromisedFileReception.receive(
+               from: sender.draggingPasteboard,
+               completion: { onPromisedAttachments($0, isInstant) }
+           )
+        {
+            return true
+        }
         let urls = ComposerPasteboardAttachments.fileURLs(
             from: sender.draggingPasteboard
         )
-        let isInstant = NSEvent.modifierFlags.contains(.shift)
-        let handled = !urls.isEmpty
-            && onDropAttachments?(urls, isInstant) == true
-        onDropTargetChanged?(false, false)
-        return handled
+        return !urls.isEmpty && onDropAttachments?(urls, isInstant) == true
     }
 
     override func concludeDragOperation(_ sender: (any NSDraggingInfo)?) {
@@ -819,10 +833,12 @@ final class ComposerNSTextView: NSTextView {
     private func updateAttachmentDropTarget(
         _ sender: any NSDraggingInfo
     ) -> NSDragOperation {
-        let acceptsDrop = onDropAttachments != nil
-            && !ComposerPasteboardAttachments.fileURLs(
-                from: sender.draggingPasteboard
-            ).isEmpty
+        let pasteboard = sender.draggingPasteboard
+        let acceptsDrop =
+            (onPromisedAttachments != nil
+                && ComposerPromisedFileReception.hasPromises(on: pasteboard))
+                || (onDropAttachments != nil
+                    && !ComposerPasteboardAttachments.fileURLs(from: pasteboard).isEmpty)
         let isInstant = acceptsDrop && NSEvent.modifierFlags.contains(.shift)
         onDropTargetChanged?(acceptsDrop, isInstant)
         return acceptsDrop ? .copy : []
@@ -971,6 +987,14 @@ final class ComposerNSTextView: NSTextView {
     }
 
     private func pasteAttachmentsIfAvailable() -> Bool {
+        if let onPromisedAttachments,
+           ComposerPromisedFileReception.receive(
+               from: commandPasteboard,
+               completion: { onPromisedAttachments($0, false) }
+           )
+        {
+            return true
+        }
         guard let onPasteAttachments else { return false }
         let urls = ComposerPasteboardAttachments.urls(from: commandPasteboard)
         guard !urls.isEmpty else { return false }

@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import SwiftUI
 
 struct ComposerPromisedFileDropBridge: NSViewRepresentable {
@@ -39,11 +40,7 @@ final class ComposerPromisedFileDropView: NSView {
         self.targetChanged = targetChanged
         self.receiveFiles = receiveFiles
         super.init(frame: .zero)
-        registerForDraggedTypes(
-            NSFilePromiseReceiver.readableDraggedTypes.map {
-                NSPasteboard.PasteboardType($0)
-            }
-        )
+        registerForDraggedTypes(ComposerPromisedFileReception.draggedTypes)
     }
 
     @available(*, unavailable)
@@ -68,32 +65,16 @@ final class ComposerPromisedFileDropView: NSView {
     }
 
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-        let receivers = promisedFileReceivers(from: sender.draggingPasteboard)
-        guard isEnabled, !receivers.isEmpty,
-              let directory = try? Self.makeReceivingDirectory()
-        else { return false }
-
+        guard isEnabled else { return false }
         let location = convert(sender.draggingLocation, from: nil)
         let isInstant = NSEvent.modifierFlags.contains(.shift)
-        // Each receiver represents one promised file. `fileTypes` lists the
-        // representations that file can provide; it is not a callback count.
-        let collector = ComposerPromisedFileCollector(
-            expectedCount: receivers.count,
-            directory: directory
+        let didStart = ComposerPromisedFileReception.receive(
+            from: sender.draggingPasteboard
         ) { [receiveFiles] batch in
             receiveFiles(batch, location, isInstant)
         }
-        for receiver in receivers {
-            receiver.receivePromisedFiles(
-                atDestination: directory,
-                options: [:],
-                operationQueue: .main
-            ) { url, error in
-                collector.receive(url: url, error: error)
-            }
-        }
         targetChanged(false, .zero, false)
-        return true
+        return didStart
     }
 
     static func makeReceivingDirectory(fileManager: FileManager = .default) throws -> URL {
@@ -106,12 +87,80 @@ final class ComposerPromisedFileDropView: NSView {
         let location = convert(sender.draggingLocation, from: nil)
         let isInstant = NSEvent.modifierFlags.contains(.shift)
         let acceptsDrop = isEnabled
-            && !promisedFileReceivers(from: sender.draggingPasteboard).isEmpty
+            && ComposerPromisedFileReception.hasPromises(on: sender.draggingPasteboard)
         targetChanged(acceptsDrop, location, isInstant)
         return acceptsDrop ? .copy : []
     }
+}
 
-    private func promisedFileReceivers(from pasteboard: NSPasteboard) -> [NSFilePromiseReceiver] {
+/// Receives file promises, such as the image behind a screenshot thumbnail,
+/// into SakuraCord's own promised-attachment storage.
+///
+/// A screenshot thumbnail also offers a path to a temporary file that it moves
+/// away once the drag or paste finishes. Every drop and paste path prefers the
+/// promise, so the attachment is a stable copy rather than a vanishing path.
+@MainActor
+enum ComposerPromisedFileReception {
+    private static let logger = Logger(
+        subsystem: "dev.sakuracord.SakuraCord",
+        category: "PromisedAttachments"
+    )
+
+    static var draggedTypes: [NSPasteboard.PasteboardType] {
+        NSFilePromiseReceiver.readableDraggedTypes.map {
+            NSPasteboard.PasteboardType($0)
+        }
+    }
+
+    static func hasPromises(on pasteboard: NSPasteboard) -> Bool {
+        !receivers(on: pasteboard).isEmpty
+    }
+
+    /// Asks each promise's source to write its file into a fresh managed
+    /// directory, then delivers the batch on the main queue. Returns false
+    /// when the pasteboard carries no promises, so callers can fall back to
+    /// ordinary file URLs.
+    @discardableResult
+    static func receive(
+        from pasteboard: NSPasteboard,
+        completion: @escaping (ComposerPromisedFileBatch) -> Void
+    ) -> Bool {
+        let receivers = receivers(on: pasteboard)
+        guard !receivers.isEmpty else { return false }
+        let directory: URL
+        do {
+            directory = try ComposerPromisedFileStorage.makeReceivingDirectory()
+        } catch {
+            logger.error(
+                "Could not create a promised-attachment directory: \(error.localizedDescription, privacy: .public)"
+            )
+            return false
+        }
+        // Each receiver represents one promised file. `fileTypes` lists the
+        // representations that file can provide; it is not a callback count.
+        let collector = ComposerPromisedFileCollector(
+            expectedCount: receivers.count,
+            directory: directory,
+            completion: completion
+        )
+        for receiver in receivers {
+            receiver.receivePromisedFiles(
+                atDestination: directory,
+                options: [:],
+                operationQueue: .main
+            ) { url, error in
+                if let error {
+                    logger.error(
+                        "A promised attachment was not delivered: \(error.localizedDescription, privacy: .public)"
+                    )
+                }
+                collector.receive(url: url, error: error)
+            }
+        }
+        return true
+    }
+
+    private static func receivers(on pasteboard: NSPasteboard) -> [NSFilePromiseReceiver] {
         pasteboard.readObjects(
             forClasses: [NSFilePromiseReceiver.self],
             options: nil

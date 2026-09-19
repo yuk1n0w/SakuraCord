@@ -355,7 +355,22 @@ private struct ChatRootView: View {
                       let destination = composerDestination(at: location)
                 else { return false }
                 hoveredFileDropDestination = destination
-                if NSEvent.modifierFlags.contains(.shift) {
+                let isInstant = NSEvent.modifierFlags.contains(.shift)
+                // A screenshot thumbnail's temporary path vanishes when the
+                // drag ends; its file promise gives SakuraCord its own copy.
+                if ComposerPromisedFileReception.receive(
+                    from: NSPasteboard(name: .drag),
+                    completion: { batch in
+                        if isInstant {
+                            sendDroppedPromisedAttachmentsImmediately(batch, to: destination)
+                        } else {
+                            model.addPromisedComposerAttachments(batch, to: destination)
+                        }
+                    }
+                ) {
+                    return true
+                }
+                if isInstant {
                     sendDroppedAttachmentsImmediately(urls, to: destination)
                     return !urls.isEmpty
                 }
