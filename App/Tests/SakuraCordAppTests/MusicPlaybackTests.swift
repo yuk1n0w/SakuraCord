@@ -214,3 +214,18 @@ import Testing
     #expect(results.count == 1)
     #expect(results[0].videoId == "abc")
 }
+
+@Test func `the music bridge keeps a picked collection track in its queue`() {
+    // YouTube Music's collection response has plain track rows. The bridge
+    // puts the collection id back on each one, then opens the selected video
+    // with that id so its next action stays inside the collection.
+    let bridge = MusicBridgeScript.source
+    #expect(bridge.contains("openList: function (browseId, playlistId)"))
+    #expect(bridge.contains("result.playlistId = playlistId"))
+    #expect(
+        bridge.contains(
+            "? '/watch?v=' + encodeURIComponent(videoId)\n"
+                + "                        + (playlistId ? '&list=' + encodeURIComponent(playlistId) : '')"
+        )
+    )
+}

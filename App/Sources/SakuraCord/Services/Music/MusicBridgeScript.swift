@@ -603,16 +603,25 @@ nonisolated enum MusicBridgeScript {
                         post({ type: 'SEARCH', query: query, results: [] });
                     });
             },
-            openList: function (browseId) {
+            openList: function (browseId, playlistId) {
                 if (!browseId) { return; }
                 // A playlist or album's own page, whose rows are ordinary
-                // track rows - the same shape a search shelf uses.
+                // track rows - the same shape a search shelf uses. Its rows
+                // do not name their parent, so restore that context here;
+                // otherwise a chosen track can start but has no collection
+                // queue to continue through.
                 innertube('/youtubei/v1/browse', { browseId: browseId })
                     .then(function (payload) {
+                        const results = resultsFrom(payload).map(function (result) {
+                            if (!result.playlistId && playlistId) {
+                                result.playlistId = playlistId;
+                            }
+                            return result;
+                        });
                         post({
                             type: 'LIST',
                             browseId: browseId,
-                            results: resultsFrom(payload)
+                            results: results
                         });
                     })
                     .catch(function () {
@@ -664,10 +673,12 @@ nonisolated enum MusicBridgeScript {
                 capture();
             },
             play: function (videoId, playlistId) {
-                // A playlist starts at its first track; a video starts at
-                // itself. Either is a route the page's own router knows.
+                // A collection track needs both pieces: the video chooses
+                // the starting song and the playlist keeps the page's queue
+                // pointed at its following tracks.
                 const route = videoId
                     ? '/watch?v=' + encodeURIComponent(videoId)
+                        + (playlistId ? '&list=' + encodeURIComponent(playlistId) : '')
                     : (playlistId ? '/watch?list=' + encodeURIComponent(playlistId) : '');
                 if (!route) { return; }
                 // Setting location would reload the document: the player

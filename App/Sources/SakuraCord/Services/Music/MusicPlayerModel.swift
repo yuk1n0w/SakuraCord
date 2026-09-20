@@ -431,7 +431,10 @@ final class MusicPlayerModel {
             isLoading: true
         )
         _ = webViewForDisplay()
-        evaluate("openList", argument: encoded(result.browseId))
+        evaluate(
+            "openList",
+            argument: "\(encoded(result.browseId)), \(encoded(result.playlistId))"
+        )
         expire(after: .seconds(20)) { [weak self] in
             guard let self, openedList?.isLoading == true else { return }
             openedList?.isLoading = false
