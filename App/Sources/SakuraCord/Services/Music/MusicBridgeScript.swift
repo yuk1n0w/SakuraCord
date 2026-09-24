@@ -672,14 +672,12 @@ nonisolated enum MusicBridgeScript {
                 }
                 capture();
             },
-            play: function (videoId, playlistId) {
-                // A collection track needs both pieces: the video chooses
-                // the starting song and the playlist keeps the page's queue
-                // pointed at its following tracks.
+            play: function (videoId) {
+                // Collection selections load a full URL from Swift so the
+                // page constructs their queue. This route is for singles.
                 const route = videoId
                     ? '/watch?v=' + encodeURIComponent(videoId)
-                        + (playlistId ? '&list=' + encodeURIComponent(playlistId) : '')
-                    : (playlistId ? '/watch?list=' + encodeURIComponent(playlistId) : '');
+                    : '';
                 if (!route) { return; }
                 // Setting location would reload the document: the player
                 // would be torn down and rebuilt, the bridge reinjected, and

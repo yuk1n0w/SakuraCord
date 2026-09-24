@@ -161,6 +161,14 @@ for framework in "$BIN_DIR"/*.framework; do
   ditto "$framework" "$FRAMEWORKS/$framework_name"
   codesign --force --sign "$CODE_SIGN_IDENTITY" "$FRAMEWORKS/$framework_name" >/dev/null
 done
+SOCIAL_FRAMEWORK="$ROOT_DIR/App/Vendor/DiscordSocialSDK/discord_partner_sdk.framework"
+if [[ -d "$SOCIAL_FRAMEWORK" ]]; then
+  ditto "$SOCIAL_FRAMEWORK" "$FRAMEWORKS/discord_partner_sdk.framework"
+  codesign --force --sign "$CODE_SIGN_IDENTITY" \
+    "$FRAMEWORKS/discord_partner_sdk.framework" >/dev/null
+  cp "$ROOT_DIR/App/Vendor/DiscordSocialSDK/License-Notices.txt" \
+    "$RESOURCES/DiscordSocialSDK-License-Notices.txt"
+fi
 cp "$ROOT_DIR/docs/THIRD_PARTY_NOTICES.md" "$RESOURCES/THIRD_PARTY_NOTICES.md"
 if ! grep -Fq "## Zstandard" "$RESOURCES/THIRD_PARTY_NOTICES.md" \
   || ! grep -Fq "Copyright (c) Meta Platforms, Inc. and affiliates." \

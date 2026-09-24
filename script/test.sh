@@ -33,6 +33,12 @@ run_tests() {
     mkdir -p "$bin_dir/PackageFrameworks"
     ditto "$framework" "$bin_dir/PackageFrameworks/$(basename "$framework")"
   done
+  if [[ "$package_path" == "$ROOT_DIR/App" \
+      && -d "$ROOT_DIR/App/Vendor/DiscordSocialSDK/discord_partner_sdk.framework" ]]; then
+    mkdir -p "$bin_dir/PackageFrameworks"
+    ditto "$ROOT_DIR/App/Vendor/DiscordSocialSDK/discord_partner_sdk.framework" \
+      "$bin_dir/PackageFrameworks/discord_partner_sdk.framework"
+  fi
 
   swift test \
     --package-path "$package_path" \

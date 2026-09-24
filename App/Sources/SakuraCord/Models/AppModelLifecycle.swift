@@ -360,6 +360,7 @@ extension AppModel {
             if let handle = handles.first(where: { $0.accountID == accountID }) {
                 try await removeSavedAccount(handle)
             } else {
+                music.discordPresence.forgetAccount(accountID)
                 savedAccounts.removeAll { $0.accountID == accountID }
                 await savedAccountStore.remove(accountID: accountID)
                 await savedAccountStore.setPreferredAccountID(
@@ -492,6 +493,7 @@ extension AppModel {
 
     private func removeSavedAccount(_ handle: CredentialHandle) async throws {
         try await credentialStore.remove(handle)
+        music.discordPresence.forgetAccount(handle.accountID)
         credentialHandlesByAccountID[handle.accountID] = nil
         await savedAccountStore.remove(accountID: handle.accountID)
         savedAccounts.removeAll { $0.accountID == handle.accountID }

@@ -245,6 +245,15 @@ final class LyricsModel {
         return fallback == "|" ? nil : fallback
     }
 
+    /// A lookup may complete after the player has moved to another track.
+    /// Only return words that belong to the supplied playback state.
+    func activeText(for state: MusicPlaybackState, at time: TimeInterval) -> String? {
+        guard let identity = Self.identity(for: state), identity == loadedTrack else {
+            return nil
+        }
+        return lyrics.activeText(at: time)
+    }
+
     /// Follows the player. Called on every state update, so it has to be
     /// cheap and idempotent for the common case of the same track playing on.
     func track(_ state: MusicPlaybackState) {

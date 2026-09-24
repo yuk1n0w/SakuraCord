@@ -3,6 +3,32 @@ import MediaPipeline
 import Testing
 @testable import SakuraCord
 
+@Test func `Discord music presence respects identity and privacy boundaries`() {
+    #expect(MusicDiscordPresencePolicy.matchesAccount("123", userID: 123))
+    #expect(!MusicDiscordPresencePolicy.matchesAccount("123", userID: 456))
+
+    var track = MusicPlaybackState(
+        title: "A Song", artist: "An Artist", isPlaying: true,
+        isSignedIn: true
+    )
+    #expect(MusicDiscordPresencePolicy.canPublish(track, isVisible: true))
+    #expect(!MusicDiscordPresencePolicy.canPublish(track, isVisible: false))
+    track.isPlaying = false
+    #expect(!MusicDiscordPresencePolicy.canPublish(track, isVisible: true))
+    track.isPlaying = true
+    track.isAdvertisement = true
+    #expect(!MusicDiscordPresencePolicy.canPublish(track, isVisible: true))
+    track.isAdvertisement = false
+    track.isSignedIn = false
+    #expect(!MusicDiscordPresencePolicy.canPublish(track, isVisible: true))
+
+    let longTitle = String(repeating: "五", count: 80)
+    let clipped = MusicDiscordPresencePolicy.activityText(longTitle, fallback: "Music")
+    #expect(clipped.utf8.count <= 128)
+    #expect(clipped.unicodeScalars.allSatisfy { $0 == "五" })
+    #expect(MusicDiscordPresencePolicy.activityText("", fallback: "YouTube Music") == "YouTube Music")
+}
+
 @Test func `the bridge reads a playing track off the page`() {
     let event = MusicBridgeEvent.decode(from: """
     {"type":"STATE","title":"Ur Not Alone","artist":"Chevy",
@@ -215,17 +241,28 @@ import Testing
     #expect(results[0].videoId == "abc")
 }
 
-@Test func `the music bridge keeps a picked collection track in its queue`() {
-    // YouTube Music's collection response has plain track rows. The bridge
-    // puts the collection id back on each one, then opens the selected video
-    // with that id so its next action stays inside the collection.
-    let bridge = MusicBridgeScript.source
-    #expect(bridge.contains("openList: function (browseId, playlistId)"))
-    #expect(bridge.contains("result.playlistId = playlistId"))
+@Test func `a picked collection track loads its playlist context`() {
+    // Switching videos in the existing page left the previous radio queue
+    // intact. A full watch navigation carries both the selected song and
+    // collection id, so the page can build the collection's queue.
+    let url = MusicPlaylistPlaybackURL.url(videoID: "song", playlistID: "PL123")
+    let parts = url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }
+    #expect(parts?.scheme == "https")
+    #expect(parts?.host == "music.youtube.com")
+    #expect(parts?.path == "/watch")
+    #expect(parts?.queryItems == [
+        URLQueryItem(name: "v", value: "song"),
+        URLQueryItem(name: "list", value: "PL123")
+    ])
     #expect(
-        bridge.contains(
-            "? '/watch?v=' + encodeURIComponent(videoId)\n"
-                + "                        + (playlistId ? '&list=' + encodeURIComponent(playlistId) : '')"
-        )
+        MusicPlaylistPlaybackURL.url(videoID: "", playlistID: "PL123")?
+            .absoluteString == "https://music.youtube.com/watch?list=PL123"
     )
+    #expect(MusicPlaylistPlaybackURL.url(videoID: "song", playlistID: "") == nil)
+    #expect(MusicPlaylistPlaybackURL.belongsToPlaylist(url, playlistID: "PL123"))
+    #expect(!MusicPlaylistPlaybackURL.belongsToPlaylist(
+        URL(string: "https://music.youtube.com/watch?v=old&list=OLD"),
+        playlistID: "PL123"
+    ))
+    #expect(!MusicPlaylistPlaybackURL.belongsToPlaylist(nil, playlistID: "PL123"))
 }

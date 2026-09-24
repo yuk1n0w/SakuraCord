@@ -86,6 +86,8 @@ struct MusicOverlayView: View {
                         } else {
                             searchField
                             Divider()
+                            discordPresenceControls
+                            Divider()
                             results
                         }
                     }
@@ -186,6 +188,37 @@ struct MusicOverlayView: View {
         }
         .padding(.horizontal, 16)
         .frame(height: 52)
+    }
+
+    private var discordPresenceControls: some View {
+        HStack(spacing: 12) {
+            Toggle(
+                "Show what I'm listening to on Discord",
+                isOn: Binding(
+                    get: { music.discordPresence.isEnabled },
+                    set: { music.discordPresence.setEnabled($0) }
+                )
+            )
+            .toggleStyle(.switch)
+            .disabled(model.activeAccountID == nil || !music.discordPresence.isAvailable)
+
+            Spacer(minLength: 8)
+
+            Text(discordPresenceStatus)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .help(discordPresenceStatus)
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 54)
+    }
+
+    private var discordPresenceStatus: String {
+        if !music.discordPresence.isAvailable { return "SDK not included in this build" }
+        if model.activeAccountID == nil { return "Sign in to SakuraCord first" }
+        return music.discordPresence.statusText
+            ?? (music.discordPresence.isEnabled ? "Only while playing and visible" : "Off")
     }
 
     @ViewBuilder private var results: some View {

@@ -3,6 +3,34 @@ import Foundation
 import Observation
 import WebKit
 
+/// A collection selection needs a full navigation so the web player builds
+/// the collection queue, rather than only switching to one video.
+nonisolated enum MusicPlaylistPlaybackURL {
+    static func url(videoID: String, playlistID: String) -> URL? {
+        guard !playlistID.isEmpty else { return nil }
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "music.youtube.com"
+        components.path = "/watch"
+        components.queryItems = []
+        if !videoID.isEmpty {
+            components.queryItems?.append(URLQueryItem(name: "v", value: videoID))
+        }
+        components.queryItems?.append(URLQueryItem(name: "list", value: playlistID))
+        return components.url
+    }
+
+    static func belongsToPlaylist(_ sourceURL: URL?, playlistID: String) -> Bool {
+        guard let sourceURL,
+              let components = URLComponents(url: sourceURL, resolvingAgainstBaseURL: false),
+              components.host == "music.youtube.com"
+        else { return false }
+        return components.queryItems?.contains {
+            $0.name == "list" && $0.value == playlistID
+        } == true
+    }
+}
+
 /// Owns the YouTube Music page and projects what it is playing.
 ///
 /// The page is the player. YouTube Music has no public playback API, and its
@@ -19,6 +47,8 @@ final class MusicPlayerModel {
     /// What the page reports it is playing.
     private(set) var state: MusicPlaybackState = .idle
 
+    let discordPresence = MusicDiscordPresenceModel()
+
     /// The words for whatever is playing. Kept beside the player so a
     /// lookup follows the track without the panel having to watch for it.
     let lyrics = LyricsModel()
@@ -29,6 +59,13 @@ final class MusicPlayerModel {
         }
         lyrics.youtubeLyricsFetch = { [weak self] videoID in
             await self?.youtubeLyricsResponse(for: videoID)
+        }
+        discordPresence.currentLyric = { [weak self] state in
+            guard let self else { return nil }
+            return self.lyrics.activeText(for: state, at: self.estimatedProgress())
+        }
+        discordPresence.currentProgress = { [weak self] in
+            self?.estimatedProgress()
         }
     }
 
@@ -81,6 +118,7 @@ final class MusicPlayerModel {
     /// panel would step rather than follow. Interpolating from the last
     /// report gives a clock smooth enough to read against.
     @ObservationIgnored private var progressReport: ProgressReport?
+    @ObservationIgnored private var pendingPlaylistID: String?
 
     private struct ProgressReport {
         var seconds: TimeInterval
@@ -117,8 +155,8 @@ final class MusicPlayerModel {
     func webViewForDisplay() -> WKWebView {
         if let webView { return webView }
 
-        let bridge = Bridge { [weak self] event in
-            self?.apply(event)
+        let bridge = Bridge { [weak self] event, sourceURL in
+            self?.apply(event, from: sourceURL)
         }
         let controller = WKUserContentController()
         controller.add(bridge, name: MusicBridgeScript.messageHandlerName)
@@ -446,10 +484,20 @@ final class MusicPlayerModel {
     }
 
     func play(_ result: MusicSearchResult) {
-        _ = webViewForDisplay()
+        let webView = webViewForDisplay()
+        if let url = MusicPlaylistPlaybackURL.url(
+            videoID: result.videoId,
+            playlistID: result.playlistId
+        ) {
+            pendingPlaylistID = result.playlistId
+            isReady = false
+            webView.load(URLRequest(url: url))
+            return
+        }
+        pendingPlaylistID = nil
         evaluate(
             "play",
-            argument: "\(encoded(result.videoId)), \(encoded(result.playlistId))"
+            argument: encoded(result.videoId)
         )
     }
 
@@ -485,7 +533,14 @@ final class MusicPlayerModel {
 
     // MARK: - Bridge
 
-    private func apply(_ event: MusicBridgeEvent) {
+    private func apply(_ event: MusicBridgeEvent, from sourceURL: URL?) {
+        // The old page can still deliver an observation after navigation
+        // begins. It must not mark the new page ready or consume its resume.
+        if let pendingPlaylistID,
+           !MusicPlaylistPlaybackURL.belongsToPlaylist(
+               sourceURL,
+               playlistID: pendingPlaylistID
+           ) { return }
         switch event {
         case .ready:
             isReady = true
@@ -496,7 +551,9 @@ final class MusicPlayerModel {
             }
         case .signedOut:
             isReady = false
+            pendingPlaylistID = nil
             state = .idle
+            discordPresence.updateMusic(.idle)
             progressReport = nil
             lyrics.track(.idle)
         case let .list(browseId, results):
@@ -519,6 +576,10 @@ final class MusicPlayerModel {
             isSearching = false
         case let .state(state):
             isReady = true
+            if pendingPlaylistID != nil, state.hasTrack {
+                pendingPlaylistID = nil
+                if !state.isPlaying { evaluate("resume") }
+            }
             // Signing in or out replaces whose feed this is, so the one on
             // screen belonged to the previous session and is discarded.
             // Without this, a listener signs in and keeps looking at the
@@ -560,6 +621,7 @@ final class MusicPlayerModel {
                 self.state = state
             }
             lyrics.track(state)
+            discordPresence.updateMusic(state)
         }
     }
 
@@ -582,9 +644,9 @@ final class MusicPlayerModel {
     /// handler, so this is a separate object rather than the model itself,
     /// which would otherwise be kept alive by its own web view.
     private final class Bridge: NSObject, WKScriptMessageHandler {
-        private let receive: (MusicBridgeEvent) -> Void
+        private let receive: (MusicBridgeEvent, URL?) -> Void
 
-        init(receive: @escaping (MusicBridgeEvent) -> Void) {
+        init(receive: @escaping (MusicBridgeEvent, URL?) -> Void) {
             self.receive = receive
         }
 
@@ -595,7 +657,7 @@ final class MusicPlayerModel {
             guard let json = message.body as? String,
                   let event = MusicBridgeEvent.decode(from: json)
             else { return }
-            receive(event)
+            receive(event, message.frameInfo.request.url)
         }
     }
 }

@@ -1,5 +1,13 @@
 # Third-party notices
 
+## Discord Social SDK (optional)
+
+Builds with music Rich Presence embed Discord's separately downloaded Social
+SDK framework under [Discord's Social SDK terms](https://support-dev.discord.com/hc/en-us/articles/30225844245271-Discord-Social-SDK-Terms).
+Its included open-source notices are packaged as
+`DiscordSocialSDK-License-Notices.txt` beside this file in the app resources.
+The SDK archive, headers, and standalone framework are not in this repository.
+
 ## Discord client sound effects
 
 SakuraCord includes the classic Discord client sound effects for message

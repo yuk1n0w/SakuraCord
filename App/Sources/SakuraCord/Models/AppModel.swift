@@ -295,12 +295,20 @@ final class AppModel {
     var roleMemberResult: RoleMemberResult?
     var isLoadingRoleMembers = false
     var roleMemberErrorMessage: String?
-    var currentStatus: PresenceStatus = .offline
+    var currentStatus: PresenceStatus = .offline {
+        didSet { music.discordPresence.setVisible(currentStatus.isVisibleOnline) }
+    }
     var connectionState: ConnectionState = .disconnected
     var isAuthenticated = false
     var isSwitchingAccounts = false
     var savedAccounts: [SavedAccount] = []
-    var activeAccountID: String?
+    var activeAccountID: String? {
+        didSet {
+            guard oldValue != activeAccountID else { return }
+            music.discordPresence.setVisible(false)
+            music.discordPresence.useAccount(activeAccountID)
+        }
+    }
     var sessionState: SessionState
     let launchMode: AppLaunchMode
     let typingState: TypingStateModel

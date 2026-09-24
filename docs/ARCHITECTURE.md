@@ -306,9 +306,10 @@ Searching runs inside the page rather than against a reimplemented client:
 the page holds the credentials, API key and client context, so a signed-in
 listener searches as themselves and no key has to be maintained here. The
 response tree is walked for its row renderer rather than indexed by a fixed
-path, because InnerTube reshapes between builds. Playing a result clicks a
-link so the page's own router swaps the track, which a document reload would
-otherwise interrupt.
+path, because InnerTube reshapes between builds. Playing a standalone track
+clicks a link so the page's own router swaps it without reloading. Selecting
+a playlist or album track loads the page's full watch URL with its collection
+ID, allowing YouTube Music to construct that collection's next-song queue.
 
 Community lyrics are fetched natively and do not depend on the page. Unison
 and BiniLyrics provide the first rich word/syllable tier; Unison and Bini line
@@ -325,6 +326,9 @@ longer it plays, and no lyric beats a confidently wrong one. Real word-level
 timings are used where a source carries them; a line-only source is presented
 as line timing rather than fabricated word timing. Both tiers use Better
 Lyrics' small presentation lead so the native fill lands with the voice.
+The lyrics panel restarts its line clock on a track change and selects the
+current line again when an asynchronous lookup finishes; a plain lyric copy
+without timestamps remains readable but cannot be animated in sync.
 
 TTML-authored translations and timed transliterations stay attached to their
 source lines. Romanization and translation are separate persisted display
@@ -352,6 +356,26 @@ A voice session takes the audio. `voiceSessionState` is the single choke point
 for every path into and out of a call, so the coordination lives there; the
 model only resumes music it paused itself, so a track the listener stopped
 during a call stays stopped afterwards.
+
+Music Rich Presence uses Discord's Social SDK under the public SakuraCord
+application ID. It never sends the normal-account Gateway credential to the
+SDK. The listener opts in from the music picker, authorizes the SDK through
+Discord OAuth with presence-only scopes, and stores the resulting access and
+refresh tokens in macOS Keychain under the SakuraCord account ID. The SDK
+identity must match the active SakuraCord account before any song is published.
+An invisible account disconnects the SDK; a paused player, advertisement, or
+signed-out YouTube Music page clears the activity. Turning sharing off,
+changing accounts, or signing out also clears it. The SDK's own callbacks run
+once per second only while sharing is enabled and the account is visible;
+the same tick checks for a new timed lyric line. A line replaces the artist in
+the activity's secondary text until an instrumental break or a song without
+timed lyrics restores the artist. Repeated playback reports do not republish
+the same text, and the lyrics panel need not be open. SDK tokens are refreshed
+before expiry. The SDK archive and headers are
+installed locally and ignored by Git, while packaged apps contain the signed
+framework and its third-party notices.
+The app's sandbox permits incoming network connections so the SDK can listen
+for the local OAuth callback during authorization.
 
 ## Plugins
 

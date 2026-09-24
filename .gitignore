@@ -25,3 +25,5 @@ Package.resolved
 !App/Package.resolved
 __pycache__/
 *.pyc
+App/Vendor/DiscordSocialSDK/
+App/Sources/DiscordSocialSDKBridge/sdk-include/

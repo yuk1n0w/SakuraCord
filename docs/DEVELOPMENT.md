@@ -92,6 +92,27 @@ proportion to its risk:
 | `./script/code_quality.sh check` | Run the pinned SwiftFormat and SwiftLint policy |
 | `./script/ci.sh` | Run the local CI entry point |
 
+### Optional Discord music presence SDK
+
+Music Rich Presence needs the Discord Social SDK enabled for application
+`1552325906847109260`. Download the macOS C++ SDK archive from that
+application's **Discord Social SDK → Downloads** page, then install it into
+this checkout without committing Discord's binary or headers:
+
+```sh
+./script/install_discord_social_sdk.sh ~/Downloads/DiscordSocialSdk-1.10.19337.zip
+```
+
+On the same application's OAuth2 page, enable **Public Client** and register
+`http://127.0.0.1/callback` as a redirect. The SDK's PKCE flow handles the
+authorization; no client secret belongs in the app or repository. Builds
+without the local SDK still work, but the music sharing control is disabled.
+The packaged app embeds the framework and the SDK's third-party notices.
+
+[Discord's Social SDK terms](https://support-dev.discord.com/hc/en-us/articles/30225844245271-Discord-Social-SDK-Terms)
+permit distribution of the SDK **as integrated into the application**, so the
+raw archive, framework, and headers stay out of Git.
+
 ### Persistent local code-signing identity
 
 The build script uses an installed Apple Development identity, or the SakuraCord

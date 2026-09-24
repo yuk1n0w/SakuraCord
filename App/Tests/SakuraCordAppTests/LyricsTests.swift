@@ -71,9 +71,12 @@ import Testing
     // line being lit early.
     #expect(lyrics.activeIndex(at: 0) == nil)
     #expect(lyrics.activeIndex(at: 1.9) == nil)
+    #expect(lyrics.activeText(at: 1.9) == nil)
     #expect(lyrics.activeIndex(at: 2) == 0)
+    #expect(lyrics.activeText(at: 2) == "alpha")
     #expect(lyrics.activeIndex(at: 4.9) == 0)
     #expect(lyrics.activeIndex(at: 5) == 1)
+    #expect(lyrics.activeText(at: 5) == "bravo")
     // The last line stays lit to the end of the song.
     #expect(lyrics.activeIndex(at: 600) == 2)
 }
@@ -86,6 +89,7 @@ import Testing
     #expect(lyrics.lines.count == 3)
     #expect(lyrics.lines[1].text.isEmpty)
     #expect(lyrics.activeIndex(at: 10) == 1)
+    #expect(lyrics.activeText(at: 10) == nil)
 }
 
 @Test func `ttml paragraphs become lines`() {
@@ -113,6 +117,7 @@ import Testing
     // Nothing is ever lit, so the panel must not dim every line against a
     // line that does not exist.
     #expect(lyrics.activeIndex(at: 30) == nil)
+    #expect(lyrics.activeText(at: 30) == nil)
 }
 
 @Test func `a source that will not parse falls back rather than emptying`() {

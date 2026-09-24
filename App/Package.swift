@@ -1,5 +1,15 @@
 // swift-tools-version: 6.4
 import PackageDescription
+import Foundation
+
+let socialSDKDirectory = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent()
+    .appendingPathComponent("Vendor/DiscordSocialSDK")
+let hasSocialSDK = FileManager.default.fileExists(
+    atPath: socialSDKDirectory.appendingPathComponent(
+        "discord_partner_sdk.framework/discord_partner_sdk"
+    ).path
+)
 
 let package = Package(
     name: "SakuraCordApp",
@@ -30,7 +40,8 @@ let package = Package(
                 "MessageRendering", "MediaPipeline", "SakuraCordPluginSDK",
                 .product(name: "Lottie", package: "lottie-ios"),
                 .product(name: "HCaptcha", package: "hcaptcha"),
-                .product(name: "Sparkle", package: "Sparkle")
+                .product(name: "Sparkle", package: "Sparkle"),
+                "DiscordSocialSDKBridge"
             ],
             resources: [.process("Resources")],
             swiftSettings: [
@@ -39,11 +50,23 @@ let package = Package(
                 .interoperabilityMode(.Cxx)
             ]
         ),
+        .target(
+            name: "DiscordSocialSDKBridge",
+            publicHeadersPath: "include",
+            cxxSettings: [.headerSearchPath("sdk-include")],
+            linkerSettings: hasSocialSDK ? [
+                .unsafeFlags([
+                    "-F", socialSDKDirectory.path,
+                    "-framework", "discord_partner_sdk"
+                ])
+            ] : []
+        ),
         .executableTarget(name: "SakuraCordPluginHost", dependencies: ["SakuraCordPluginSDK"]),
         .testTarget(
             name: "SakuraCordAppTests",
             dependencies: ["SakuraCord", "DiscordProtocol", "MediaPipeline"],
             swiftSettings: [.interoperabilityMode(.Cxx)]
         )
-    ]
+    ],
+    cxxLanguageStandard: .cxx17
 )

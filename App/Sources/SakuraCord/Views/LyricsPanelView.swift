@@ -17,6 +17,18 @@ struct LyricsPanelView: View {
     /// owns the smoother clock in the active text child.
     private static let tick = Duration.milliseconds(66)
 
+    private struct ClockID: Hashable {
+        let videoID: String
+        let isRunning: Bool
+    }
+
+    private var clockID: ClockID {
+        ClockID(
+            videoID: music.state.videoID,
+            isRunning: music.state.isClockRunning
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             LyricsNowPlayingHeader(music: music)
@@ -27,7 +39,7 @@ struct LyricsPanelView: View {
         // Only a running clock can move the lit line on. Polling a paused
         // track woke the main run loop fifteen times a second to decide that
         // nothing had changed; a seek moves the line along directly instead.
-        .task(id: music.state.isClockRunning) {
+        .task(id: clockID) {
             advance()
             guard music.state.isClockRunning else { return }
             while !Task.isCancelled {
@@ -38,6 +50,11 @@ struct LyricsPanelView: View {
         }
         .onChange(of: music.state.videoID) { _, _ in
             activeIndex = nil
+            advance()
+        }
+        .onChange(of: music.lyrics.lyrics) { _, _ in
+            // The lookup completes after playback starts; select its first
+            // active line even if the clock is still buffering.
             advance()
         }
     }

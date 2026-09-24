@@ -178,4 +178,12 @@ nonisolated struct TimedLyrics: Equatable, Sendable {
         }
         return match
     }
+
+    /// A presence can follow timed lines, but must not guess where an
+    /// untimed copy belongs or publish a blank instrumental break.
+    func activeText(at time: TimeInterval) -> String? {
+        guard let index = activeIndex(at: time) else { return nil }
+        let text = lines[index].text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
 }
